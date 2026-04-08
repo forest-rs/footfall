@@ -3,9 +3,14 @@
 
 //! Export bridges for Spoor snapshots.
 
-use spoor_core::{Context, LabelValue, MarkerKind, MarkerPhase, ResourceId};
+use spoor_core::{Context, ContextId, LabelValue, MarkerKind, MarkerPhase, ResourceId, ScopeToken};
 use spoor_runtime::{CounterKind, CounterSnapshot, Observation, Snapshot, TimedObservation};
-use std::fmt::{self, Write};
+use std::{
+    collections::HashMap,
+    fmt::{self, Write},
+    fs,
+    path::Path,
+};
 
 /// Converts a snapshot into Chrome Trace Event JSON suitable for inspection in Perfetto.
 #[must_use]
@@ -18,240 +23,357 @@ pub fn to_chrome_trace_json(snapshot: &Snapshot) -> String {
 
 /// Writes a snapshot as Chrome Trace Event JSON.
 pub fn write_chrome_trace_json(snapshot: &Snapshot, writer: &mut impl Write) -> fmt::Result {
-    writer.write_str("{\"displayTimeUnit\":\"ms\",\"traceEvents\":[")?;
-    let mut first = true;
+    let mut events = Vec::new();
 
-    for counter in &snapshot.counters {
-        write_event_separator(writer, &mut first)?;
-        write_counter_event(writer, counter)?;
+    events.push(build_metadata_event("process_name", 1, 0, "name", "spoor"));
+
+    for context in &snapshot.contexts {
+        events.push(build_thread_name_event(
+            context.id,
+            track_name(context.context),
+        ));
     }
 
+    for counter in &snapshot.counters {
+        events.push(build_counter_event(snapshot, counter)?);
+    }
+
+    let mut scope_tracks = HashMap::<ScopeToken, ContextId>::new();
     for event in &snapshot.events {
-        write_event_separator(writer, &mut first)?;
-        write_timed_observation(writer, event)?;
+        events.push(build_timed_observation(snapshot, event, &mut scope_tracks)?);
+    }
+
+    if snapshot.dropped_contexts > 0 {
+        events.push(build_internal_counter_event(
+            snapshot.captured_at_micros,
+            "spoor_dropped_contexts",
+            snapshot.dropped_contexts,
+        ));
     }
 
     if snapshot.dropped_counters > 0 {
-        write_event_separator(writer, &mut first)?;
-        write_internal_counter_event(
-            writer,
+        events.push(build_internal_counter_event(
             snapshot.captured_at_micros,
             "spoor_dropped_counters",
             snapshot.dropped_counters,
-        )?;
+        ));
     }
 
     if snapshot.dropped_events > 0 {
-        write_event_separator(writer, &mut first)?;
-        write_internal_counter_event(
-            writer,
+        events.push(build_internal_counter_event(
             snapshot.captured_at_micros,
             "spoor_dropped_events",
             snapshot.dropped_events,
-        )?;
+        ));
     }
 
+    events.sort_by_key(|event| (event.ts_micros, event.order));
+
+    writer.write_str("{\"displayTimeUnit\":\"ms\",\"traceEvents\":[")?;
+    let mut first = true;
+    for event in events {
+        if !first {
+            writer.write_char(',')?;
+        }
+        first = false;
+        writer.write_str(&event.json)?;
+    }
     writer.write_str("]}")?;
     Ok(())
 }
 
-fn write_event_separator(writer: &mut impl Write, first: &mut bool) -> fmt::Result {
-    if *first {
-        *first = false;
-        return Ok(());
-    }
-
-    writer.write_char(',')
+/// Writes Chrome Trace Event JSON to a file path.
+pub fn write_chrome_trace_file(snapshot: &Snapshot, path: impl AsRef<Path>) -> std::io::Result<()> {
+    fs::write(path, to_chrome_trace_json(snapshot))
 }
 
-fn write_counter_event(writer: &mut impl Write, counter: &CounterSnapshot) -> fmt::Result {
-    writer.write_char('{')?;
-    write_json_field_str(writer, "name", counter.name)?;
-    writer.write_char(',')?;
-    write_json_field_str(writer, "cat", "counter")?;
-    writer.write_char(',')?;
-    write_json_field_str(writer, "ph", "C")?;
-    writer.write_char(',')?;
-    write_json_field_u64(writer, "ts", counter.updated_at_micros)?;
-    writer.write_char(',')?;
-    write_json_field_u64(writer, "pid", 1)?;
-    writer.write_char(',')?;
-    write_json_field_u64(writer, "tid", 0)?;
-    writer.write_str(",\"args\":{")?;
-    write_json_field_u64(writer, "value", counter.value)?;
-    writer.write_str(",\"kind\":")?;
+#[derive(Debug)]
+struct ExportEvent {
+    ts_micros: u64,
+    order: u8,
+    json: String,
+}
+
+fn build_metadata_event(
+    name: &str,
+    pid: u64,
+    tid: u64,
+    arg_key: &str,
+    arg_value: &str,
+) -> ExportEvent {
+    let mut json = String::new();
+    json.push('{');
+    write_json_field_str(&mut json, "name", name).expect("string write should succeed");
+    json.push(',');
+    write_json_field_str(&mut json, "ph", "M").expect("string write should succeed");
+    json.push(',');
+    write_json_field_u64(&mut json, "ts", 0).expect("string write should succeed");
+    json.push(',');
+    write_json_field_u64(&mut json, "pid", pid).expect("string write should succeed");
+    json.push(',');
+    write_json_field_u64(&mut json, "tid", tid).expect("string write should succeed");
+    json.push_str(",\"args\":{");
+    write_json_field_str(&mut json, arg_key, arg_value).expect("string write should succeed");
+    json.push_str("}}");
+    ExportEvent {
+        ts_micros: 0,
+        order: 0,
+        json,
+    }
+}
+
+fn build_thread_name_event(context_id: ContextId, name: String) -> ExportEvent {
+    build_metadata_event("thread_name", 1, context_id.get(), "name", &name)
+}
+
+fn build_counter_event(
+    snapshot: &Snapshot,
+    counter: &CounterSnapshot,
+) -> Result<ExportEvent, fmt::Error> {
+    let mut json = String::new();
+    let context = snapshot
+        .context(counter.context_id)
+        .map(|context| context.context)
+        .unwrap_or_else(Context::root);
+
+    json.push('{');
+    write_json_field_str(&mut json, "name", counter.name)?;
+    json.push(',');
+    write_json_field_str(&mut json, "cat", "counter")?;
+    json.push(',');
+    write_json_field_str(&mut json, "ph", "C")?;
+    json.push(',');
+    write_json_field_u64(&mut json, "ts", counter.updated_at_micros)?;
+    json.push(',');
+    write_json_field_u64(&mut json, "pid", 1)?;
+    json.push(',');
+    write_json_field_u64(&mut json, "tid", counter.context_id.get())?;
+    json.push_str(",\"args\":{");
+    write_json_field_u64(&mut json, "value", counter.value)?;
+    json.push_str(",\"kind\":");
     write_json_string(
-        writer,
+        &mut json,
         match counter.kind {
             CounterKind::Counter => "counter",
             CounterKind::Gauge => "gauge",
         },
     )?;
-    writer.write_str(",\"context\":")?;
-    write_context(writer, counter.context)?;
-    writer.write_str("}}")
+    json.push_str(",\"context\":");
+    write_context(&mut json, context)?;
+    json.push_str("}}");
+
+    Ok(ExportEvent {
+        ts_micros: counter.updated_at_micros,
+        order: 1,
+        json,
+    })
 }
 
-fn write_internal_counter_event(
-    writer: &mut impl Write,
-    at_micros: u64,
-    name: &str,
-    value: u64,
-) -> fmt::Result {
-    writer.write_char('{')?;
-    write_json_field_str(writer, "name", name)?;
-    writer.write_char(',')?;
-    write_json_field_str(writer, "cat", "spoor")?;
-    writer.write_char(',')?;
-    write_json_field_str(writer, "ph", "C")?;
-    writer.write_char(',')?;
-    write_json_field_u64(writer, "ts", at_micros)?;
-    writer.write_char(',')?;
-    write_json_field_u64(writer, "pid", 1)?;
-    writer.write_char(',')?;
-    write_json_field_u64(writer, "tid", 0)?;
-    writer.write_str(",\"args\":{\"value\":")?;
-    writer.write_fmt(format_args!("{value}"))?;
-    writer.write_str("}}")
+fn build_internal_counter_event(at_micros: u64, name: &str, value: u64) -> ExportEvent {
+    let mut json = String::new();
+    json.push('{');
+    write_json_field_str(&mut json, "name", name).expect("string write should succeed");
+    json.push(',');
+    write_json_field_str(&mut json, "cat", "spoor").expect("string write should succeed");
+    json.push(',');
+    write_json_field_str(&mut json, "ph", "C").expect("string write should succeed");
+    json.push(',');
+    write_json_field_u64(&mut json, "ts", at_micros).expect("string write should succeed");
+    json.push(',');
+    write_json_field_u64(&mut json, "pid", 1).expect("string write should succeed");
+    json.push(',');
+    write_json_field_u64(&mut json, "tid", 0).expect("string write should succeed");
+    json.push_str(",\"args\":{\"value\":");
+    json.write_fmt(format_args!("{value}"))
+        .expect("string write should succeed");
+    json.push_str("}}");
+    ExportEvent {
+        ts_micros: at_micros,
+        order: 3,
+        json,
+    }
 }
 
-fn write_timed_observation(writer: &mut impl Write, event: &TimedObservation) -> fmt::Result {
+fn build_timed_observation(
+    snapshot: &Snapshot,
+    event: &TimedObservation,
+    scope_tracks: &mut HashMap<ScopeToken, ContextId>,
+) -> Result<ExportEvent, fmt::Error> {
     match &event.observation {
         Observation::ScopeBegin {
             name,
-            context,
+            context_id,
             token,
             ..
         } => {
-            writer.write_char('{')?;
-            write_json_field_str(writer, "name", name)?;
-            writer.write_char(',')?;
-            write_json_field_str(writer, "cat", "scope")?;
-            writer.write_char(',')?;
-            write_json_field_str(writer, "ph", "B")?;
-            writer.write_char(',')?;
-            write_json_field_u64(writer, "ts", event.at_micros)?;
-            writer.write_char(',')?;
-            write_json_field_u64(writer, "pid", 1)?;
-            writer.write_char(',')?;
-            write_json_field_u64(writer, "tid", 0)?;
-            writer.write_str(",\"args\":{")?;
-            write_json_field_u64(writer, "scope_token", token.get())?;
-            writer.write_str(",\"context\":")?;
-            write_context(writer, *context)?;
-            writer.write_str("}}")
+            scope_tracks.insert(*token, *context_id);
+            let context = snapshot
+                .context(*context_id)
+                .map(|context| context.context)
+                .unwrap_or_else(Context::root);
+            let mut json = String::new();
+            json.push('{');
+            write_json_field_str(&mut json, "name", name)?;
+            json.push(',');
+            write_json_field_str(&mut json, "cat", "scope")?;
+            json.push(',');
+            write_json_field_str(&mut json, "ph", "B")?;
+            json.push(',');
+            write_json_field_u64(&mut json, "ts", event.at_micros)?;
+            json.push(',');
+            write_json_field_u64(&mut json, "pid", 1)?;
+            json.push(',');
+            write_json_field_u64(&mut json, "tid", context_id.get())?;
+            json.push_str(",\"args\":{\"context\":");
+            write_context(&mut json, context)?;
+            json.push_str("}}");
+            Ok(ExportEvent {
+                ts_micros: event.at_micros,
+                order: 1,
+                json,
+            })
         }
-        Observation::ScopeEnd { .. } => {
-            writer.write_char('{')?;
-            write_json_field_str(writer, "ph", "E")?;
-            writer.write_char(',')?;
-            write_json_field_u64(writer, "ts", event.at_micros)?;
-            writer.write_char(',')?;
-            write_json_field_u64(writer, "pid", 1)?;
-            writer.write_char(',')?;
-            write_json_field_u64(writer, "tid", 0)?;
-            writer.write_char('}')
+        Observation::ScopeEnd { token } => {
+            let tid = scope_tracks
+                .remove(token)
+                .unwrap_or(ContextId::new(0))
+                .get();
+            let mut json = String::new();
+            json.push('{');
+            write_json_field_str(&mut json, "ph", "E")?;
+            json.push(',');
+            write_json_field_u64(&mut json, "ts", event.at_micros)?;
+            json.push(',');
+            write_json_field_u64(&mut json, "pid", 1)?;
+            json.push(',');
+            write_json_field_u64(&mut json, "tid", tid)?;
+            json.push('}');
+            Ok(ExportEvent {
+                ts_micros: event.at_micros,
+                order: 2,
+                json,
+            })
         }
         Observation::ResourceCreate {
             kind_name,
             resource_id,
-            context,
+            context_id,
             size,
             ..
-        } => write_resource_event(
-            writer,
+        } => build_resource_event(
+            snapshot,
             event.at_micros,
             "resource_create",
             kind_name,
             *resource_id,
+            *context_id,
             Some(*size),
-            *context,
         ),
         Observation::ResourceUpdate {
             kind_name,
             resource_id,
-            context,
+            context_id,
             size,
             ..
-        } => write_resource_event(
-            writer,
+        } => build_resource_event(
+            snapshot,
             event.at_micros,
             "resource_update",
             kind_name,
             *resource_id,
+            *context_id,
             Some(*size),
-            *context,
         ),
         Observation::ResourceDrop {
             kind_name,
             resource_id,
-            context,
+            context_id,
             ..
-        } => write_resource_event(
-            writer,
+        } => build_resource_event(
+            snapshot,
             event.at_micros,
             "resource_drop",
             kind_name,
             *resource_id,
+            *context_id,
             None,
-            *context,
         ),
         Observation::FrameMarker {
             kind,
             phase,
-            context,
+            context_id,
         } => {
-            writer.write_char('{')?;
-            write_json_field_str(writer, "name", marker_name(*kind, *phase))?;
-            writer.write_char(',')?;
-            write_json_field_str(writer, "cat", "marker")?;
-            writer.write_char(',')?;
-            write_json_field_str(writer, "ph", "i")?;
-            writer.write_str(",\"s\":\"t\",")?;
-            write_json_field_u64(writer, "ts", event.at_micros)?;
-            writer.write_char(',')?;
-            write_json_field_u64(writer, "pid", 1)?;
-            writer.write_char(',')?;
-            write_json_field_u64(writer, "tid", 0)?;
-            writer.write_str(",\"args\":{\"context\":")?;
-            write_context(writer, *context)?;
-            writer.write_str("}}")
+            let context = snapshot
+                .context(*context_id)
+                .map(|context| context.context)
+                .unwrap_or_else(Context::root);
+            let mut json = String::new();
+            json.push('{');
+            write_json_field_str(&mut json, "name", marker_name(*kind, *phase))?;
+            json.push(',');
+            write_json_field_str(&mut json, "cat", "marker")?;
+            json.push(',');
+            write_json_field_str(&mut json, "ph", "i")?;
+            json.push_str(",\"s\":\"t\",");
+            write_json_field_u64(&mut json, "ts", event.at_micros)?;
+            json.push(',');
+            write_json_field_u64(&mut json, "pid", 1)?;
+            json.push(',');
+            write_json_field_u64(&mut json, "tid", context_id.get())?;
+            json.push_str(",\"args\":{\"context\":");
+            write_context(&mut json, context)?;
+            json.push_str("}}");
+            Ok(ExportEvent {
+                ts_micros: event.at_micros,
+                order: 1,
+                json,
+            })
         }
     }
 }
 
-fn write_resource_event(
-    writer: &mut impl Write,
+fn build_resource_event(
+    snapshot: &Snapshot,
     at_micros: u64,
     name: &str,
     kind_name: &str,
     resource_id: ResourceId,
+    context_id: ContextId,
     size: Option<u64>,
-    context: Context,
-) -> fmt::Result {
-    writer.write_char('{')?;
-    write_json_field_str(writer, "name", name)?;
-    writer.write_char(',')?;
-    write_json_field_str(writer, "cat", kind_name)?;
-    writer.write_char(',')?;
-    write_json_field_str(writer, "ph", "i")?;
-    writer.write_str(",\"s\":\"t\",")?;
-    write_json_field_u64(writer, "ts", at_micros)?;
-    writer.write_char(',')?;
-    write_json_field_u64(writer, "pid", 1)?;
-    writer.write_char(',')?;
-    write_json_field_u64(writer, "tid", 0)?;
-    writer.write_str(",\"args\":{")?;
-    write_json_field_str(writer, "kind", kind_name)?;
-    writer.write_char(',')?;
-    write_json_field_u64(writer, "resource_id", resource_id.get())?;
+) -> Result<ExportEvent, fmt::Error> {
+    let context = snapshot
+        .context(context_id)
+        .map(|context| context.context)
+        .unwrap_or_else(Context::root);
+    let mut json = String::new();
+    json.push('{');
+    write_json_field_str(&mut json, "name", name)?;
+    json.push(',');
+    write_json_field_str(&mut json, "cat", kind_name)?;
+    json.push(',');
+    write_json_field_str(&mut json, "ph", "i")?;
+    json.push_str(",\"s\":\"t\",");
+    write_json_field_u64(&mut json, "ts", at_micros)?;
+    json.push(',');
+    write_json_field_u64(&mut json, "pid", 1)?;
+    json.push(',');
+    write_json_field_u64(&mut json, "tid", context_id.get())?;
+    json.push_str(",\"args\":{");
+    write_json_field_str(&mut json, "kind", kind_name)?;
+    json.push(',');
+    write_json_field_u64(&mut json, "resource_id", resource_id.get())?;
     if let Some(size) = size {
-        writer.write_char(',')?;
-        write_json_field_u64(writer, "size", size)?;
+        json.push(',');
+        write_json_field_u64(&mut json, "size", size)?;
     }
-    writer.write_str(",\"context\":")?;
-    write_context(writer, context)?;
-    writer.write_str("}}")
+    json.push_str(",\"context\":");
+    write_context(&mut json, context)?;
+    json.push_str("}}");
+    Ok(ExportEvent {
+        ts_micros: at_micros,
+        order: 1,
+        json,
+    })
 }
 
 fn write_context(writer: &mut impl Write, context: Context) -> fmt::Result {
@@ -282,8 +404,42 @@ fn write_label_value(writer: &mut impl Write, value: LabelValue) -> fmt::Result 
     if let Some(value) = value.as_static_str() {
         return write_json_string(writer, value);
     }
-
     Ok(())
+}
+
+fn track_name(context: Context) -> String {
+    if context.is_empty() {
+        return String::from("root");
+    }
+
+    let mut name = String::new();
+    for (index, entry) in context.iter().enumerate() {
+        if index > 0 {
+            name.push_str(" / ");
+        }
+        name.push_str(entry.key().as_str());
+        name.push('=');
+        append_label_value(&mut name, entry.value());
+    }
+    name
+}
+
+fn append_label_value(output: &mut String, value: LabelValue) {
+    if let Some(value) = value.as_unsigned() {
+        output.push_str(&value.to_string());
+        return;
+    }
+    if let Some(value) = value.as_signed() {
+        output.push_str(&value.to_string());
+        return;
+    }
+    if let Some(value) = value.as_bool() {
+        output.push_str(if value { "true" } else { "false" });
+        return;
+    }
+    if let Some(value) = value.as_static_str() {
+        output.push_str(value);
+    }
 }
 
 fn marker_name(kind: MarkerKind, phase: MarkerPhase) -> &'static str {
@@ -326,39 +482,84 @@ fn write_json_string(writer: &mut impl Write, value: &str) -> fmt::Result {
 
 #[cfg(test)]
 mod tests {
-    use super::to_chrome_trace_json;
-    use spoor_core::{Context, CounterDesc, CounterDescId, LabelKey, MarkerKind, MarkerPhase};
-    use spoor_runtime::{CounterKind, CounterSnapshot, Observation, Snapshot, TimedObservation};
+    use super::{to_chrome_trace_json, track_name};
+    use spoor_core::{
+        Context, ContextId, CounterDesc, CounterDescId, LabelKey, MarkerKind, MarkerPhase,
+        ScopeToken,
+    };
+    use spoor_runtime::{
+        ContextSnapshot, CounterKind, CounterSnapshot, Observation, Snapshot, TimedObservation,
+    };
 
     #[test]
-    fn exporter_emits_trace_events_and_context() {
+    fn exporter_emits_metadata_context_tracks_and_scope_pairing() {
         let snapshot = Snapshot {
+            capture_start_micros: 0,
             captured_at_micros: 30,
+            contexts: vec![
+                ContextSnapshot {
+                    id: ContextId::new(0),
+                    context: Context::root(),
+                },
+                ContextSnapshot {
+                    id: ContextId::new(1),
+                    context: Context::root()
+                        .with(LabelKey::Frame, 7_u32)
+                        .with(LabelKey::Pass, 1_u32),
+                },
+            ],
             counters: vec![CounterSnapshot {
                 desc_id: CounterDescId::new(1),
                 name: CounterDesc::bytes(CounterDescId::new(1), "upload_bytes").name(),
-                context: Context::root().with(LabelKey::Frame, 7_u32),
+                context_id: ContextId::new(1),
                 kind: CounterKind::Counter,
                 value: 4096,
                 updated_at_micros: 10,
             }],
-            events: vec![TimedObservation {
-                at_micros: 20,
-                observation: Observation::FrameMarker {
-                    kind: MarkerKind::Frame,
-                    phase: MarkerPhase::Begin,
-                    context: Context::root().with(LabelKey::Pass, 1_u32),
+            events: vec![
+                TimedObservation {
+                    at_micros: 20,
+                    observation: Observation::ScopeBegin {
+                        desc_id: spoor_core::ScopeDescId::new(2),
+                        name: "record",
+                        context_id: ContextId::new(1),
+                        token: ScopeToken::new(9),
+                    },
                 },
-            }],
+                TimedObservation {
+                    at_micros: 22,
+                    observation: Observation::ScopeEnd {
+                        token: ScopeToken::new(9),
+                    },
+                },
+                TimedObservation {
+                    at_micros: 24,
+                    observation: Observation::FrameMarker {
+                        kind: MarkerKind::Frame,
+                        phase: MarkerPhase::Begin,
+                        context_id: ContextId::new(1),
+                    },
+                },
+            ],
+            dropped_contexts: 1,
             dropped_counters: 1,
             dropped_events: 2,
         };
 
         let json = to_chrome_trace_json(&snapshot);
-        assert!(json.contains("\"traceEvents\""));
-        assert!(json.contains("\"upload_bytes\""));
-        assert!(json.contains("\"frame_begin\""));
-        assert!(json.contains("\"frame\":7"));
-        assert!(json.contains("\"spoor_dropped_events\""));
+        assert!(json.contains("\"thread_name\""));
+        assert!(json.contains("frame=7 / pass=1"));
+        assert!(json.contains("\"tid\":1"));
+        assert!(json.contains("\"ph\":\"B\""));
+        assert!(json.contains("\"ph\":\"E\""));
+        assert!(json.contains("\"spoor_dropped_contexts\""));
+    }
+
+    #[test]
+    fn track_name_uses_context_entries() {
+        let context = Context::root()
+            .with(LabelKey::Frame, 3_u32)
+            .with(LabelKey::Reason, "invalidate");
+        assert_eq!(track_name(context), "frame=3 / reason=invalidate");
     }
 }

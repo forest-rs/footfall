@@ -4,14 +4,14 @@
 //! Bounded runtime collection for Spoor.
 
 use spoor_core::{
-    Backend, Context, CounterDesc, CounterDescId, InstallBackendError, MarkerKind, MarkerPhase,
-    ResourceId, ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, ScopeToken,
+    Backend, Context, ContextId, CounterDesc, CounterDescId, InstallBackendError, MarkerKind,
+    MarkerPhase, ResourceId, ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, ScopeToken,
     install_backend,
 };
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Mutex, OnceLock},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 /// Installs a runtime as the process-wide Spoor backend.
@@ -39,7 +39,7 @@ impl Runtime {
         }
     }
 
-    /// Returns a snapshot of the currently collected counters and events.
+    /// Returns a snapshot of the currently collected counters, contexts, and events.
     #[must_use]
     pub fn snapshot(&self) -> Snapshot {
         let state = self
@@ -47,9 +47,12 @@ impl Runtime {
             .lock()
             .expect("runtime mutex should not be poisoned");
         Snapshot {
+            capture_start_micros: 0,
             captured_at_micros: self.now_micros(),
+            contexts: state.contexts.clone(),
             counters: state.counters.values().cloned().collect(),
             events: state.events.iter().cloned().collect(),
+            dropped_contexts: state.dropped_contexts,
             dropped_counters: state.dropped_counters,
             dropped_events: state.dropped_events,
         }
@@ -69,19 +72,44 @@ pub enum InstallError {
     BackendAlreadyInstalled(InstallBackendError),
 }
 
-/// Snapshot of counters and events retained by a [`Runtime`].
+/// Snapshot of counters, canonical contexts, and events retained by a [`Runtime`].
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Snapshot {
+    /// Snapshot start time relative to runtime creation.
+    pub capture_start_micros: u64,
     /// Time since runtime creation when the snapshot was captured.
     pub captured_at_micros: u64,
+    /// Canonical context table referenced by counters and events.
+    pub contexts: Vec<ContextSnapshot>,
     /// Aggregated counters and gauges.
     pub counters: Vec<CounterSnapshot>,
     /// Bounded sequence of timestamped observation records.
     pub events: Vec<TimedObservation>,
+    /// Count of observations dropped because a new context could not be interned.
+    pub dropped_contexts: u64,
     /// Count of counter updates dropped due to counter-key capacity pressure.
     pub dropped_counters: u64,
     /// Count of events dropped due to event-capacity pressure.
     pub dropped_events: u64,
+}
+
+impl Snapshot {
+    /// Resolves one canonical context by id.
+    #[must_use]
+    pub fn context(&self, context_id: ContextId) -> Option<&ContextSnapshot> {
+        usize::try_from(context_id.get())
+            .ok()
+            .and_then(|index| self.contexts.get(index))
+    }
+}
+
+/// One canonical context carried by a snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContextSnapshot {
+    /// Canonical context id.
+    pub id: ContextId,
+    /// Explicit semantic context value.
+    pub context: Context,
 }
 
 /// One aggregated counter or gauge value.
@@ -91,8 +119,8 @@ pub struct CounterSnapshot {
     pub desc_id: CounterDescId,
     /// Stable descriptor name.
     pub name: &'static str,
-    /// Semantic context for this aggregate.
-    pub context: Context,
+    /// Canonical semantic context id.
+    pub context_id: ContextId,
     /// Whether the value is additive or gauge-like.
     pub kind: CounterKind,
     /// Aggregated value.
@@ -128,8 +156,8 @@ pub enum Observation {
         desc_id: ScopeDescId,
         /// Stable descriptor name.
         name: &'static str,
-        /// Explicit semantic context.
-        context: Context,
+        /// Canonical semantic context id.
+        context_id: ContextId,
         /// Opaque scope token returned to the caller.
         token: ScopeToken,
     },
@@ -146,8 +174,8 @@ pub enum Observation {
         kind_name: &'static str,
         /// Resource instance id.
         resource_id: ResourceId,
-        /// Semantic context.
-        context: Context,
+        /// Canonical semantic context id.
+        context_id: ContextId,
         /// Logical resource size.
         size: u64,
     },
@@ -159,8 +187,8 @@ pub enum Observation {
         kind_name: &'static str,
         /// Resource instance id.
         resource_id: ResourceId,
-        /// Semantic context.
-        context: Context,
+        /// Canonical semantic context id.
+        context_id: ContextId,
         /// Logical resource size.
         size: u64,
     },
@@ -172,8 +200,8 @@ pub enum Observation {
         kind_name: &'static str,
         /// Resource instance id.
         resource_id: ResourceId,
-        /// Semantic context.
-        context: Context,
+        /// Canonical semantic context id.
+        context_id: ContextId,
     },
     /// Frame, transaction, or pass marker.
     FrameMarker {
@@ -181,21 +209,21 @@ pub enum Observation {
         kind: MarkerKind,
         /// Marker phase.
         phase: MarkerPhase,
-        /// Semantic context.
-        context: Context,
+        /// Canonical semantic context id.
+        context_id: ContextId,
     },
 }
 
 impl Observation {
-    /// Returns the semantic context carried by this observation when present.
+    /// Returns the canonical context id carried by this observation when present.
     #[must_use]
-    pub fn context(&self) -> Option<Context> {
+    pub fn context_id(&self) -> Option<ContextId> {
         match self {
-            Self::ScopeBegin { context, .. }
-            | Self::ResourceCreate { context, .. }
-            | Self::ResourceUpdate { context, .. }
-            | Self::ResourceDrop { context, .. }
-            | Self::FrameMarker { context, .. } => Some(*context),
+            Self::ScopeBegin { context_id, .. }
+            | Self::ResourceCreate { context_id, .. }
+            | Self::ResourceUpdate { context_id, .. }
+            | Self::ResourceDrop { context_id, .. }
+            | Self::FrameMarker { context_id, .. } => Some(*context_id),
             Self::ScopeEnd { .. } => None,
         }
     }
@@ -205,28 +233,54 @@ impl Observation {
 struct State {
     counter_capacity: usize,
     event_capacity: usize,
+    context_capacity: usize,
     next_scope_token: u64,
+    next_context_id: u64,
+    context_ids: HashMap<Context, ContextId>,
+    contexts: Vec<ContextSnapshot>,
     counters: HashMap<CounterKey, CounterSnapshot>,
     events: VecDeque<TimedObservation>,
+    dropped_contexts: u64,
     dropped_counters: u64,
     dropped_events: u64,
 }
 
 impl State {
     fn new(counter_capacity: usize, event_capacity: usize) -> Self {
+        let context_capacity = counter_capacity
+            .saturating_add(event_capacity)
+            .saturating_add(1);
+        let root_id = ContextId::new(0);
+        let root_context = Context::root();
+        let mut context_ids = HashMap::with_capacity(context_capacity);
+        context_ids.insert(root_context, root_id);
+
         Self {
             counter_capacity,
             event_capacity,
+            context_capacity,
             next_scope_token: 1,
+            next_context_id: 1,
+            context_ids,
+            contexts: vec![ContextSnapshot {
+                id: root_id,
+                context: root_context,
+            }],
             counters: HashMap::with_capacity(counter_capacity),
             events: VecDeque::with_capacity(event_capacity),
+            dropped_contexts: 0,
             dropped_counters: 0,
             dropped_events: 0,
         }
     }
 
     fn counter_add(&mut self, desc: &CounterDesc, context: Context, value: u64, at_micros: u64) {
-        let key = CounterKey::new(desc.id(), context, CounterKind::Counter);
+        let Some(context_id) = self.context_id(context) else {
+            self.dropped_counters = self.dropped_counters.saturating_add(1);
+            return;
+        };
+
+        let key = CounterKey::new(desc.id(), context_id, CounterKind::Counter);
         if let Some(snapshot) = self.counters.get_mut(&key) {
             snapshot.value = snapshot.value.saturating_add(value);
             snapshot.updated_at_micros = at_micros;
@@ -243,7 +297,7 @@ impl State {
             CounterSnapshot {
                 desc_id: desc.id(),
                 name: desc.name(),
-                context,
+                context_id,
                 kind: CounterKind::Counter,
                 value,
                 updated_at_micros: at_micros,
@@ -252,7 +306,12 @@ impl State {
     }
 
     fn gauge_set(&mut self, desc: &CounterDesc, context: Context, value: u64, at_micros: u64) {
-        let key = CounterKey::new(desc.id(), context, CounterKind::Gauge);
+        let Some(context_id) = self.context_id(context) else {
+            self.dropped_counters = self.dropped_counters.saturating_add(1);
+            return;
+        };
+
+        let key = CounterKey::new(desc.id(), context_id, CounterKind::Gauge);
         if let Some(snapshot) = self.counters.get_mut(&key) {
             snapshot.value = value;
             snapshot.updated_at_micros = at_micros;
@@ -269,7 +328,7 @@ impl State {
             CounterSnapshot {
                 desc_id: desc.id(),
                 name: desc.name(),
-                context,
+                context_id,
                 kind: CounterKind::Gauge,
                 value,
                 updated_at_micros: at_micros,
@@ -294,20 +353,40 @@ impl State {
             observation,
         });
     }
+
+    fn context_id(&mut self, context: Context) -> Option<ContextId> {
+        if let Some(context_id) = self.context_ids.get(&context) {
+            return Some(*context_id);
+        }
+
+        if self.contexts.len() == self.context_capacity {
+            self.dropped_contexts = self.dropped_contexts.saturating_add(1);
+            return None;
+        }
+
+        let context_id = ContextId::new(self.next_context_id);
+        self.next_context_id = self.next_context_id.saturating_add(1);
+        self.context_ids.insert(context, context_id);
+        self.contexts.push(ContextSnapshot {
+            id: context_id,
+            context,
+        });
+        Some(context_id)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct CounterKey {
     desc_id: CounterDescId,
-    context: Context,
+    context_id: ContextId,
     kind: CounterKind,
 }
 
 impl CounterKey {
-    fn new(desc_id: CounterDescId, context: Context, kind: CounterKind) -> Self {
+    fn new(desc_id: CounterDescId, context_id: ContextId, kind: CounterKind) -> Self {
         Self {
             desc_id,
-            context,
+            context_id,
             kind,
         }
     }
@@ -356,11 +435,15 @@ fn backend_scope_begin(desc: &ScopeDesc, context: Context) -> ScopeToken {
             .lock()
             .expect("runtime mutex should not be poisoned");
         let token = state.next_scope_token();
+        let Some(context_id) = state.context_id(context) else {
+            state.dropped_events = state.dropped_events.saturating_add(1);
+            return token;
+        };
         state.push_event(
             Observation::ScopeBegin {
                 desc_id: desc.id(),
                 name: desc.name(),
-                context,
+                context_id,
                 token,
             },
             at_micros,
@@ -393,12 +476,16 @@ fn backend_resource_create(
             .state
             .lock()
             .expect("runtime mutex should not be poisoned");
+        let Some(context_id) = state.context_id(context) else {
+            state.dropped_events = state.dropped_events.saturating_add(1);
+            return;
+        };
         state.push_event(
             Observation::ResourceCreate {
                 kind_id: desc.id(),
                 kind_name: desc.name(),
                 resource_id,
-                context,
+                context_id,
                 size,
             },
             at_micros,
@@ -418,12 +505,16 @@ fn backend_resource_update(
             .state
             .lock()
             .expect("runtime mutex should not be poisoned");
+        let Some(context_id) = state.context_id(context) else {
+            state.dropped_events = state.dropped_events.saturating_add(1);
+            return;
+        };
         state.push_event(
             Observation::ResourceUpdate {
                 kind_id: desc.id(),
                 kind_name: desc.name(),
                 resource_id,
-                context,
+                context_id,
                 size,
             },
             at_micros,
@@ -438,12 +529,16 @@ fn backend_resource_drop(desc: &ResourceKindDesc, resource_id: ResourceId, conte
             .state
             .lock()
             .expect("runtime mutex should not be poisoned");
+        let Some(context_id) = state.context_id(context) else {
+            state.dropped_events = state.dropped_events.saturating_add(1);
+            return;
+        };
         state.push_event(
             Observation::ResourceDrop {
                 kind_id: desc.id(),
                 kind_name: desc.name(),
                 resource_id,
-                context,
+                context_id,
             },
             at_micros,
         );
@@ -457,11 +552,15 @@ fn backend_frame_marker(kind: MarkerKind, phase: MarkerPhase, context: Context) 
             .state
             .lock()
             .expect("runtime mutex should not be poisoned");
+        let Some(context_id) = state.context_id(context) else {
+            state.dropped_events = state.dropped_events.saturating_add(1);
+            return;
+        };
         state.push_event(
             Observation::FrameMarker {
                 kind,
                 phase,
-                context,
+                context_id,
             },
             at_micros,
         );
@@ -472,7 +571,7 @@ fn with_runtime<T>(f: impl FnOnce(&Runtime) -> T) -> Option<T> {
     RUNTIME.get().map(|runtime| f(runtime))
 }
 
-fn duration_to_micros(duration: std::time::Duration) -> u64 {
+fn duration_to_micros(duration: Duration) -> u64 {
     let micros = duration.as_micros();
     u64::try_from(micros).unwrap_or(u64::MAX)
 }
@@ -481,17 +580,17 @@ fn duration_to_micros(duration: std::time::Duration) -> u64 {
 mod tests {
     use super::{CounterKind, Observation, Runtime};
     use spoor_core::{
-        Context, CounterDesc, CounterDescId, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc,
-        ResourceKindId, ScopeDesc, ScopeDescId,
+        Context, ContextId, CounterDesc, CounterDescId, MarkerKind, MarkerPhase, ResourceId,
+        ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId,
     };
 
     #[test]
-    fn runtime_collects_named_timestamped_counters_and_events() {
+    fn runtime_collects_context_table_and_timestamped_records() {
         let runtime = Runtime::new(16, 16);
         let counter = CounterDesc::count(CounterDescId::new(1), "ops");
         let resource = ResourceKindDesc::new(ResourceKindId::new(2), "atlas");
         let scope = ScopeDesc::new(ScopeDescId::new(3), "record");
-        let context = Context::root();
+        let context = Context::root().with(spoor_core::LabelKey::Pass, 1_u32);
 
         let mut state = runtime
             .state
@@ -500,11 +599,12 @@ mod tests {
         state.counter_add(&counter, context, 5, 10);
         state.gauge_set(&counter, context, 9, 11);
         let token = state.next_scope_token();
+        let context_id = state.context_id(context).expect("context should intern");
         state.push_event(
             Observation::ScopeBegin {
                 desc_id: scope.id(),
                 name: scope.name(),
-                context,
+                context_id,
                 token,
             },
             12,
@@ -515,7 +615,7 @@ mod tests {
                 kind_id: resource.id(),
                 kind_name: resource.name(),
                 resource_id: ResourceId::new(7),
-                context,
+                context_id,
                 size: 64,
             },
             14,
@@ -524,25 +624,28 @@ mod tests {
             Observation::FrameMarker {
                 kind: MarkerKind::Frame,
                 phase: MarkerPhase::Begin,
-                context,
+                context_id,
             },
             15,
         );
         drop(state);
 
         let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.contexts[0].id, ContextId::new(0));
+        assert_eq!(snapshot.contexts[1].context, context);
         assert_eq!(snapshot.counters.len(), 2);
-        assert!(
-            snapshot
-                .counters
-                .iter()
-                .any(|counter| counter.kind == CounterKind::Counter
-                    && counter.value == 5
-                    && counter.name == "ops"
-                    && counter.updated_at_micros == 10)
-        );
+        assert!(snapshot.counters.iter().any(|counter| {
+            counter.kind == CounterKind::Counter
+                && counter.value == 5
+                && counter.name == "ops"
+                && counter.context_id == context_id
+        }));
         assert_eq!(snapshot.events.len(), 4);
         assert_eq!(snapshot.events[0].at_micros, 12);
+        assert_eq!(
+            snapshot.events[0].observation.context_id(),
+            Some(context_id)
+        );
     }
 
     #[test]
@@ -552,11 +655,14 @@ mod tests {
             .state
             .lock()
             .expect("runtime mutex should not be poisoned");
+        let context_id = state
+            .context_id(Context::root())
+            .expect("root context should exist");
         state.push_event(
             Observation::FrameMarker {
                 kind: MarkerKind::Frame,
                 phase: MarkerPhase::Begin,
-                context: Context::root(),
+                context_id,
             },
             1,
         );
@@ -564,7 +670,7 @@ mod tests {
             Observation::FrameMarker {
                 kind: MarkerKind::Frame,
                 phase: MarkerPhase::End,
-                context: Context::root(),
+                context_id,
             },
             2,
         );
