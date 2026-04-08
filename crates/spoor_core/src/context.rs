@@ -36,7 +36,7 @@ impl Context {
         self.len == 0
     }
 
-    /// Appends one label to the context.
+    /// Inserts or replaces one label in the context.
     ///
     /// # Panics
     ///
@@ -53,17 +53,25 @@ impl Context {
         }
     }
 
-    /// Tries to append one label to the context.
+    /// Tries to insert or replace one label in the context.
     pub fn try_with<V>(mut self, key: LabelKey, value: V) -> Result<Self, ContextCapacityError>
     where
         V: Into<LabelValue>,
     {
+        let value = value.into();
+        for entry in &mut self.entries[..usize::from(self.len)] {
+            if entry.key == key {
+                *entry = ContextEntry::new(key, value);
+                return Ok(self);
+            }
+        }
+
         let len = usize::from(self.len);
         if len == CONTEXT_INLINE_CAPACITY {
             return Err(ContextCapacityError);
         }
 
-        self.entries[len] = ContextEntry::new(key, value.into());
+        self.entries[len] = ContextEntry::new(key, value);
         self.len += 1;
         Ok(self)
     }
@@ -74,6 +82,26 @@ impl Context {
         let len = usize::from(self.len);
         // The prefix up to `len` is always initialized.
         &self.entries[..len]
+    }
+
+    /// Returns an iterator over the labels carried by this context.
+    pub fn iter(&self) -> core::slice::Iter<'_, ContextEntry> {
+        self.as_slice().iter()
+    }
+
+    /// Returns `true` when this context contains the given key.
+    #[must_use]
+    pub fn contains(&self, key: LabelKey) -> bool {
+        self.get(key).is_some()
+    }
+
+    /// Returns the value associated with the given key.
+    #[must_use]
+    pub fn get(&self, key: LabelKey) -> Option<LabelValue> {
+        self.as_slice()
+            .iter()
+            .find(|entry| entry.key == key)
+            .map(|entry| entry.value)
     }
 }
 
@@ -150,18 +178,60 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_key_replaces_existing_value() {
+        let context = Context::root()
+            .with(LabelKey::Frame, 7_u32)
+            .with(LabelKey::Frame, 11_u32);
+
+        assert_eq!(context.len(), 1);
+        assert_eq!(
+            context
+                .get(LabelKey::Frame)
+                .and_then(|value| value.as_unsigned()),
+            Some(11)
+        );
+    }
+
+    #[test]
+    fn contains_and_get_follow_inserted_labels() {
+        let context = Context::root()
+            .with(LabelKey::Node, 42_u32)
+            .with(LabelKey::Reason, "invalidate");
+
+        assert!(context.contains(LabelKey::Node));
+        assert_eq!(
+            context
+                .get(LabelKey::Reason)
+                .and_then(|value| value.as_static_str()),
+            Some("invalidate")
+        );
+        assert!(!context.contains(LabelKey::Cache));
+    }
+
+    #[test]
     fn try_with_reports_capacity() {
         let mut context = Context::root();
-        for index in 0..CONTEXT_INLINE_CAPACITY {
+        let keys = [
+            LabelKey::Frame,
+            LabelKey::Transaction,
+            LabelKey::Pass,
+            LabelKey::Subsystem,
+            LabelKey::Node,
+            LabelKey::Widget,
+            LabelKey::Layer,
+            LabelKey::Resource,
+        ];
+
+        for (index, key) in keys.into_iter().enumerate().take(CONTEXT_INLINE_CAPACITY) {
             context = context
                 .try_with(
-                    LabelKey::Node,
+                    key,
                     u32::try_from(index).expect("context index should fit into u32"),
                 )
                 .expect("context entry should fit");
         }
 
-        let result = context.try_with(LabelKey::Node, 99_u32);
+        let result = context.try_with(LabelKey::Cache, 99_u32);
         assert_eq!(result, Err(ContextCapacityError));
     }
 }
