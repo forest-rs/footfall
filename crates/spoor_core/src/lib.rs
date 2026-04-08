@@ -14,6 +14,11 @@
 //!
 //! It does not yet own runtime buffering or export logic.
 
+#[cfg(feature = "alloc")]
+extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
+
 mod context;
 mod descriptor;
 mod emit;
@@ -28,6 +33,8 @@ pub use emit::{
     Backend, MarkerKind, MarkerPhase, ScopeToken, counter_add, frame_marker, gauge_set,
     resource_create, resource_drop, resource_update, scope_begin, scope_end,
 };
+#[cfg(feature = "std")]
+pub use emit::{InstallBackendError, install_backend};
 pub use id::{ContextId, CounterDescId, ResourceId, ResourceKindId, ScopeDescId};
 pub use label::{LabelKey, LabelValue};
 pub use level::InstrumentationLevel;

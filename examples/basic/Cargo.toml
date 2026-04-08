@@ -14,7 +14,8 @@ publish = false
 description = "Top-level examples for the Spoor workspace."
 
 [dependencies]
-spoor.workspace = true
+spoor = { features = ["std"], workspace = true }
+spoor_runtime.workspace = true
 
 [[bin]]
 name = "basic"

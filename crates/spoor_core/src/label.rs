@@ -4,7 +4,7 @@
 use crate::ResourceId;
 
 /// Shared label keys used to attribute work and counters.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum LabelKey {
     /// A frame boundary or frame-local owner.
     Frame,
@@ -29,7 +29,7 @@ pub enum LabelKey {
 }
 
 /// Compact label value attached to a [`LabelKey`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum LabelValue {
     /// Unsigned numeric payload.
     Unsigned(u64),

@@ -8,7 +8,7 @@ use core::fmt;
 pub const CONTEXT_INLINE_CAPACITY: usize = 8;
 
 /// An explicit semantic attribution value passed through instrumented code.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Context {
     entries: [ContextEntry; CONTEXT_INLINE_CAPACITY],
     len: u8,
@@ -84,7 +84,7 @@ impl Default for Context {
 }
 
 /// One semantic label stored in a [`Context`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ContextEntry {
     key: LabelKey,
     value: LabelValue,

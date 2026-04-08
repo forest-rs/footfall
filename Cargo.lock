@@ -18,4 +18,12 @@ name = "spoor_examples"
 version = "0.1.0"
 dependencies = [
  "spoor",
+ "spoor_runtime",
+]
+
+[[package]]
+name = "spoor_runtime"
+version = "0.1.0"
+dependencies = [
+ "spoor_core",
 ]

@@ -14,7 +14,8 @@ description = "Calm user-facing facade for the Spoor observability family."
 
 [features]
 default = []
-std = ["spoor_core/std"]
+alloc = ["spoor_core/alloc"]
+std = ["alloc", "spoor_core/std"]
 
 [dependencies]
 spoor_core.workspace = true

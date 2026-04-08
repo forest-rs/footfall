@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::{Context, CounterDesc, ResourceId, ResourceKindDesc, ScopeDesc, ScopeDescId};
+#[cfg(feature = "std")]
+use std::sync::OnceLock;
 
 /// Opaque token returned by [`scope_begin`] and consumed by [`scope_end`].
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct ScopeToken {
     raw: u64,
 }
@@ -24,7 +26,7 @@ impl ScopeToken {
 }
 
 /// Coarse marker kind used to structure a trace.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum MarkerKind {
     /// Marks a frame boundary.
     Frame,
@@ -35,7 +37,7 @@ pub enum MarkerKind {
 }
 
 /// Boundary phase for a coarse trace marker.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum MarkerPhase {
     /// Marks the start of a boundary.
     Begin,
@@ -77,6 +79,11 @@ impl Backend {
         frame_marker: noop_frame_marker,
     };
 }
+
+/// Returned when a backend is already installed.
+#[cfg(feature = "std")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InstallBackendError;
 
 /// Adds to a counter descriptor under a semantic context.
 pub fn counter_add(desc: &CounterDesc, context: Context, value: u64) {
@@ -129,9 +136,23 @@ pub fn frame_marker(kind: MarkerKind, phase: MarkerPhase, context: Context) {
     (backend().frame_marker)(kind, phase, context);
 }
 
+/// Installs a process-wide runtime backend.
+#[cfg(feature = "std")]
+pub fn install_backend(backend: Backend) -> Result<(), InstallBackendError> {
+    BACKEND.set(backend).map_err(|_| InstallBackendError)
+}
+
 fn backend() -> &'static Backend {
+    #[cfg(feature = "std")]
+    if let Some(backend) = BACKEND.get() {
+        return backend;
+    }
+
     &Backend::NOOP
 }
+
+#[cfg(feature = "std")]
+static BACKEND: OnceLock<Backend> = OnceLock::new();
 
 fn noop_counter_add(_desc: &CounterDesc, _context: Context, _value: u64) {}
 

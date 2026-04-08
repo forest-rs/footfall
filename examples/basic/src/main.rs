@@ -8,12 +8,16 @@ use spoor::{
     ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, counter_add, frame_marker,
     resource_update, scope_begin, scope_end,
 };
+use spoor_runtime::{Runtime, install_global};
 
 static RECORD_PASS: ScopeDesc = ScopeDesc::new(ScopeDescId::new(1), "record_pass");
 static UPLOAD_BYTES: CounterDesc = CounterDesc::bytes(CounterDescId::new(2), "upload_bytes");
 static ATLAS: ResourceKindDesc = ResourceKindDesc::new(ResourceKindId::new(3), "atlas");
 
 fn main() {
+    let runtime = Box::leak(Box::new(Runtime::new(32, 64)));
+    let _ = install_global(runtime);
+
     let context = Context::root()
         .with(LabelKey::Frame, 7_u32)
         .with(LabelKey::Pass, 1_u32)
