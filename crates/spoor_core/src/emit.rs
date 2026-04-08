@@ -1,7 +1,7 @@
 // Copyright 2026 the Spoor Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use crate::{Context, CounterDesc, ResourceId, ResourceKindDesc, ScopeDesc, ScopeDescId};
+use crate::{Context, CounterDesc, FlowId, ResourceId, ResourceKindDesc, ScopeDesc, ScopeDescId};
 #[cfg(feature = "std")]
 use std::sync::OnceLock;
 
@@ -45,6 +45,17 @@ pub enum MarkerPhase {
     End,
 }
 
+/// Phase of a causal flow link.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum FlowPhase {
+    /// Starts a causal link.
+    Begin,
+    /// Continues a causal link across work.
+    Step,
+    /// Ends a causal link.
+    End,
+}
+
 /// Function table implemented by a concrete runtime backend.
 #[derive(Clone, Copy, Debug)]
 pub struct Backend {
@@ -64,6 +75,8 @@ pub struct Backend {
     pub resource_drop: fn(&ResourceKindDesc, ResourceId, Context),
     /// Frame, transaction, or pass boundary emission.
     pub frame_marker: fn(MarkerKind, MarkerPhase, Context),
+    /// Causal flow emission.
+    pub flow: fn(FlowId, FlowPhase, Context),
 }
 
 impl Backend {
@@ -77,6 +90,7 @@ impl Backend {
         resource_update: noop_resource_update,
         resource_drop: noop_resource_drop,
         frame_marker: noop_frame_marker,
+        flow: noop_flow,
     };
 }
 
@@ -136,6 +150,21 @@ pub fn frame_marker(kind: MarkerKind, phase: MarkerPhase, context: Context) {
     (backend().frame_marker)(kind, phase, context);
 }
 
+/// Starts a causal flow under a semantic context.
+pub fn flow_begin(flow_id: FlowId, context: Context) {
+    (backend().flow)(flow_id, FlowPhase::Begin, context);
+}
+
+/// Continues a causal flow under a semantic context.
+pub fn flow_step(flow_id: FlowId, context: Context) {
+    (backend().flow)(flow_id, FlowPhase::Step, context);
+}
+
+/// Ends a causal flow under a semantic context.
+pub fn flow_end(flow_id: FlowId, context: Context) {
+    (backend().flow)(flow_id, FlowPhase::End, context);
+}
+
 /// Installs a process-wide runtime backend.
 #[cfg(feature = "std")]
 pub fn install_backend(backend: Backend) -> Result<(), InstallBackendError> {
@@ -184,6 +213,8 @@ fn noop_resource_drop(_desc: &ResourceKindDesc, _resource_id: ResourceId, _conte
 
 fn noop_frame_marker(_kind: MarkerKind, _phase: MarkerPhase, _context: Context) {}
 
+fn noop_flow(_flow_id: FlowId, _phase: FlowPhase, _context: Context) {}
+
 const fn scope_desc_raw(id: ScopeDescId) -> u64 {
     id.get()
 }
@@ -191,10 +222,11 @@ const fn scope_desc_raw(id: ScopeDescId) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        MarkerKind, MarkerPhase, counter_add, frame_marker, resource_drop, scope_begin, scope_end,
+        MarkerKind, MarkerPhase, counter_add, flow_begin, flow_end, flow_step, frame_marker,
+        resource_drop, scope_begin, scope_end,
     };
     use crate::{
-        Context, CounterDesc, CounterDescId, ResourceId, ResourceKindDesc, ResourceKindId,
+        Context, CounterDesc, CounterDescId, FlowId, ResourceId, ResourceKindDesc, ResourceKindId,
         ScopeDesc, ScopeDescId,
     };
 
@@ -215,5 +247,8 @@ mod tests {
         counter_add(&counter, context, 5);
         resource_drop(&resource, ResourceId::new(7), context);
         frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
+        flow_begin(FlowId::new(12), context);
+        flow_step(FlowId::new(12), context);
+        flow_end(FlowId::new(12), context);
     }
 }

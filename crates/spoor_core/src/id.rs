@@ -49,9 +49,14 @@ define_id!(
     ResourceKindId
 );
 
+define_id!(
+    /// Stable id linking causally-related observations.
+    FlowId
+);
+
 #[cfg(test)]
 mod tests {
-    use super::{ContextId, CounterDescId, ResourceId, ResourceKindId, ScopeDescId};
+    use super::{ContextId, CounterDescId, FlowId, ResourceId, ResourceKindId, ScopeDescId};
 
     #[test]
     fn ids_round_trip() {
@@ -60,5 +65,6 @@ mod tests {
         assert_eq!(CounterDescId::new(3).get(), 3);
         assert_eq!(ResourceId::new(4).get(), 4);
         assert_eq!(ResourceKindId::new(5).get(), 5);
+        assert_eq!(FlowId::new(6).get(), 6);
     }
 }

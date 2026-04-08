@@ -3,7 +3,9 @@
 
 //! Export bridges for Spoor snapshots.
 
-use spoor_core::{Context, ContextId, LabelValue, MarkerKind, MarkerPhase, ResourceId, ScopeToken};
+use spoor_core::{
+    Context, ContextId, FlowPhase, LabelValue, MarkerKind, MarkerPhase, ResourceId, ScopeToken,
+};
 use spoor_runtime::{CounterKind, CounterSnapshot, Observation, Snapshot, TimedObservation};
 use std::{
     collections::HashMap,
@@ -25,7 +27,23 @@ pub fn to_chrome_trace_json(snapshot: &Snapshot) -> String {
 pub fn write_chrome_trace_json(snapshot: &Snapshot, writer: &mut impl Write) -> fmt::Result {
     let mut events = Vec::new();
 
-    events.push(build_metadata_event("process_name", 1, 0, "name", "spoor"));
+    events.push(build_metadata_event(
+        "process_name",
+        1,
+        0,
+        "name",
+        &snapshot.metadata.process_name,
+    ));
+    if let Some(session_name) = snapshot.metadata.session_name.as_deref() {
+        events.push(build_metadata_event(
+            "process_labels",
+            1,
+            0,
+            "labels",
+            session_name,
+        ));
+    }
+    events.push(build_capture_window_event(snapshot));
 
     for context in &snapshot.contexts {
         events.push(build_thread_name_event(
@@ -124,6 +142,46 @@ fn build_metadata_event(
 
 fn build_thread_name_event(context_id: ContextId, name: String) -> ExportEvent {
     build_metadata_event("thread_name", 1, context_id.get(), "name", &name)
+}
+
+fn build_capture_window_event(snapshot: &Snapshot) -> ExportEvent {
+    let mut json = String::new();
+    json.push('{');
+    write_json_field_str(&mut json, "name", "spoor_capture").expect("string write should succeed");
+    json.push(',');
+    write_json_field_str(&mut json, "cat", "spoor").expect("string write should succeed");
+    json.push(',');
+    write_json_field_str(&mut json, "ph", "i").expect("string write should succeed");
+    json.push_str(",\"s\":\"g\",");
+    write_json_field_u64(&mut json, "ts", snapshot.captured_at_micros)
+        .expect("string write should succeed");
+    json.push(',');
+    write_json_field_u64(&mut json, "pid", 1).expect("string write should succeed");
+    json.push(',');
+    write_json_field_u64(&mut json, "tid", 0).expect("string write should succeed");
+    json.push_str(",\"args\":{");
+    write_json_field_u64(
+        &mut json,
+        "capture_start_micros",
+        snapshot.capture_start_micros,
+    )
+    .expect("string write should succeed");
+    json.push(',');
+    write_json_field_u64(&mut json, "capture_end_micros", snapshot.captured_at_micros)
+        .expect("string write should succeed");
+    json.push(',');
+    write_json_field_u64(
+        &mut json,
+        "session_sequence",
+        snapshot.metadata.session_sequence,
+    )
+    .expect("string write should succeed");
+    json.push_str("}}");
+    ExportEvent {
+        ts_micros: snapshot.captured_at_micros,
+        order: 4,
+        json,
+    }
 }
 
 fn build_counter_event(
@@ -329,6 +387,39 @@ fn build_timed_observation(
                 json,
             })
         }
+        Observation::Flow {
+            flow_id,
+            phase,
+            context_id,
+        } => {
+            let context = snapshot
+                .context(*context_id)
+                .map(|context| context.context)
+                .unwrap_or_else(Context::root);
+            let mut json = String::new();
+            json.push('{');
+            write_json_field_str(&mut json, "name", "flow")?;
+            json.push(',');
+            write_json_field_str(&mut json, "cat", "flow")?;
+            json.push(',');
+            write_json_field_str(&mut json, "ph", flow_phase_code(*phase))?;
+            json.push_str(",\"bp\":\"e\",");
+            write_json_field_u64(&mut json, "ts", event.at_micros)?;
+            json.push(',');
+            write_json_field_u64(&mut json, "pid", 1)?;
+            json.push(',');
+            write_json_field_u64(&mut json, "tid", context_id.get())?;
+            json.push(',');
+            write_json_field_u64(&mut json, "id", flow_id.get())?;
+            json.push_str(",\"args\":{\"context\":");
+            write_context(&mut json, context)?;
+            json.push_str("}}");
+            Ok(ExportEvent {
+                ts_micros: event.at_micros,
+                order: 1,
+                json,
+            })
+        }
     }
 }
 
@@ -453,6 +544,14 @@ fn marker_name(kind: MarkerKind, phase: MarkerPhase) -> &'static str {
     }
 }
 
+fn flow_phase_code(phase: FlowPhase) -> &'static str {
+    match phase {
+        FlowPhase::Begin => "s",
+        FlowPhase::Step => "t",
+        FlowPhase::End => "f",
+    }
+}
+
 fn write_json_field_str(writer: &mut impl Write, key: &str, value: &str) -> fmt::Result {
     write_json_string(writer, key)?;
     writer.write_char(':')?;
@@ -484,8 +583,8 @@ fn write_json_string(writer: &mut impl Write, value: &str) -> fmt::Result {
 mod tests {
     use super::{to_chrome_trace_json, track_name};
     use spoor_core::{
-        Context, ContextId, CounterDesc, CounterDescId, LabelKey, MarkerKind, MarkerPhase,
-        ScopeToken,
+        Context, ContextId, CounterDesc, CounterDescId, FlowId, FlowPhase, LabelKey, MarkerKind,
+        MarkerPhase, ScopeToken,
     };
     use spoor_runtime::{
         ContextSnapshot, CounterKind, CounterSnapshot, Observation, Snapshot, TimedObservation,
@@ -494,6 +593,11 @@ mod tests {
     #[test]
     fn exporter_emits_metadata_context_tracks_and_scope_pairing() {
         let snapshot = Snapshot {
+            metadata: spoor_runtime::SnapshotMetadata {
+                process_name: String::from("spoor"),
+                session_name: Some(String::from("recording")),
+                session_sequence: 3,
+            },
             capture_start_micros: 0,
             captured_at_micros: 30,
             contexts: vec![
@@ -540,6 +644,14 @@ mod tests {
                         context_id: ContextId::new(1),
                     },
                 },
+                TimedObservation {
+                    at_micros: 26,
+                    observation: Observation::Flow {
+                        flow_id: FlowId::new(8),
+                        phase: FlowPhase::Begin,
+                        context_id: ContextId::new(1),
+                    },
+                },
             ],
             dropped_contexts: 1,
             dropped_counters: 1,
@@ -548,10 +660,13 @@ mod tests {
 
         let json = to_chrome_trace_json(&snapshot);
         assert!(json.contains("\"thread_name\""));
+        assert!(json.contains("\"process_labels\""));
         assert!(json.contains("frame=7 / pass=1"));
         assert!(json.contains("\"tid\":1"));
         assert!(json.contains("\"ph\":\"B\""));
         assert!(json.contains("\"ph\":\"E\""));
+        assert!(json.contains("\"ph\":\"s\""));
+        assert!(json.contains("\"spoor_capture\""));
         assert!(json.contains("\"spoor_dropped_contexts\""));
     }
 

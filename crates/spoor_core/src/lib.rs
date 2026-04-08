@@ -30,12 +30,13 @@ mod unit;
 pub use context::{CONTEXT_INLINE_CAPACITY, Context, ContextCapacityError, ContextEntry};
 pub use descriptor::{CounterDesc, ResourceKindDesc, ScopeDesc};
 pub use emit::{
-    Backend, MarkerKind, MarkerPhase, ScopeToken, counter_add, frame_marker, gauge_set,
-    resource_create, resource_drop, resource_update, scope_begin, scope_end,
+    Backend, FlowPhase, MarkerKind, MarkerPhase, ScopeToken, counter_add, flow_begin, flow_end,
+    flow_step, frame_marker, gauge_set, resource_create, resource_drop, resource_update,
+    scope_begin, scope_end,
 };
 #[cfg(feature = "std")]
 pub use emit::{InstallBackendError, install_backend};
-pub use id::{ContextId, CounterDescId, ResourceId, ResourceKindId, ScopeDescId};
+pub use id::{ContextId, CounterDescId, FlowId, ResourceId, ResourceKindId, ScopeDescId};
 pub use label::{LabelKey, LabelValue};
 pub use level::InstrumentationLevel;
 pub use unit::Unit;
