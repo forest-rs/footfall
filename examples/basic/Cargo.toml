@@ -16,6 +16,7 @@ description = "Top-level examples for the Spoor workspace."
 [dependencies]
 spoor = { features = ["std"], workspace = true }
 spoor_export.workspace = true
+spoor_memory = { features = ["std"], workspace = true }
 spoor_runtime.workspace = true
 
 [[bin]]

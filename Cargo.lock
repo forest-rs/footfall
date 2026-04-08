@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "spoor",
  "spoor_export",
+ "spoor_memory",
  "spoor_runtime",
 ]
 
@@ -28,6 +29,13 @@ version = "0.1.0"
 dependencies = [
  "spoor_core",
  "spoor_runtime",
+]
+
+[[package]]
+name = "spoor_memory"
+version = "0.1.0"
+dependencies = [
+ "spoor_core",
 ]
 
 [[package]]
