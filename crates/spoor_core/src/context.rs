@@ -154,7 +154,10 @@ mod tests {
         let mut context = Context::root();
         for index in 0..CONTEXT_INLINE_CAPACITY {
             context = context
-                .try_with(LabelKey::Node, index as u32)
+                .try_with(
+                    LabelKey::Node,
+                    u32::try_from(index).expect("context index should fit into u32"),
+                )
                 .expect("context entry should fit");
         }
 

@@ -16,6 +16,7 @@
 
 mod context;
 mod descriptor;
+mod emit;
 mod id;
 mod label;
 mod level;
@@ -23,6 +24,10 @@ mod unit;
 
 pub use context::{CONTEXT_INLINE_CAPACITY, Context, ContextCapacityError, ContextEntry};
 pub use descriptor::{CounterDesc, ResourceKindDesc, ScopeDesc};
+pub use emit::{
+    Backend, MarkerKind, MarkerPhase, ScopeToken, counter_add, frame_marker, gauge_set,
+    resource_create, resource_drop, resource_update, scope_begin, scope_end,
+};
 pub use id::{ContextId, CounterDescId, ResourceId, ResourceKindId, ScopeDescId};
 pub use label::{LabelKey, LabelValue};
 pub use level::InstrumentationLevel;

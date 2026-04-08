@@ -14,8 +14,9 @@ authors = ["Spoor Contributors"]
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/forest-rs/spoor"
 homepage = "https://github.com/forest-rs/spoor"
-keywords = []
-categories = []
+readme = "README.md"
+keywords = ["instrumentation", "observability", "profiling", "tracing"]
+categories = ["development-tools::debugging", "development-tools::profiling"]
 
 [workspace.dependencies]
 # Internal crate dependencies
