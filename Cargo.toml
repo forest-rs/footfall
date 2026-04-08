@@ -2,6 +2,7 @@
 members = [
     "crates/spoor",
     "crates/spoor_core",
+    "examples/basic",
 ]
 resolver = "2"
 

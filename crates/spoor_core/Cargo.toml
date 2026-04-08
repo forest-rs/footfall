@@ -1,0 +1,22 @@
+[package]
+name = "spoor_core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Core instrumentation primitives for the Spoor observability family."
+
+[features]
+default = []
+std = []
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true

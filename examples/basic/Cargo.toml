@@ -1,0 +1,23 @@
+[package]
+name = "spoor_examples"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+description = "Top-level examples for the Spoor workspace."
+
+[dependencies]
+spoor.workspace = true
+
+[[bin]]
+name = "basic"
+path = "src/main.rs"
+
+[lints]
+workspace = true
