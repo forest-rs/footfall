@@ -3,6 +3,15 @@
 version = 4
 
 [[package]]
+name = "basic"
+version = "0.1.0"
+dependencies = [
+ "spoor",
+ "spoor_export",
+ "spoor_runtime",
+]
+
+[[package]]
 name = "spoor"
 version = "0.1.0"
 dependencies = [
@@ -14,10 +23,10 @@ name = "spoor_core"
 version = "0.1.0"
 
 [[package]]
-name = "spoor_examples"
+name = "spoor_export"
 version = "0.1.0"
 dependencies = [
- "spoor",
+ "spoor_core",
  "spoor_runtime",
 ]
 

@@ -8,6 +8,7 @@ use spoor::{
     ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, counter_add, frame_marker,
     resource_update, scope_begin, scope_end,
 };
+use spoor_export::to_chrome_trace_json;
 use spoor_runtime::{Runtime, install_global};
 
 static RECORD_PASS: ScopeDesc = ScopeDesc::new(ScopeDescId::new(1), "record_pass");
@@ -29,4 +30,7 @@ fn main() {
     resource_update(&ATLAS, ResourceId::new(9), context, 8192);
     scope_end(scope);
     frame_marker(MarkerKind::Frame, MarkerPhase::End, context);
+
+    let snapshot = runtime.snapshot();
+    println!("{}", to_chrome_trace_json(&snapshot));
 }

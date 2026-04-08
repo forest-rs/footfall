@@ -2,6 +2,7 @@
 members = [
     "crates/spoor",
     "crates/spoor_core",
+    "crates/spoor_export",
     "crates/spoor_runtime",
     "examples/basic",
 ]
@@ -23,6 +24,7 @@ categories = ["development-tools::debugging", "development-tools::profiling"]
 # Internal crate dependencies
 spoor = { default-features = false, path = "crates/spoor" }
 spoor_core = { default-features = false, path = "crates/spoor_core" }
+spoor_export = { default-features = false, path = "crates/spoor_export" }
 spoor_runtime = { default-features = false, path = "crates/spoor_runtime" }
 
 [workspace.lints]

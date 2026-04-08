@@ -11,6 +11,7 @@ use spoor_core::{
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Mutex, OnceLock},
+    time::Instant,
 };
 
 /// Installs a runtime as the process-wide Spoor backend.
@@ -21,9 +22,10 @@ pub fn install_global(runtime: &'static Runtime) -> Result<(), InstallError> {
     install_backend(BACKEND).map_err(InstallError::BackendAlreadyInstalled)
 }
 
-/// In-process bounded collector for counters and observation records.
+/// In-process bounded collector for counters and timestamped observation records.
 #[derive(Debug)]
 pub struct Runtime {
+    created_at: Instant,
     state: Mutex<State>,
 }
 
@@ -32,6 +34,7 @@ impl Runtime {
     #[must_use]
     pub fn new(counter_capacity: usize, event_capacity: usize) -> Self {
         Self {
+            created_at: Instant::now(),
             state: Mutex::new(State::new(counter_capacity, event_capacity)),
         }
     }
@@ -44,11 +47,16 @@ impl Runtime {
             .lock()
             .expect("runtime mutex should not be poisoned");
         Snapshot {
-            counters: state.counters.values().copied().collect(),
+            captured_at_micros: self.now_micros(),
+            counters: state.counters.values().cloned().collect(),
             events: state.events.iter().cloned().collect(),
             dropped_counters: state.dropped_counters,
             dropped_events: state.dropped_events,
         }
+    }
+
+    fn now_micros(&self) -> u64 {
+        duration_to_micros(self.created_at.elapsed())
     }
 }
 
@@ -64,10 +72,12 @@ pub enum InstallError {
 /// Snapshot of counters and events retained by a [`Runtime`].
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Snapshot {
+    /// Time since runtime creation when the snapshot was captured.
+    pub captured_at_micros: u64,
     /// Aggregated counters and gauges.
     pub counters: Vec<CounterSnapshot>,
-    /// Bounded sequence of observation records.
-    pub events: Vec<Observation>,
+    /// Bounded sequence of timestamped observation records.
+    pub events: Vec<TimedObservation>,
     /// Count of counter updates dropped due to counter-key capacity pressure.
     pub dropped_counters: u64,
     /// Count of events dropped due to event-capacity pressure.
@@ -75,16 +85,20 @@ pub struct Snapshot {
 }
 
 /// One aggregated counter or gauge value.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CounterSnapshot {
     /// Counter descriptor id.
     pub desc_id: CounterDescId,
+    /// Stable descriptor name.
+    pub name: &'static str,
     /// Semantic context for this aggregate.
     pub context: Context,
     /// Whether the value is additive or gauge-like.
     pub kind: CounterKind,
     /// Aggregated value.
     pub value: u64,
+    /// Last update time relative to runtime creation.
+    pub updated_at_micros: u64,
 }
 
 /// Distinguishes additive counters from gauges.
@@ -96,6 +110,15 @@ pub enum CounterKind {
     Gauge,
 }
 
+/// Observation paired with a timestamp relative to runtime creation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimedObservation {
+    /// Observation time in microseconds since runtime creation.
+    pub at_micros: u64,
+    /// Observation payload.
+    pub observation: Observation,
+}
+
 /// One retained observation record.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Observation {
@@ -103,6 +126,8 @@ pub enum Observation {
     ScopeBegin {
         /// Descriptor id for the scope.
         desc_id: ScopeDescId,
+        /// Stable descriptor name.
+        name: &'static str,
         /// Explicit semantic context.
         context: Context,
         /// Opaque scope token returned to the caller.
@@ -117,6 +142,8 @@ pub enum Observation {
     ResourceCreate {
         /// Resource kind id.
         kind_id: ResourceKindId,
+        /// Stable resource kind name.
+        kind_name: &'static str,
         /// Resource instance id.
         resource_id: ResourceId,
         /// Semantic context.
@@ -128,6 +155,8 @@ pub enum Observation {
     ResourceUpdate {
         /// Resource kind id.
         kind_id: ResourceKindId,
+        /// Stable resource kind name.
+        kind_name: &'static str,
         /// Resource instance id.
         resource_id: ResourceId,
         /// Semantic context.
@@ -139,6 +168,8 @@ pub enum Observation {
     ResourceDrop {
         /// Resource kind id.
         kind_id: ResourceKindId,
+        /// Stable resource kind name.
+        kind_name: &'static str,
         /// Resource instance id.
         resource_id: ResourceId,
         /// Semantic context.
@@ -155,13 +186,28 @@ pub enum Observation {
     },
 }
 
+impl Observation {
+    /// Returns the semantic context carried by this observation when present.
+    #[must_use]
+    pub fn context(&self) -> Option<Context> {
+        match self {
+            Self::ScopeBegin { context, .. }
+            | Self::ResourceCreate { context, .. }
+            | Self::ResourceUpdate { context, .. }
+            | Self::ResourceDrop { context, .. }
+            | Self::FrameMarker { context, .. } => Some(*context),
+            Self::ScopeEnd { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct State {
     counter_capacity: usize,
     event_capacity: usize,
     next_scope_token: u64,
     counters: HashMap<CounterKey, CounterSnapshot>,
-    events: VecDeque<Observation>,
+    events: VecDeque<TimedObservation>,
     dropped_counters: u64,
     dropped_events: u64,
 }
@@ -179,10 +225,11 @@ impl State {
         }
     }
 
-    fn counter_add(&mut self, desc: &CounterDesc, context: Context, value: u64) {
+    fn counter_add(&mut self, desc: &CounterDesc, context: Context, value: u64, at_micros: u64) {
         let key = CounterKey::new(desc.id(), context, CounterKind::Counter);
         if let Some(snapshot) = self.counters.get_mut(&key) {
             snapshot.value = snapshot.value.saturating_add(value);
+            snapshot.updated_at_micros = at_micros;
             return;
         }
 
@@ -195,17 +242,20 @@ impl State {
             key,
             CounterSnapshot {
                 desc_id: desc.id(),
+                name: desc.name(),
                 context,
                 kind: CounterKind::Counter,
                 value,
+                updated_at_micros: at_micros,
             },
         );
     }
 
-    fn gauge_set(&mut self, desc: &CounterDesc, context: Context, value: u64) {
+    fn gauge_set(&mut self, desc: &CounterDesc, context: Context, value: u64, at_micros: u64) {
         let key = CounterKey::new(desc.id(), context, CounterKind::Gauge);
         if let Some(snapshot) = self.counters.get_mut(&key) {
             snapshot.value = value;
+            snapshot.updated_at_micros = at_micros;
             return;
         }
 
@@ -218,9 +268,11 @@ impl State {
             key,
             CounterSnapshot {
                 desc_id: desc.id(),
+                name: desc.name(),
                 context,
                 kind: CounterKind::Gauge,
                 value,
+                updated_at_micros: at_micros,
             },
         );
     }
@@ -231,13 +283,16 @@ impl State {
         token
     }
 
-    fn push_event(&mut self, event: Observation) {
+    fn push_event(&mut self, observation: Observation, at_micros: u64) {
         if self.events.len() == self.event_capacity {
             self.dropped_events = self.dropped_events.saturating_add(1);
             return;
         }
 
-        self.events.push_back(event);
+        self.events.push_back(TimedObservation {
+            at_micros,
+            observation,
+        });
     }
 }
 
@@ -273,36 +328,43 @@ const BACKEND: Backend = Backend {
 
 fn backend_counter_add(desc: &CounterDesc, context: Context, value: u64) {
     with_runtime(|runtime| {
+        let at_micros = runtime.now_micros();
         let mut state = runtime
             .state
             .lock()
             .expect("runtime mutex should not be poisoned");
-        state.counter_add(desc, context, value);
+        state.counter_add(desc, context, value, at_micros);
     });
 }
 
 fn backend_gauge_set(desc: &CounterDesc, context: Context, value: u64) {
     with_runtime(|runtime| {
+        let at_micros = runtime.now_micros();
         let mut state = runtime
             .state
             .lock()
             .expect("runtime mutex should not be poisoned");
-        state.gauge_set(desc, context, value);
+        state.gauge_set(desc, context, value, at_micros);
     });
 }
 
 fn backend_scope_begin(desc: &ScopeDesc, context: Context) -> ScopeToken {
     with_runtime(|runtime| {
+        let at_micros = runtime.now_micros();
         let mut state = runtime
             .state
             .lock()
             .expect("runtime mutex should not be poisoned");
         let token = state.next_scope_token();
-        state.push_event(Observation::ScopeBegin {
-            desc_id: desc.id(),
-            context,
-            token,
-        });
+        state.push_event(
+            Observation::ScopeBegin {
+                desc_id: desc.id(),
+                name: desc.name(),
+                context,
+                token,
+            },
+            at_micros,
+        );
         token
     })
     .unwrap_or_else(|| ScopeToken::new(desc.id().get()))
@@ -310,11 +372,12 @@ fn backend_scope_begin(desc: &ScopeDesc, context: Context) -> ScopeToken {
 
 fn backend_scope_end(token: ScopeToken) {
     with_runtime(|runtime| {
+        let at_micros = runtime.now_micros();
         let mut state = runtime
             .state
             .lock()
             .expect("runtime mutex should not be poisoned");
-        state.push_event(Observation::ScopeEnd { token });
+        state.push_event(Observation::ScopeEnd { token }, at_micros);
     });
 }
 
@@ -325,16 +388,21 @@ fn backend_resource_create(
     size: u64,
 ) {
     with_runtime(|runtime| {
+        let at_micros = runtime.now_micros();
         let mut state = runtime
             .state
             .lock()
             .expect("runtime mutex should not be poisoned");
-        state.push_event(Observation::ResourceCreate {
-            kind_id: desc.id(),
-            resource_id,
-            context,
-            size,
-        });
+        state.push_event(
+            Observation::ResourceCreate {
+                kind_id: desc.id(),
+                kind_name: desc.name(),
+                resource_id,
+                context,
+                size,
+            },
+            at_micros,
+        );
     });
 }
 
@@ -345,49 +413,68 @@ fn backend_resource_update(
     size: u64,
 ) {
     with_runtime(|runtime| {
+        let at_micros = runtime.now_micros();
         let mut state = runtime
             .state
             .lock()
             .expect("runtime mutex should not be poisoned");
-        state.push_event(Observation::ResourceUpdate {
-            kind_id: desc.id(),
-            resource_id,
-            context,
-            size,
-        });
+        state.push_event(
+            Observation::ResourceUpdate {
+                kind_id: desc.id(),
+                kind_name: desc.name(),
+                resource_id,
+                context,
+                size,
+            },
+            at_micros,
+        );
     });
 }
 
 fn backend_resource_drop(desc: &ResourceKindDesc, resource_id: ResourceId, context: Context) {
     with_runtime(|runtime| {
+        let at_micros = runtime.now_micros();
         let mut state = runtime
             .state
             .lock()
             .expect("runtime mutex should not be poisoned");
-        state.push_event(Observation::ResourceDrop {
-            kind_id: desc.id(),
-            resource_id,
-            context,
-        });
+        state.push_event(
+            Observation::ResourceDrop {
+                kind_id: desc.id(),
+                kind_name: desc.name(),
+                resource_id,
+                context,
+            },
+            at_micros,
+        );
     });
 }
 
 fn backend_frame_marker(kind: MarkerKind, phase: MarkerPhase, context: Context) {
     with_runtime(|runtime| {
+        let at_micros = runtime.now_micros();
         let mut state = runtime
             .state
             .lock()
             .expect("runtime mutex should not be poisoned");
-        state.push_event(Observation::FrameMarker {
-            kind,
-            phase,
-            context,
-        });
+        state.push_event(
+            Observation::FrameMarker {
+                kind,
+                phase,
+                context,
+            },
+            at_micros,
+        );
     });
 }
 
 fn with_runtime<T>(f: impl FnOnce(&Runtime) -> T) -> Option<T> {
     RUNTIME.get().map(|runtime| f(runtime))
+}
+
+fn duration_to_micros(duration: std::time::Duration) -> u64 {
+    let micros = duration.as_micros();
+    u64::try_from(micros).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
@@ -399,7 +486,7 @@ mod tests {
     };
 
     #[test]
-    fn runtime_collects_counters_and_events() {
+    fn runtime_collects_named_timestamped_counters_and_events() {
         let runtime = Runtime::new(16, 16);
         let counter = CounterDesc::count(CounterDescId::new(1), "ops");
         let resource = ResourceKindDesc::new(ResourceKindId::new(2), "atlas");
@@ -410,26 +497,37 @@ mod tests {
             .state
             .lock()
             .expect("runtime mutex should not be poisoned");
-        state.counter_add(&counter, context, 5);
-        state.gauge_set(&counter, context, 9);
+        state.counter_add(&counter, context, 5, 10);
+        state.gauge_set(&counter, context, 9, 11);
         let token = state.next_scope_token();
-        state.push_event(Observation::ScopeBegin {
-            desc_id: scope.id(),
-            context,
-            token,
-        });
-        state.push_event(Observation::ScopeEnd { token });
-        state.push_event(Observation::ResourceCreate {
-            kind_id: resource.id(),
-            resource_id: ResourceId::new(7),
-            context,
-            size: 64,
-        });
-        state.push_event(Observation::FrameMarker {
-            kind: MarkerKind::Frame,
-            phase: MarkerPhase::Begin,
-            context,
-        });
+        state.push_event(
+            Observation::ScopeBegin {
+                desc_id: scope.id(),
+                name: scope.name(),
+                context,
+                token,
+            },
+            12,
+        );
+        state.push_event(Observation::ScopeEnd { token }, 13);
+        state.push_event(
+            Observation::ResourceCreate {
+                kind_id: resource.id(),
+                kind_name: resource.name(),
+                resource_id: ResourceId::new(7),
+                context,
+                size: 64,
+            },
+            14,
+        );
+        state.push_event(
+            Observation::FrameMarker {
+                kind: MarkerKind::Frame,
+                phase: MarkerPhase::Begin,
+                context,
+            },
+            15,
+        );
         drop(state);
 
         let snapshot = runtime.snapshot();
@@ -438,9 +536,13 @@ mod tests {
             snapshot
                 .counters
                 .iter()
-                .any(|counter| counter.kind == CounterKind::Counter && counter.value == 5)
+                .any(|counter| counter.kind == CounterKind::Counter
+                    && counter.value == 5
+                    && counter.name == "ops"
+                    && counter.updated_at_micros == 10)
         );
         assert_eq!(snapshot.events.len(), 4);
+        assert_eq!(snapshot.events[0].at_micros, 12);
     }
 
     #[test]
@@ -450,16 +552,22 @@ mod tests {
             .state
             .lock()
             .expect("runtime mutex should not be poisoned");
-        state.push_event(Observation::FrameMarker {
-            kind: MarkerKind::Frame,
-            phase: MarkerPhase::Begin,
-            context: Context::root(),
-        });
-        state.push_event(Observation::FrameMarker {
-            kind: MarkerKind::Frame,
-            phase: MarkerPhase::End,
-            context: Context::root(),
-        });
+        state.push_event(
+            Observation::FrameMarker {
+                kind: MarkerKind::Frame,
+                phase: MarkerPhase::Begin,
+                context: Context::root(),
+            },
+            1,
+        );
+        state.push_event(
+            Observation::FrameMarker {
+                kind: MarkerKind::Frame,
+                phase: MarkerPhase::End,
+                context: Context::root(),
+            },
+            2,
+        );
         drop(state);
 
         let snapshot = runtime.snapshot();
