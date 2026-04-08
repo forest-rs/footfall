@@ -1,5 +1,5 @@
 [package]
-name = "spoor_examples"
+name = "basic"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
