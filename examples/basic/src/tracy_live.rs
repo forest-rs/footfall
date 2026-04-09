@@ -5,16 +5,28 @@
 
 use spoor::{
     Context, CounterDesc, CounterDescId, LabelKey, MarkerKind, MarkerPhase, ResourceId,
-    ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, counter_add, frame_marker,
-    resource_create, resource_drop, resource_update, scope_begin, scope_end,
+    ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, SourceLocation, counter_add,
+    frame_marker, resource_create, resource_drop, resource_update, scope_begin, scope_end,
 };
 use spoor_memory::{CacheMetrics, CacheStats, ScratchMetrics, TrackedScratchVec};
 use spoor_tracy::{Tracy, install_global};
 use std::{thread::sleep, time::Duration};
 
-static RECORD_FRAME: ScopeDesc = ScopeDesc::new(ScopeDescId::new(1), "record_frame");
-static TESSELLATE_NODE: ScopeDesc = ScopeDesc::new(ScopeDescId::new(2), "tessellate_node");
-static UPLOAD_ATLAS: ScopeDesc = ScopeDesc::new(ScopeDescId::new(3), "upload_atlas");
+static RECORD_FRAME: ScopeDesc = ScopeDesc::with_location(
+    ScopeDescId::new(1),
+    "record_frame",
+    SourceLocation::new("tracy_live::run_frame", file!(), 95),
+);
+static TESSELLATE_NODE: ScopeDesc = ScopeDesc::with_location(
+    ScopeDescId::new(2),
+    "tessellate_node",
+    SourceLocation::new("tracy_live::run_frame", file!(), 96),
+);
+static UPLOAD_ATLAS: ScopeDesc = ScopeDesc::with_location(
+    ScopeDescId::new(3),
+    "upload_atlas",
+    SourceLocation::new("tracy_live::run_frame", file!(), 121),
+);
 
 static DRAW_OPS: CounterDesc = CounterDesc::count(CounterDescId::new(10), "draw_ops");
 static UPLOAD_BYTES: CounterDesc = CounterDesc::bytes(CounterDescId::new(11), "upload_bytes");
@@ -37,8 +49,6 @@ fn main() {
     let tracy = Box::leak(Box::new(Tracy::new()));
     install_global(tracy).expect("global Tracy backend should install once");
     tracy.set_current_thread_name("main");
-    let pid = std::process::id();
-
     let scratch_metrics = ScratchMetrics {
         current_bytes: &SCRATCH_CURRENT,
         peak_bytes: &SCRATCH_PEAK,
@@ -51,24 +61,9 @@ fn main() {
         eviction_count: &CACHE_EVICTIONS,
     };
 
-    println!(
-        "Tracy example pid={pid} running={} connected={}",
-        tracy.is_running(),
-        tracy.is_connected()
-    );
+    println!("running Tracy live example for {FRAME_COUNT} frames");
 
-    println!(
-        "running Tracy live example for {FRAME_COUNT} frames (connected: {})",
-        tracy.is_connected()
-    );
-
-    let mut reported_connected = tracy.is_connected();
     for frame in 0..FRAME_COUNT {
-        let connected = tracy.is_connected();
-        if connected && !reported_connected {
-            println!("Tracy connected on frame {frame}");
-        }
-        reported_connected = connected;
         run_frame(frame, scratch_metrics, cache_metrics);
     }
 

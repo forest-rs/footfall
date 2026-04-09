@@ -3,18 +3,75 @@
 
 use crate::{CounterDescId, ResourceKindId, ScopeDescId, Unit};
 
+/// Static source location associated with a descriptor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SourceLocation {
+    function: &'static str,
+    file: &'static str,
+    line: u32,
+}
+
+impl SourceLocation {
+    /// Creates a new static source location.
+    #[must_use]
+    pub const fn new(function: &'static str, file: &'static str, line: u32) -> Self {
+        Self {
+            function,
+            file,
+            line,
+        }
+    }
+
+    /// Returns the stable function name.
+    #[must_use]
+    pub const fn function(self) -> &'static str {
+        self.function
+    }
+
+    /// Returns the stable file path.
+    #[must_use]
+    pub const fn file(self) -> &'static str {
+        self.file
+    }
+
+    /// Returns the 1-based source line.
+    #[must_use]
+    pub const fn line(self) -> u32 {
+        self.line
+    }
+}
+
 /// Static metadata describing one scope kind.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ScopeDesc {
     id: ScopeDescId,
     name: &'static str,
+    location: Option<SourceLocation>,
 }
 
 impl ScopeDesc {
     /// Creates a new scope descriptor.
     #[must_use]
     pub const fn new(id: ScopeDescId, name: &'static str) -> Self {
-        Self { id, name }
+        Self {
+            id,
+            name,
+            location: None,
+        }
+    }
+
+    /// Creates a new scope descriptor with static source location metadata.
+    #[must_use]
+    pub const fn with_location(
+        id: ScopeDescId,
+        name: &'static str,
+        location: SourceLocation,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            location: Some(location),
+        }
     }
 
     /// Returns the scope descriptor id.
@@ -27,6 +84,12 @@ impl ScopeDesc {
     #[must_use]
     pub const fn name(self) -> &'static str {
         self.name
+    }
+
+    /// Returns the static source location when one is available.
+    #[must_use]
+    pub const fn location(self) -> Option<SourceLocation> {
+        self.location
     }
 }
 
@@ -105,7 +168,7 @@ impl ResourceKindDesc {
 
 #[cfg(test)]
 mod tests {
-    use super::{CounterDesc, ResourceKindDesc, ScopeDesc};
+    use super::{CounterDesc, ResourceKindDesc, ScopeDesc, SourceLocation};
     use crate::{CounterDescId, ResourceKindId, ScopeDescId, Unit};
 
     #[test]
@@ -118,6 +181,13 @@ mod tests {
     fn scope_descriptor_exposes_name() {
         let desc = ScopeDesc::new(ScopeDescId::new(2), "record_pass");
         assert_eq!(desc.name(), "record_pass");
+    }
+
+    #[test]
+    fn scope_descriptor_can_carry_source_location() {
+        let location = SourceLocation::new("record_pass", "record.rs", 42);
+        let desc = ScopeDesc::with_location(ScopeDescId::new(2), "record_pass", location);
+        assert_eq!(desc.location(), Some(location));
     }
 
     #[test]

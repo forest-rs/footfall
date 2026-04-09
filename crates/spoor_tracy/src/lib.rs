@@ -21,8 +21,8 @@
 
 use spoor_core::{
     Backend, Context, CounterDesc, CounterDescId, FlowId, FlowPhase, InstallBackendError,
-    LabelValue, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ScopeDesc, ScopeToken, Unit,
-    install_backend,
+    LabelValue, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ScopeDesc, ScopeDescId,
+    ScopeToken, SourceLocation, Unit, install_backend,
 };
 use std::{
     cell::RefCell,
@@ -34,7 +34,9 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
-use tracy_client::{Client, Frame, FrameName, PlotConfiguration, PlotFormat, PlotName, Span};
+use tracy_client::{
+    Client, Frame, FrameName, PlotConfiguration, PlotFormat, PlotName, Span, SpanLocation,
+};
 
 /// Installs a Tracy backend as the process-wide Spoor backend.
 pub fn install_global(tracy: &'static Tracy) -> Result<(), InstallError> {
@@ -60,6 +62,7 @@ pub struct Tracy {
     callstack_depth: u16,
     next_scope_token: AtomicU64,
     counters: Mutex<CounterState>,
+    locations: Mutex<HashMap<ScopeDescId, &'static SpanLocation>>,
 }
 
 impl Tracy {
@@ -77,6 +80,7 @@ impl Tracy {
             callstack_depth,
             next_scope_token: AtomicU64::new(1),
             counters: Mutex::new(CounterState::default()),
+            locations: Mutex::new(HashMap::new()),
         }
     }
 
@@ -127,29 +131,6 @@ impl Tracy {
         Client::is_running()
     }
 
-    /// Emits a tiny amount of direct Tracy traffic to make profiler attachment easy to verify.
-    ///
-    /// This is primarily useful in examples and debugging harnesses where an immediately-visible
-    /// Tracy zone and plot make it obvious that the live client path is active.
-    pub fn prime_connection(&self) {
-        self.register_current_thread();
-        let span = self.client.clone().span_alloc(
-            Some("spoor_bootstrap"),
-            "spoor_tracy_prime",
-            "spoor_tracy",
-            1,
-            self.callstack_depth,
-        );
-        span.emit_text("spoor_tracy bootstrap");
-        span.emit_value(1);
-        self.client.plot(
-            *BOOTSTRAP_PLOT.get_or_init(|| PlotName::new_leak(String::from("spoor_bootstrap"))),
-            1.0,
-        );
-        self.client
-            .message("spoor_tracy bootstrap", self.callstack_depth);
-    }
-
     fn next_scope_token(&self) -> ScopeToken {
         let raw = self.next_scope_token.fetch_add(1, Ordering::Relaxed);
         ScopeToken::new(raw)
@@ -157,14 +138,19 @@ impl Tracy {
 
     fn begin_scope(&self, desc: &ScopeDesc, context: Context) -> ScopeToken {
         let token = self.next_scope_token();
-        let line = u32::try_from(desc.id().get()).unwrap_or(u32::MAX);
-        let span = self.client.clone().span_alloc(
-            Some(desc.name()),
-            "spoor_scope",
-            "spoor",
-            line,
-            self.callstack_depth,
-        );
+        let span = if let Some(location) = desc.location() {
+            let location = self.cached_span_location(desc, location);
+            self.client.clone().span(location, self.callstack_depth)
+        } else {
+            let line = u32::try_from(desc.id().get()).unwrap_or(u32::MAX);
+            self.client.clone().span_alloc(
+                Some(desc.name()),
+                "spoor_scope",
+                "spoor",
+                line,
+                self.callstack_depth,
+            )
+        };
 
         let context_text = context_text(context);
         if !context_text.is_empty() {
@@ -176,6 +162,20 @@ impl Tracy {
         });
 
         token
+    }
+
+    fn cached_span_location(
+        &self,
+        desc: &ScopeDesc,
+        location: SourceLocation,
+    ) -> &'static SpanLocation {
+        let mut locations = self
+            .locations
+            .lock()
+            .expect("tracy location mutex should not be poisoned");
+        locations
+            .entry(desc.id())
+            .or_insert_with(|| leak_span_location(desc.name(), location))
     }
 
     fn end_scope(&self, token: ScopeToken) {
@@ -370,8 +370,6 @@ fn frame_name(kind: MarkerKind) -> FrameName {
 static FRAME_NAME: OnceLock<FrameName> = OnceLock::new();
 static TRANSACTION_NAME: OnceLock<FrameName> = OnceLock::new();
 static PASS_NAME: OnceLock<FrameName> = OnceLock::new();
-static BOOTSTRAP_PLOT: OnceLock<PlotName> = OnceLock::new();
-
 fn resource_message(
     verb: &str,
     desc: &ResourceKindDesc,
@@ -394,6 +392,19 @@ fn resource_message(
         let _ = write!(message, " [{context}]");
     }
     message
+}
+
+fn leak_span_location(name: &str, location: SourceLocation) -> &'static SpanLocation {
+    let type_name = Box::leak(format!("{}::S", location.function()).into_boxed_str());
+    let name = Box::leak(format!("{name}\0").into_boxed_str());
+    let file = Box::leak(format!("{}\0", location.file()).into_boxed_str());
+    let location = tracy_client::internal::make_span_location(
+        type_name,
+        name.as_ptr(),
+        file.as_ptr(),
+        location.line(),
+    );
+    Box::leak(Box::new(location))
 }
 
 fn context_text(context: Context) -> String {

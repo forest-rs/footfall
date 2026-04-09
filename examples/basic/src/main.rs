@@ -5,17 +5,29 @@
 
 use spoor::{
     Context, CounterDesc, CounterDescId, FlowId, LabelKey, MarkerKind, MarkerPhase, ResourceId,
-    ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, counter_add, flow_begin, flow_end,
-    flow_step, frame_marker, resource_create, resource_drop, resource_update, scope_begin,
-    scope_end,
+    ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, SourceLocation, counter_add,
+    flow_begin, flow_end, flow_step, frame_marker, resource_create, resource_drop, resource_update,
+    scope_begin, scope_end,
 };
 use spoor_export::to_chrome_trace_json;
 use spoor_memory::{CacheMetrics, CacheStats, ScratchMetrics, TrackedScratchVec};
 use spoor_runtime::{Runtime, install_global};
 
-static RECORD_FRAME: ScopeDesc = ScopeDesc::new(ScopeDescId::new(1), "record_frame");
-static TESSELLATE_NODE: ScopeDesc = ScopeDesc::new(ScopeDescId::new(2), "tessellate_node");
-static UPLOAD_ATLAS: ScopeDesc = ScopeDesc::new(ScopeDescId::new(3), "upload_atlas");
+static RECORD_FRAME: ScopeDesc = ScopeDesc::with_location(
+    ScopeDescId::new(1),
+    "record_frame",
+    SourceLocation::new("basic::main", file!(), 82),
+);
+static TESSELLATE_NODE: ScopeDesc = ScopeDesc::with_location(
+    ScopeDescId::new(2),
+    "tessellate_node",
+    SourceLocation::new("basic::main", file!(), 83),
+);
+static UPLOAD_ATLAS: ScopeDesc = ScopeDesc::with_location(
+    ScopeDescId::new(3),
+    "upload_atlas",
+    SourceLocation::new("basic::main", file!(), 98),
+);
 
 static DRAW_OPS: CounterDesc = CounterDesc::count(CounterDescId::new(10), "draw_ops");
 static UPLOAD_BYTES: CounterDesc = CounterDesc::bytes(CounterDescId::new(11), "upload_bytes");

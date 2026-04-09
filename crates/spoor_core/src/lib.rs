@@ -28,7 +28,7 @@ mod level;
 mod unit;
 
 pub use context::{CONTEXT_INLINE_CAPACITY, Context, ContextCapacityError, ContextEntry};
-pub use descriptor::{CounterDesc, ResourceKindDesc, ScopeDesc};
+pub use descriptor::{CounterDesc, ResourceKindDesc, ScopeDesc, SourceLocation};
 pub use emit::{
     Backend, FlowPhase, MarkerKind, MarkerPhase, ScopeToken, counter_add, flow_begin, flow_end,
     flow_step, frame_marker, gauge_set, resource_create, resource_drop, resource_update,
