@@ -8,8 +8,11 @@ use spoor::{
     ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, SourceLocation, counter_add,
     frame_marker, resource_create, resource_drop, resource_update, scope_begin, scope_end,
 };
+use spoor_fanout::{Fanout, install_global as install_fanout};
 use spoor_memory::{CacheMetrics, CacheStats, ScratchMetrics, TrackedScratchVec};
-use spoor_tracy::{Tracy, install_global};
+use spoor_runtime::{Runtime, backend as runtime_backend, register_global as register_runtime};
+use spoor_session::{Chunking, Consumer, Envelope, Payload, publish_snapshot};
+use spoor_tracy::{Tracy, backend as tracy_backend, register_global as register_tracy};
 use std::{thread::sleep, time::Duration};
 
 static RECORD_FRAME: ScopeDesc = ScopeDesc::with_location(
@@ -46,8 +49,14 @@ static ATLAS_ID: ResourceId = ResourceId::new(9);
 const FRAME_COUNT: u32 = 300;
 
 fn main() {
+    let mut runtime = Runtime::named("tracy_live", 512, 2048);
+    runtime.set_session_name("tracy_live");
+    let runtime = Box::leak(Box::new(runtime));
     let tracy = Box::leak(Box::new(Tracy::new()));
-    install_global(tracy).expect("global Tracy backend should install once");
+    register_runtime(runtime).expect("global runtime should register once");
+    register_tracy(tracy).expect("global Tracy backend should register once");
+    let fanout = Box::leak(Box::new(Fanout::new(runtime_backend(), tracy_backend())));
+    install_fanout(fanout).expect("fanout backend should install once");
     tracy.set_current_thread_name("main");
     let scratch_metrics = ScratchMetrics {
         current_bytes: &SCRATCH_CURRENT,
@@ -75,6 +84,15 @@ fn main() {
             .with(LabelKey::Pass, 1_u32)
             .with(LabelKey::Cache, "glyph_atlas")
             .with(LabelKey::Resource, ATLAS_ID),
+    );
+
+    let snapshot = runtime.drain_snapshot();
+    let mut consumer = SummaryConsumer::default();
+    publish_snapshot(&snapshot, Chunking::default(), &mut consumer)
+        .expect("session publication should succeed");
+    println!(
+        "captured {} session envelopes, {} counters, {} events",
+        consumer.envelopes, consumer.counters, consumer.events
     );
 }
 
@@ -133,4 +151,29 @@ fn run_frame(frame: u32, scratch_metrics: ScratchMetrics, cache_metrics: CacheMe
     scope_end(frame_scope);
     frame_marker(MarkerKind::Frame, MarkerPhase::End, frame_context);
     sleep(Duration::from_millis(8));
+}
+
+#[derive(Default)]
+struct SummaryConsumer {
+    envelopes: u64,
+    counters: usize,
+    events: usize,
+}
+
+impl Consumer for SummaryConsumer {
+    type Error = core::convert::Infallible;
+
+    fn consume(&mut self, envelope: Envelope<'_>) -> Result<(), Self::Error> {
+        self.envelopes = self.envelopes.saturating_add(1);
+        match envelope.payload {
+            Payload::Counters(counters) => {
+                self.counters = self.counters.saturating_add(counters.len());
+            }
+            Payload::Events(events) => {
+                self.events = self.events.saturating_add(events.len());
+            }
+            Payload::SnapshotStart(_) | Payload::Contexts(_) | Payload::SnapshotEnd(_) => {}
+        }
+        Ok(())
+    }
 }

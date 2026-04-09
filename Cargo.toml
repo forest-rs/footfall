@@ -3,8 +3,11 @@ members = [
     "crates/spoor",
     "crates/spoor_core",
     "crates/spoor_export",
+    "crates/spoor_fanout",
     "crates/spoor_memory",
     "crates/spoor_runtime",
+    "crates/spoor_session",
+    "crates/spoor_session_wtransport",
     "crates/spoor_tracy",
     "examples/basic",
 ]
@@ -27,8 +30,11 @@ categories = ["development-tools::debugging", "development-tools::profiling"]
 spoor = { default-features = false, path = "crates/spoor" }
 spoor_core = { default-features = false, path = "crates/spoor_core" }
 spoor_export = { default-features = false, path = "crates/spoor_export" }
+spoor_fanout = { default-features = false, path = "crates/spoor_fanout" }
 spoor_memory = { default-features = false, path = "crates/spoor_memory" }
 spoor_runtime = { default-features = false, path = "crates/spoor_runtime" }
+spoor_session = { default-features = false, path = "crates/spoor_session" }
+spoor_session_wtransport = { default-features = false, path = "crates/spoor_session_wtransport" }
 spoor_tracy = { default-features = false, path = "crates/spoor_tracy" }
 tracy-client = { default-features = false, version = "0.18.4" }
 

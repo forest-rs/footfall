@@ -1,0 +1,259 @@
+// Copyright 2026 the Spoor Authors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+use spoor::LabelKey;
+use spoor_session::{
+    OwnedContextEntry, OwnedLabelValue, OwnedObservation, OwnedSessionEnvelope, OwnedSessionPayload,
+};
+use std::collections::BTreeMap;
+
+#[derive(Debug)]
+pub(crate) struct SessionSummary {
+    pub(crate) process_name: String,
+    pub(crate) session_name: Option<String>,
+    pub(crate) context_rows: usize,
+    pub(crate) counter_rows: usize,
+    pub(crate) event_rows: usize,
+    pub(crate) caches: Vec<CacheSummary>,
+    pub(crate) resources: Vec<ResourceSummary>,
+}
+
+#[derive(Debug)]
+pub(crate) struct CacheSummary {
+    pub(crate) cache: String,
+    pub(crate) current_bytes: u64,
+    pub(crate) hits: u64,
+    pub(crate) misses: u64,
+    pub(crate) evictions: u64,
+}
+
+#[derive(Debug)]
+pub(crate) struct ResourceSummary {
+    pub(crate) kind: String,
+    pub(crate) resource_id: u64,
+    pub(crate) owner: String,
+    pub(crate) creates: u64,
+    pub(crate) updates: u64,
+    pub(crate) drops: u64,
+    pub(crate) last_size: Option<u64>,
+}
+
+pub(crate) fn summarize(envelopes: &[OwnedSessionEnvelope]) -> SessionSummary {
+    let mut process_name = String::new();
+    let mut session_name = None;
+    let mut context_rows = 0_usize;
+    let mut counter_rows = 0_usize;
+    let mut event_rows = 0_usize;
+    let mut contexts = BTreeMap::<u64, Vec<OwnedContextEntry>>::new();
+    let mut caches = BTreeMap::<String, CacheSummary>::new();
+    let mut resources = BTreeMap::<(String, u64, String), ResourceSummary>::new();
+
+    for envelope in envelopes {
+        match &envelope.payload {
+            OwnedSessionPayload::SnapshotStart(summary) => {
+                process_name = summary.metadata.process_name.clone();
+                session_name = summary.metadata.session_name.clone();
+            }
+            OwnedSessionPayload::Contexts(rows) => {
+                context_rows += rows.len();
+                for row in rows {
+                    contexts.insert(row.id.get(), row.entries.clone());
+                }
+            }
+            OwnedSessionPayload::Counters(rows) => {
+                counter_rows += rows.len();
+                for row in rows {
+                    let Some(entries) = contexts.get(&row.context_id.get()) else {
+                        continue;
+                    };
+                    let Some(cache_name) = context_cache_name(entries) else {
+                        continue;
+                    };
+                    let cache = caches
+                        .entry(cache_name.clone())
+                        .or_insert_with(|| CacheSummary {
+                            cache: cache_name.clone(),
+                            current_bytes: 0,
+                            hits: 0,
+                            misses: 0,
+                            evictions: 0,
+                        });
+                    match row.name.as_str() {
+                        "cache_current_bytes" => cache.current_bytes = row.value,
+                        "cache_hits" => cache.hits = cache.hits.saturating_add(row.value),
+                        "cache_misses" => cache.misses = cache.misses.saturating_add(row.value),
+                        "cache_evictions" => {
+                            cache.evictions = cache.evictions.saturating_add(row.value);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            OwnedSessionPayload::Events(rows) => {
+                event_rows += rows.len();
+                for row in rows {
+                    match &row.observation {
+                        OwnedObservation::ResourceCreate {
+                            kind_name,
+                            resource_id,
+                            context_id,
+                            size,
+                            ..
+                        } => {
+                            let owner = contexts
+                                .get(&context_id.get())
+                                .map(|entries| format_context(entries))
+                                .unwrap_or_else(|| String::from("unknown"));
+                            let resource = resources
+                                .entry((kind_name.clone(), resource_id.get(), owner.clone()))
+                                .or_insert_with(|| ResourceSummary {
+                                    kind: kind_name.clone(),
+                                    resource_id: resource_id.get(),
+                                    owner,
+                                    creates: 0,
+                                    updates: 0,
+                                    drops: 0,
+                                    last_size: None,
+                                });
+                            resource.creates = resource.creates.saturating_add(1);
+                            resource.last_size = Some(*size);
+                        }
+                        OwnedObservation::ResourceUpdate {
+                            kind_name,
+                            resource_id,
+                            context_id,
+                            size,
+                            ..
+                        } => {
+                            let owner = contexts
+                                .get(&context_id.get())
+                                .map(|entries| format_context(entries))
+                                .unwrap_or_else(|| String::from("unknown"));
+                            let resource = resources
+                                .entry((kind_name.clone(), resource_id.get(), owner.clone()))
+                                .or_insert_with(|| ResourceSummary {
+                                    kind: kind_name.clone(),
+                                    resource_id: resource_id.get(),
+                                    owner,
+                                    creates: 0,
+                                    updates: 0,
+                                    drops: 0,
+                                    last_size: None,
+                                });
+                            resource.updates = resource.updates.saturating_add(1);
+                            resource.last_size = Some(*size);
+                        }
+                        OwnedObservation::ResourceDrop {
+                            kind_name,
+                            resource_id,
+                            context_id,
+                            ..
+                        } => {
+                            let owner = contexts
+                                .get(&context_id.get())
+                                .map(|entries| format_context(entries))
+                                .unwrap_or_else(|| String::from("unknown"));
+                            let resource = resources
+                                .entry((kind_name.clone(), resource_id.get(), owner.clone()))
+                                .or_insert_with(|| ResourceSummary {
+                                    kind: kind_name.clone(),
+                                    resource_id: resource_id.get(),
+                                    owner,
+                                    creates: 0,
+                                    updates: 0,
+                                    drops: 0,
+                                    last_size: None,
+                                });
+                            resource.drops = resource.drops.saturating_add(1);
+                        }
+                        OwnedObservation::ScopeBegin { .. }
+                        | OwnedObservation::ScopeEnd { .. }
+                        | OwnedObservation::FrameMarker { .. }
+                        | OwnedObservation::Flow { .. } => {}
+                    }
+                }
+            }
+            OwnedSessionPayload::SnapshotEnd(_) => {}
+        }
+    }
+
+    SessionSummary {
+        process_name,
+        session_name,
+        context_rows,
+        counter_rows,
+        event_rows,
+        caches: caches.into_values().collect(),
+        resources: resources.into_values().collect(),
+    }
+}
+
+pub(crate) fn print_summary(summary: &SessionSummary) {
+    println!("process: {}", summary.process_name);
+    if let Some(session_name) = &summary.session_name {
+        println!("session: {session_name}");
+    }
+    println!(
+        "rows: {} contexts, {} counters, {} events",
+        summary.context_rows, summary.counter_rows, summary.event_rows
+    );
+    if !summary.caches.is_empty() {
+        println!("caches:");
+        for cache in &summary.caches {
+            println!(
+                "  {} current={} hits={} misses={} evictions={}",
+                cache.cache, cache.current_bytes, cache.hits, cache.misses, cache.evictions
+            );
+        }
+    }
+    if !summary.resources.is_empty() {
+        println!("resources:");
+        for resource in &summary.resources {
+            println!(
+                "  {}#{} owner=[{}] creates={} updates={} drops={} last_size={}",
+                resource.kind,
+                resource.resource_id,
+                resource.owner,
+                resource.creates,
+                resource.updates,
+                resource.drops,
+                resource
+                    .last_size
+                    .map(|size| size.to_string())
+                    .unwrap_or_else(|| String::from("-"))
+            );
+        }
+    }
+}
+
+fn context_cache_name(entries: &[OwnedContextEntry]) -> Option<String> {
+    entries.iter().find_map(|entry| {
+        if entry.key == LabelKey::Cache {
+            match &entry.value {
+                OwnedLabelValue::String(value) => Some(value.clone()),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    })
+}
+
+fn format_context(entries: &[OwnedContextEntry]) -> String {
+    entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{}={}",
+                entry.key.as_str(),
+                match &entry.value {
+                    OwnedLabelValue::Unsigned(value) => value.to_string(),
+                    OwnedLabelValue::Signed(value) => value.to_string(),
+                    OwnedLabelValue::Bool(value) => value.to_string(),
+                    OwnedLabelValue::String(value) => value.clone(),
+                }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" / ")
+}

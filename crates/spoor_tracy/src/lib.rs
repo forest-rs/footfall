@@ -16,8 +16,8 @@
 //! Flow events are currently ignored by this backend because Tracy does not expose a strong native
 //! equivalent to Perfetto-style causal links.
 //!
-//! This backend is exclusive with other Spoor backends today. Installing it replaces the bounded
-//! in-process runtime path rather than multiplexing to it.
+//! This crate can install itself directly as the process-wide backend, or it can be registered and
+//! composed through an adapter such as `spoor_fanout`.
 
 use spoor_core::{
     Backend, Context, CounterDesc, CounterDescId, FlowId, FlowPhase, InstallBackendError,
@@ -40,11 +40,22 @@ use tracy_client::{
 
 /// Installs a Tracy backend as the process-wide Spoor backend.
 pub fn install_global(tracy: &'static Tracy) -> Result<(), InstallError> {
+    register_global(tracy)?;
+    install_backend(BACKEND).map_err(InstallError::BackendAlreadyInstalled)
+}
+
+/// Registers a Tracy instance for backend use without installing it into `spoor_core`.
+pub fn register_global(tracy: &'static Tracy) -> Result<(), InstallError> {
     tracy.register_current_thread();
     TRACY
         .set(tracy)
-        .map_err(|_| InstallError::TracyAlreadyInstalled)?;
-    install_backend(BACKEND).map_err(InstallError::BackendAlreadyInstalled)
+        .map_err(|_| InstallError::TracyAlreadyInstalled)
+}
+
+/// Returns the Tracy backend function table for fan-out composition.
+#[must_use]
+pub const fn backend() -> Backend {
+    BACKEND
 }
 
 /// Error returned when Tracy backend installation fails.

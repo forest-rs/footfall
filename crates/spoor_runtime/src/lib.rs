@@ -17,10 +17,21 @@ use std::{
 
 /// Installs a runtime as the process-wide Spoor backend.
 pub fn install_global(runtime: &'static Runtime) -> Result<(), InstallError> {
+    register_global(runtime)?;
+    install_backend(BACKEND).map_err(InstallError::BackendAlreadyInstalled)
+}
+
+/// Registers a runtime instance for backend use without installing it into `spoor_core`.
+pub fn register_global(runtime: &'static Runtime) -> Result<(), InstallError> {
     RUNTIME
         .set(runtime)
-        .map_err(|_| InstallError::RuntimeAlreadyInstalled)?;
-    install_backend(BACKEND).map_err(InstallError::BackendAlreadyInstalled)
+        .map_err(|_| InstallError::RuntimeAlreadyInstalled)
+}
+
+/// Returns the runtime backend function table for fan-out composition.
+#[must_use]
+pub const fn backend() -> Backend {
+    BACKEND
 }
 
 /// In-process bounded collector for counters and timestamped observation records.

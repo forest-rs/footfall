@@ -16,9 +16,13 @@ description = "Top-level examples for the Spoor workspace."
 [dependencies]
 spoor = { features = ["std"], workspace = true }
 spoor_export.workspace = true
+spoor_fanout.workspace = true
 spoor_memory = { features = ["std"], workspace = true }
 spoor_runtime.workspace = true
+spoor_session.workspace = true
+spoor_session_wtransport.workspace = true
 spoor_tracy.workspace = true
+tokio = { features = ["macros", "rt-multi-thread", "signal", "time"], version = "1.51.1" }
 
 [[bin]]
 name = "basic"
@@ -27,6 +31,18 @@ path = "src/main.rs"
 [[bin]]
 name = "tracy_live"
 path = "src/tracy_live.rs"
+
+[[bin]]
+name = "session_wtransport"
+path = "src/session_wtransport.rs"
+
+[[bin]]
+name = "session_server"
+path = "src/session_server.rs"
+
+[[bin]]
+name = "session_consumer"
+path = "src/session_consumer.rs"
 
 [lints]
 workspace = true

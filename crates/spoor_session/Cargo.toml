@@ -1,0 +1,23 @@
+[package]
+name = "spoor_session"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Transport-neutral session envelopes for the Spoor observability family."
+
+[dependencies]
+spoor_core.workspace = true
+spoor_runtime.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true
