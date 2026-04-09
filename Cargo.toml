@@ -5,6 +5,7 @@ members = [
     "crates/spoor_export",
     "crates/spoor_memory",
     "crates/spoor_runtime",
+    "crates/spoor_tracy",
     "examples/basic",
 ]
 resolver = "2"
@@ -28,6 +29,8 @@ spoor_core = { default-features = false, path = "crates/spoor_core" }
 spoor_export = { default-features = false, path = "crates/spoor_export" }
 spoor_memory = { default-features = false, path = "crates/spoor_memory" }
 spoor_runtime = { default-features = false, path = "crates/spoor_runtime" }
+spoor_tracy = { default-features = false, path = "crates/spoor_tracy" }
+tracy-client = { default-features = false, version = "0.18.4" }
 
 [workspace.lints]
 # LINEBENDER LINT SET - Cargo.toml - v8

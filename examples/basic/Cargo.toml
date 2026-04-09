@@ -18,10 +18,20 @@ spoor = { features = ["std"], workspace = true }
 spoor_export.workspace = true
 spoor_memory = { features = ["std"], workspace = true }
 spoor_runtime.workspace = true
+spoor_tracy.workspace = true
+tracy-client = { features = ["enable", "broadcast"], workspace = true }
 
 [[bin]]
 name = "basic"
 path = "src/main.rs"
+
+[[bin]]
+name = "tracy_live"
+path = "src/tracy_live.rs"
+
+[[bin]]
+name = "tracy_smoke"
+path = "src/tracy_smoke.rs"
 
 [lints]
 workspace = true
