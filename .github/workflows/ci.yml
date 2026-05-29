@@ -3,7 +3,7 @@ env:
   # version like 1.70. Note that we only specify MAJOR.MINOR and not PATCH so that bugfixes still
   # come automatically. If the version specified here is no longer the latest stable version,
   # then please feel free to submit a PR that adjusts it along with the potential clippy fixes.
-  RUST_STABLE_VER: "1.93" # In quotes because otherwise (e.g.) 1.70 would be interpreted as 1.7
+  RUST_STABLE_VER: "1.96" # In quotes because otherwise (e.g.) 1.70 would be interpreted as 1.7
   # The purpose of checking with the minimum supported Rust toolchain is to detect its staleness.
   # If the compilation fails, then the version specified here needs to be bumped up to reality.
   # Be sure to also update the rust-version property in the workspace Cargo.toml file,
@@ -12,36 +12,38 @@ env:
   # List of packages that will be checked with the minimum supported Rust version.
   # This should be limited to packages that are intended for publishing.
   RUST_MIN_VER_PKGS: >-
-    -p portolan
-    -p portolan_core
-    -p portolan_ingest
-    -p portolan_leit
-    -p portolan_live
-    -p portolan_observe
-    -p portolan_query
-    -p portolan_route
-    -p portolan_source
+    -p spoor
+    -p spoor_core
+    -p spoor_export
+    -p spoor_fanout
+    -p spoor_memory
+    -p spoor_runtime
+    -p spoor_session
+    -p spoor_session_wtransport
+    -p spoor_tracy
   # List of packages that don't support `no_std`.
   RUST_STD_ONLY_PKGS: >-
-    --exclude portolan_integration_tests
-    --exclude basic_routing
-    --exclude command_palette
-    --exclude live_session
-    --exclude virtual_workset
+    --exclude spoor
+    --exclude spoor_benchmarks
+    --exclude spoor_export
+    --exclude spoor_fanout
+    --exclude spoor_runtime
+    --exclude spoor_session
+    --exclude spoor_session_wtransport
+    --exclude spoor_tracy
+    --exclude basic
   # List of packages that don't support wasip1
   RUST_NO_WASIP1_PKGS: >-
-    --exclude portolan_integration_tests
-    --exclude basic_routing
-    --exclude command_palette
-    --exclude live_session
-    --exclude virtual_workset
+    --exclude spoor_benchmarks
+    --exclude spoor_session_wtransport
+    --exclude spoor_tracy
+    --exclude basic
   # List of packages that don't support wasm32
   RUST_NO_WASM_PKGS: >-
-    --exclude portolan_integration_tests
-    --exclude basic_routing
-    --exclude command_palette
-    --exclude live_session
-    --exclude virtual_workset
+    --exclude spoor_benchmarks
+    --exclude spoor_session_wtransport
+    --exclude spoor_tracy
+    --exclude basic
   # List of features that depend on the standard library and will be excluded from no_std checks.
   FEATURES_DEPENDING_ON_STD: "std,default"
 
@@ -330,4 +332,4 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: check typos
-        uses: crate-ci/typos@v1.39.0
+        uses: crate-ci/typos@v1.47.0
