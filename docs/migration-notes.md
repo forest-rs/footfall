@@ -24,7 +24,9 @@ seed:
 - `Trace`: all currently supported observations, including resources.
 
 Existing constructors keep working. New code that wants explicit policy should
-use the level-aware constructors or setters added by `spoor_runtime`.
+use `Runtime::with_level`, `Runtime::named_with_level`, or `Runtime::set_level`.
+For compatibility, `Runtime::new` and `Runtime::named` continue to default to
+`Trace`.
 
 ## Session Wire Format
 

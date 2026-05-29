@@ -33,6 +33,18 @@ impl InstrumentationLevel {
     pub const fn captures_resources(self) -> bool {
         matches!(self, Self::Trace)
     }
+
+    /// Returns `true` when frame, transaction, and pass markers are enabled.
+    #[must_use]
+    pub const fn captures_markers(self) -> bool {
+        matches!(self, Self::Scoped | Self::Trace)
+    }
+
+    /// Returns `true` when causal flow observations are enabled.
+    #[must_use]
+    pub const fn captures_flows(self) -> bool {
+        matches!(self, Self::Scoped | Self::Trace)
+    }
 }
 
 #[cfg(test)]
@@ -43,5 +55,13 @@ mod tests {
     fn trace_captures_resources() {
         assert!(InstrumentationLevel::Trace.captures_resources());
         assert!(!InstrumentationLevel::Scoped.captures_resources());
+    }
+
+    #[test]
+    fn scoped_captures_markers_and_flows() {
+        assert!(InstrumentationLevel::Scoped.captures_markers());
+        assert!(InstrumentationLevel::Scoped.captures_flows());
+        assert!(!InstrumentationLevel::Counters.captures_markers());
+        assert!(!InstrumentationLevel::Counters.captures_flows());
     }
 }

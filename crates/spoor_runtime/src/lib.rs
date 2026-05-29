@@ -5,13 +5,16 @@
 
 use spoor_core::{
     Backend, Context, ContextId, CounterDesc, CounterDescId, FlowId, FlowPhase,
-    InstallBackendError, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ResourceKindId,
-    ScopeDesc, ScopeDescId, ScopeToken, install_backend,
+    InstallBackendError, InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId,
+    ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, ScopeToken, install_backend,
 };
 use std::{
     collections::{HashMap, VecDeque},
     string::String,
-    sync::{Mutex, OnceLock},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicU8, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -40,6 +43,7 @@ pub struct Runtime {
     created_at: Instant,
     process_name: String,
     session_name: Option<String>,
+    level: AtomicU8,
     state: Mutex<State>,
 }
 
@@ -50,6 +54,16 @@ impl Runtime {
         Self::named("spoor", counter_capacity, event_capacity)
     }
 
+    /// Creates a runtime with explicit capacities and capture level.
+    #[must_use]
+    pub fn with_level(
+        counter_capacity: usize,
+        event_capacity: usize,
+        level: InstrumentationLevel,
+    ) -> Self {
+        Self::named_with_level("spoor", counter_capacity, event_capacity, level)
+    }
+
     /// Creates a runtime with an explicit process name.
     #[must_use]
     pub fn named(
@@ -57,12 +71,40 @@ impl Runtime {
         counter_capacity: usize,
         event_capacity: usize,
     ) -> Self {
+        Self::named_with_level(
+            process_name,
+            counter_capacity,
+            event_capacity,
+            InstrumentationLevel::Trace,
+        )
+    }
+
+    /// Creates a runtime with explicit process name, capacities, and capture level.
+    #[must_use]
+    pub fn named_with_level(
+        process_name: impl Into<String>,
+        counter_capacity: usize,
+        event_capacity: usize,
+        level: InstrumentationLevel,
+    ) -> Self {
         Self {
             created_at: Instant::now(),
             process_name: process_name.into(),
             session_name: None,
+            level: AtomicU8::new(level_to_u8(level)),
             state: Mutex::new(State::new(counter_capacity, event_capacity)),
         }
+    }
+
+    /// Returns the current runtime capture level.
+    #[must_use]
+    pub fn level(&self) -> InstrumentationLevel {
+        level_from_u8(self.level.load(Ordering::Relaxed))
+    }
+
+    /// Sets the runtime capture level used by subsequent backend emissions.
+    pub fn set_level(&self, level: InstrumentationLevel) {
+        self.level.store(level_to_u8(level), Ordering::Relaxed);
     }
 
     /// Sets an optional capture-session label for future snapshots.
@@ -529,6 +571,9 @@ const BACKEND: Backend = Backend {
 
 fn backend_counter_add(desc: &CounterDesc, context: Context, value: u64) {
     with_runtime(|runtime| {
+        if !runtime.level().captures_counters() {
+            return;
+        }
         let at_micros = runtime.now_micros();
         let mut state = runtime
             .state
@@ -540,6 +585,9 @@ fn backend_counter_add(desc: &CounterDesc, context: Context, value: u64) {
 
 fn backend_gauge_set(desc: &CounterDesc, context: Context, value: u64) {
     with_runtime(|runtime| {
+        if !runtime.level().captures_counters() {
+            return;
+        }
         let at_micros = runtime.now_micros();
         let mut state = runtime
             .state
@@ -551,6 +599,9 @@ fn backend_gauge_set(desc: &CounterDesc, context: Context, value: u64) {
 
 fn backend_scope_begin(desc: &ScopeDesc, context: Context) -> ScopeToken {
     with_runtime(|runtime| {
+        if !runtime.level().captures_scopes() {
+            return ScopeToken::new(desc.id().get());
+        }
         let at_micros = runtime.now_micros();
         let mut state = runtime
             .state
@@ -577,6 +628,9 @@ fn backend_scope_begin(desc: &ScopeDesc, context: Context) -> ScopeToken {
 
 fn backend_scope_end(token: ScopeToken) {
     with_runtime(|runtime| {
+        if !runtime.level().captures_scopes() {
+            return;
+        }
         let at_micros = runtime.now_micros();
         let mut state = runtime
             .state
@@ -593,6 +647,9 @@ fn backend_resource_create(
     size: u64,
 ) {
     with_runtime(|runtime| {
+        if !runtime.level().captures_resources() {
+            return;
+        }
         let at_micros = runtime.now_micros();
         let mut state = runtime
             .state
@@ -622,6 +679,9 @@ fn backend_resource_update(
     size: u64,
 ) {
     with_runtime(|runtime| {
+        if !runtime.level().captures_resources() {
+            return;
+        }
         let at_micros = runtime.now_micros();
         let mut state = runtime
             .state
@@ -646,6 +706,9 @@ fn backend_resource_update(
 
 fn backend_resource_drop(desc: &ResourceKindDesc, resource_id: ResourceId, context: Context) {
     with_runtime(|runtime| {
+        if !runtime.level().captures_resources() {
+            return;
+        }
         let at_micros = runtime.now_micros();
         let mut state = runtime
             .state
@@ -669,6 +732,9 @@ fn backend_resource_drop(desc: &ResourceKindDesc, resource_id: ResourceId, conte
 
 fn backend_frame_marker(kind: MarkerKind, phase: MarkerPhase, context: Context) {
     with_runtime(|runtime| {
+        if !runtime.level().captures_markers() {
+            return;
+        }
         let at_micros = runtime.now_micros();
         let mut state = runtime
             .state
@@ -691,6 +757,9 @@ fn backend_frame_marker(kind: MarkerKind, phase: MarkerPhase, context: Context) 
 
 fn backend_flow(flow_id: FlowId, phase: FlowPhase, context: Context) {
     with_runtime(|runtime| {
+        if !runtime.level().captures_flows() {
+            return;
+        }
         let at_micros = runtime.now_micros();
         let mut state = runtime
             .state
@@ -720,12 +789,31 @@ fn duration_to_micros(duration: Duration) -> u64 {
     u64::try_from(micros).unwrap_or(u64::MAX)
 }
 
+const fn level_to_u8(level: InstrumentationLevel) -> u8 {
+    match level {
+        InstrumentationLevel::Off => 0,
+        InstrumentationLevel::Counters => 1,
+        InstrumentationLevel::Scoped => 2,
+        InstrumentationLevel::Trace => 3,
+    }
+}
+
+const fn level_from_u8(level: u8) -> InstrumentationLevel {
+    match level {
+        0 => InstrumentationLevel::Off,
+        1 => InstrumentationLevel::Counters,
+        2 => InstrumentationLevel::Scoped,
+        _ => InstrumentationLevel::Trace,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CounterKind, Observation, Runtime};
     use spoor_core::{
-        Context, ContextId, CounterDesc, CounterDescId, FlowId, FlowPhase, MarkerKind, MarkerPhase,
-        ResourceId, ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId,
+        Context, ContextId, CounterDesc, CounterDescId, FlowId, FlowPhase, InstrumentationLevel,
+        MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ResourceKindId, ScopeDesc,
+        ScopeDescId,
     };
 
     #[test]
@@ -869,5 +957,46 @@ mod tests {
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.events.len(), 1);
         assert_eq!(snapshot.dropped_events, 1);
+    }
+
+    #[test]
+    fn backend_respects_runtime_capture_level() {
+        static COUNTER: CounterDesc = CounterDesc::count(CounterDescId::new(11), "ops");
+        static SCOPE: ScopeDesc = ScopeDesc::new(ScopeDescId::new(12), "record");
+        static RESOURCE: ResourceKindDesc = ResourceKindDesc::new(ResourceKindId::new(13), "atlas");
+
+        let runtime = Box::leak(Box::new(Runtime::with_level(
+            16,
+            16,
+            InstrumentationLevel::Counters,
+        )));
+        super::RUNTIME
+            .set(runtime)
+            .expect("runtime backend test should install only once");
+
+        let context = Context::root().with(spoor_core::LabelKey::Frame, 3_u32);
+        super::backend_counter_add(&COUNTER, context, 1);
+        let token = super::backend_scope_begin(&SCOPE, context);
+        super::backend_scope_end(token);
+        super::backend_resource_create(&RESOURCE, ResourceId::new(7), context, 64);
+        super::backend_frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
+        super::backend_flow(FlowId::new(9), FlowPhase::Begin, context);
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.counters.len(), 1);
+        assert_eq!(snapshot.events.len(), 0);
+
+        runtime.set_level(InstrumentationLevel::Trace);
+        runtime.reset();
+        super::backend_counter_add(&COUNTER, context, 1);
+        let token = super::backend_scope_begin(&SCOPE, context);
+        super::backend_scope_end(token);
+        super::backend_resource_create(&RESOURCE, ResourceId::new(7), context, 64);
+        super::backend_frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
+        super::backend_flow(FlowId::new(9), FlowPhase::Begin, context);
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.counters.len(), 1);
+        assert_eq!(snapshot.events.len(), 5);
     }
 }

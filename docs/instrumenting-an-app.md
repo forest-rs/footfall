@@ -31,8 +31,8 @@ Example shape:
 
 ```rust
 use spoor::{
-    Context, CounterDesc, CounterDescId, LabelKey, ScopeDesc, ScopeDescId, counter_add,
-    scope_begin, scope_end,
+    Context, CounterDesc, CounterDescId, InstrumentationLevel, LabelKey, ScopeDesc, ScopeDescId,
+    counter_add, scope_begin, scope_end,
 };
 use spoor_runtime::{Runtime, install_global};
 
@@ -40,7 +40,12 @@ static RECORD_SCOPE: ScopeDesc = ScopeDesc::new(ScopeDescId::new(1), "record_fra
 static DRAW_OPS: CounterDesc = CounterDesc::count(CounterDescId::new(2), "draw_ops");
 
 fn install_spoor() -> &'static Runtime {
-    let runtime = Box::leak(Box::new(Runtime::named("my_app", 512, 4096)));
+    let runtime = Box::leak(Box::new(Runtime::named_with_level(
+        "my_app",
+        512,
+        4096,
+        InstrumentationLevel::Scoped,
+    )));
     install_global(runtime).expect("runtime should install once");
     runtime
 }
@@ -95,6 +100,13 @@ inspects data without rewriting every call site.
 ## Always-On vs Diagnostic Use
 
 Use counters and a small amount of scoped tracing for always-on instrumentation.
+
+Set runtime capture policy explicitly when installing the process runtime:
+
+- `InstrumentationLevel::Off` for compiled-in but inactive instrumentation
+- `InstrumentationLevel::Counters` for broad low-detail observation
+- `InstrumentationLevel::Scoped` for counters plus scope/marker/flow timing
+- `InstrumentationLevel::Trace` for the full current observation set, including resources
 
 Turn on richer downstream inspection when needed:
 
