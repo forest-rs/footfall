@@ -1607,17 +1607,19 @@ fn local_state_directory() -> io::Result<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         if let Some(app_data) = env::var_os("APPDATA") {
-            return Ok(PathBuf::from(app_data).join("spoor"));
+            Ok(PathBuf::from(app_data).join("spoor"))
+        } else {
+            home_directory().map(|home| home.join("AppData").join("Roaming").join("spoor"))
         }
-        return home_directory().map(|home| home.join("AppData").join("Roaming").join("spoor"));
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         if let Some(state_home) = env::var_os("XDG_STATE_HOME") {
-            return Ok(PathBuf::from(state_home).join("spoor"));
+            Ok(PathBuf::from(state_home).join("spoor"))
+        } else {
+            home_directory().map(|home| home.join(".local").join("state").join("spoor"))
         }
-        return home_directory().map(|home| home.join(".local").join("state").join("spoor"));
     }
 }
 
