@@ -31,6 +31,7 @@ Start here:
 
 - [Instrumenting an App](docs/instrumenting-an-app.md)
 - [Session Consumer Contract](docs/session-consumer-contract.md)
+- [Migration Notes](docs/migration-notes.md)
 
 ## Local Attach
 

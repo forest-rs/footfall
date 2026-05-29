@@ -1,6 +1,6 @@
 # Spoor Architecture
 
-Status: draft
+Status: working design, aligned with the current workspace
 
 ## Overview
 
@@ -8,7 +8,7 @@ Spoor is a family of small Rust crates for instrumentation and observability. It
 
 The key question Spoor should answer is not only "what happened?" but "what did it happen under?" A draw, upload, cache resize, scratch burst, or invalidation storm is much more useful when it is attributed to a pass, subtree, owner, cache, or resource kind instead of only a thread and call stack.
 
-Phase 1 should stay narrow:
+The first durable slice stays narrow:
 
 - a `no_std`-friendly core
 - a thin top-level `spoor` facade
@@ -24,7 +24,12 @@ Spoor explicitly does not own OS-wide tracing, full heap profiling on day 1, or 
 
 `spoor` owns the recommended user-facing surface and re-exports; it explicitly does not add a second architecture beside the core.
 
-Later crates own runtime collection, memory helpers, export, and macros as separate seams; they do not redefine the core vocabulary.
+`spoor_runtime` owns bounded in-process collection, timestamping, context
+interning, and snapshot extraction; it explicitly does not own descriptor
+semantics, transport protocols, exporters, allocator interception, or UI policy.
+
+Downstream crates own memory helpers, export, live backends, and transport as
+separate seams; they do not redefine the core vocabulary.
 
 ## First Read
 
@@ -36,16 +41,22 @@ The architectural bet is simple:
 - keep disabled and lightweight modes cheap enough to leave instrumentation in the codebase
 - validate the model by exporting into existing tooling early
 
-That leads to a phased shape:
+That led to the current crate family:
 
 1. `spoor_core` defines ids, descriptors, labels, levels, and inline emission functions.
 2. `spoor` re-exports the calm API that most callers use.
-3. `spoor_runtime` later provides bounded buffers, counter banks, clocks, and snapshots.
-4. `spoor_memory` later standardizes scratch, cache, GPU-adjacent, and heap-accounting helpers.
-5. `spoor_export` later projects captured data into an external timeline or trace ecosystem.
-6. `spoor_macros` later provides ergonomic sugar but remains optional and thin.
+3. `spoor_runtime` provides bounded buffers, counter banks, clocks, and snapshots.
+4. `spoor_memory` standardizes scratch and cache helpers without pulling dependencies into core crates.
+5. `spoor_export` projects captured data into Chrome Trace Event JSON.
+6. `spoor_session` defines a versioned, transport-neutral consumer contract.
+7. `spoor_session_wtransport` provides a localhost attach path for discovery and snapshot fetch.
+8. `spoor_tracy` and `spoor_fanout` prove live backend composition without changing core.
+9. `spoor_macros` remains intentionally absent until the raw call-site seam has more real use.
 
-The current workspace should start with only `spoor_core` and `spoor`. That keeps the first slice honest and prevents premature crate proliferation before the call-site seam is proven in real instrumentation.
+The current workspace has moved beyond the original two-crate starting point.
+That is acceptable because the extra crates are downstream seams rather than a
+second architecture. The remaining discipline is to avoid adding more crates or
+surface area until benchmarks and one real subsystem prove the model.
 
 ## Goals
 
@@ -147,7 +158,7 @@ Does not own:
 - a different context model
 - runtime-only policy in the hot path
 
-#### `spoor_runtime` later
+#### `spoor_runtime`
 
 Owns:
 
@@ -163,20 +174,75 @@ Does not own:
 - macro-only APIs
 - domain taxonomy outside shared conventions
 
-#### `spoor_memory` later
+#### `spoor_memory`
 
 Owns:
 
 - standard memory categories
-- wrappers for scratch buffers, caches, GPU-adjacent accounting, and retained/transient reporting
+- wrappers for scratch buffers and caches
+- later GPU-adjacent accounting and retained/transient reporting
 - later allocator integration
 
-#### `spoor_export` later
+#### `spoor_export`
 
 Owns:
 
 - lowering Spoor snapshots or traces into an external model
 - export-specific track, counter, and resource projection rules
+
+#### `spoor_session`
+
+Owns:
+
+- versioned snapshot envelope types
+- chunk ordering
+- owned transport-friendly payloads
+- dropped-data summaries for consumers
+
+Does not own:
+
+- hot-path emission
+- network protocol details
+- viewer-side caching or UI policy
+
+#### `spoor_session_wtransport`
+
+Owns:
+
+- localhost WebTransport discovery and snapshot fetch
+- concrete wire encoding for session envelopes
+- certificate-pinned local demo identity
+
+Does not own:
+
+- the transport-neutral envelope model
+- runtime collection
+- UI behavior
+
+#### `spoor_tracy`
+
+Owns:
+
+- live projection from Spoor backend calls into Tracy
+- Tracy-specific scope, plot, frame, and message mapping
+
+Does not own:
+
+- canonical snapshots
+- the session contract
+- flow semantics Tracy cannot represent cleanly
+
+#### `spoor_fanout`
+
+Owns:
+
+- pairwise backend composition for runtime plus one live sink
+
+Does not own:
+
+- a general plugin bus
+- arbitrary sink registration
+- extra indirection in `spoor_core`
 
 #### `spoor_macros` later
 
@@ -193,9 +259,10 @@ Start with a deliberately small vocabulary:
 - ids: `ContextId`, `ScopeDescId`, `CounterDescId`, `ResourceId`, `ResourceKindId`
 - descriptors: `ScopeDesc`, `CounterDesc`, `ResourceKindDesc`
 - units: `Bytes`, `Count`, `Nanos`, `Micros`, `Ratio`, `Items`, plus a small extension path
-- operations: `counter_add`, `gauge_set`, `scope_begin`, `scope_end`, `resource_create`, `resource_update`, `resource_drop`, `frame_marker`
+- operations: `counter_add`, `gauge_set`, `scope_begin`, `scope_end`, `resource_create`, `resource_update`, `resource_drop`, `frame_marker`, and causal flow helpers
 
-Reserve `EventDescId`, `EventDesc`, `SpanId`, flows, and point events for later phases once a real subsystem proves they are needed.
+Reserve `EventDescId`, `EventDesc`, `SpanId`, and point events for later phases
+once a real subsystem proves they are needed.
 
 Anything beyond that should need a concrete proving-ground use case before joining the core.
 
@@ -431,53 +498,77 @@ For phase 1, "low overhead" means:
 
 ## First Slice
 
-The first implementation should match the current workspace and stay intentionally small.
+The first implementation now matches a small but complete crate family. The
+phase list below records what is done and what remains prototype-grade.
 
 ### Phase 0
 
-- land this design note
-- settle naming for ids, descriptors, and labels
-- settle the core/runtime backend ABI
-- choose the first export target before runtime details harden
+- Done: design note landed.
+- Done: naming for ids, descriptors, and labels is settled enough for first users.
+- Done: the core/runtime backend ABI is a fixed function table.
+- Done: Chrome Trace Event JSON is the first export target.
 
 ### Phase 1
 
-- implement `spoor_core`
-- implement a thin `spoor` facade
-- keep `frame_marker` as a core primitive alongside counters, scopes, and resources
-- add docs and tests for ids, descriptors, levels, context composition, and the no-op backend path
+- Done: `spoor_core` is the foundation crate.
+- Done: `spoor` is a thin facade over `spoor_core`.
+- Done: `frame_marker` is a core primitive alongside counters, scopes, resources, and flows.
+- Done: ids, descriptors, levels, context composition, and the no-op backend path have focused tests.
 
 ### Phase 2
 
-- add `spoor_runtime`
-- provide a counter bank, bounded event ring, and dropped-data accounting
-- prove basic snapshot extraction against a tiny example
+- Done: `spoor_runtime` exists.
+- Done: it provides a counter bank, bounded event retention, and dropped-data accounting.
+- Done: examples prove snapshot extraction.
+- Prototype: runtime capture levels and low-contention writes need hardening.
 
 ### Phase 3
 
-- instrument one real imaging path
-- instrument scratch buffers and one retained cache
-- add frame and pass markers
+- Done in examples: scratch buffers, one cache shape, resource lifecycle, frame markers, and pass markers are exercised.
+- Still needed: instrument one real Forest subsystem outside the demo crate.
 
 ### Phase 4
 
-- add `spoor_export`
-- inspect traces in an existing tool and adjust the model based on real use
+- Done: `spoor_export` emits Chrome Trace Event JSON.
+- Still needed: inspect traces from a real subsystem and adjust context/export rules from that feedback.
 
 ### Phase 5
 
-- expand `spoor_memory`
-- consider allocator instrumentation only after the wrapper-based path has already paid off
+- Started: `spoor_memory` has scratch and cache helpers.
+- Still needed: retained/transient memory conventions, GPU-adjacent accounting, and allocator decision points.
+
+### Phase 6
+
+- Started: `spoor_session` and `spoor_session_wtransport` support local attach.
+- Still needed: wire-format hardening, documented limits, and compatibility tests.
+
+### Phase 7
+
+- Still needed: a separate benchmark crate measuring the core substrate overhead.
+- Still needed: measured runtime write-path changes before claiming low overhead.
+
+## Prototype Boundaries
+
+The crate family is usable for experiments and early external integration, but
+these areas are still prototype-grade:
+
+- Runtime capture policy: levels exist in core, but collection behavior must
+  enforce them.
+- Runtime contention: a single shared state lock is acceptable for proof, not
+  for broad always-on instrumentation.
+- Protocol hardening: the session model is versioned, but the concrete
+  WebTransport wire format needs explicit size limits and compatibility tests.
+- Measurement: no benchmark crate exists yet, so low-overhead claims remain
+  architectural intent rather than measured fact.
+- Real proving ground: examples demonstrate the model, but one production
+  subsystem must prove the context vocabulary and exported views.
 
 ## Next Steps Checklist
 
-- Create `crates/spoor_core` as the real foundation crate.
-- Create `crates/spoor` as a thin facade over `spoor_core`.
-- Keep `runtime`, `memory`, `export`, and `macros` out of the workspace until phase 2+ work begins.
-- Define `Context` and `ContextId` separately so the call-site model stays explicit while the runtime storage model stays compact.
-- Define the initial label-key vocabulary and value encoding rules.
-- Define the core/backend ABI before implementing runtime buffering.
-- Define the minimal descriptor constructors and unit set.
-- Start with Chrome Trace Event JSON export and validate that scopes, counters, resources, and frame markers map cleanly in Perfetto.
-- Add benchmarks in a separate top-level crate once the first emission seam exists.
-- Instrument one real subsystem before broadening the crate family.
+- Wire `InstrumentationLevel` into `spoor_runtime` and exported examples.
+- Add a separate benchmark crate for disabled calls, counter updates, scope
+  begin/end, context construction, trace append, snapshot, and export cost.
+- Replace the single runtime state lock with a measured sharded or per-thread
+  collection design.
+- Document and harden the WebTransport session wire format.
+- Instrument one real Forest subsystem before broadening the crate family again.
