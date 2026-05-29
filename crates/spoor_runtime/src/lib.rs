@@ -9,6 +9,7 @@ use spoor_core::{
     ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, ScopeToken, install_backend,
 };
 use std::{
+    boxed::Box,
     collections::{HashMap, VecDeque},
     string::String,
     sync::{
@@ -119,6 +120,48 @@ impl Runtime {
             counter_shards: build_counter_shards(DEFAULT_SHARD_COUNT),
             event_shards: build_event_shards(DEFAULT_SHARD_COUNT),
         }
+    }
+
+    /// Adds a capture-session label and returns the runtime.
+    #[must_use]
+    pub fn with_session_name(mut self, session_name: impl Into<String>) -> Self {
+        self.set_session_name(session_name);
+        self
+    }
+
+    /// Creates and installs a process-wide runtime with explicit capacities.
+    pub fn install_global_with_capacity(
+        counter_capacity: usize,
+        event_capacity: usize,
+    ) -> Result<&'static Self, InstallError> {
+        Self::new(counter_capacity, event_capacity).install_global()
+    }
+
+    /// Creates and installs a named process-wide runtime.
+    pub fn install_global_named(
+        process_name: impl Into<String>,
+        counter_capacity: usize,
+        event_capacity: usize,
+    ) -> Result<&'static Self, InstallError> {
+        Self::named(process_name, counter_capacity, event_capacity).install_global()
+    }
+
+    /// Creates and installs a named process-wide runtime with an explicit capture level.
+    pub fn install_global_named_with_level(
+        process_name: impl Into<String>,
+        counter_capacity: usize,
+        event_capacity: usize,
+        level: InstrumentationLevel,
+    ) -> Result<&'static Self, InstallError> {
+        Self::named_with_level(process_name, counter_capacity, event_capacity, level)
+            .install_global()
+    }
+
+    /// Installs this runtime as the process-wide backend and keeps it alive for the process.
+    pub fn install_global(self) -> Result<&'static Self, InstallError> {
+        let runtime = Box::leak(Box::new(self));
+        install_global(runtime)?;
+        Ok(runtime)
     }
 
     /// Returns the current runtime capture level.

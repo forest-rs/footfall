@@ -30,9 +30,10 @@ mod unit;
 pub use context::{CONTEXT_INLINE_CAPACITY, Context, ContextCapacityError, ContextEntry};
 pub use descriptor::{CounterDesc, ResourceKindDesc, ScopeDesc, SourceLocation};
 pub use emit::{
-    Backend, FlowPhase, MarkerKind, MarkerPhase, ScopeToken, counter_add, flow_begin, flow_end,
-    flow_step, frame_marker, gauge_set, resource_create, resource_drop, resource_update,
-    scope_begin, scope_end,
+    Backend, FlowPhase, MarkerKind, MarkerPhase, ScopeGuard, ScopeToken, counter_add, flow_begin,
+    flow_end, flow_step, frame_begin, frame_end, frame_marker, gauge_set, pass_begin, pass_end,
+    resource_create, resource_drop, resource_update, scope, scope_begin, scope_end,
+    transaction_begin, transaction_end,
 };
 #[cfg(feature = "std")]
 pub use emit::{InstallBackendError, install_backend};
@@ -40,3 +41,99 @@ pub use id::{ContextId, CounterDescId, FlowId, ResourceId, ResourceKindId, Scope
 pub use label::{LabelKey, LabelValue};
 pub use level::InstrumentationLevel;
 pub use unit::Unit;
+
+/// Builds a [`Context`] from label-key assignments.
+///
+/// # Examples
+///
+/// ```
+/// let context = spoor_core::context!(Frame = 7_u32, Pass = 1_u32);
+/// assert_eq!(context.len(), 2);
+/// ```
+#[macro_export]
+macro_rules! context {
+    () => {
+        $crate::Context::root()
+    };
+    ($($key:ident = $value:expr),+ $(,)?) => {{
+        let context = $crate::Context::root();
+        $(
+            let context = context.with($crate::LabelKey::$key, $value);
+        )+
+        context
+    }};
+}
+
+/// Builds a [`ScopeDesc`].
+///
+/// The three-argument form attaches static source-location metadata with the
+/// provided function name.
+///
+/// # Examples
+///
+/// ```
+/// static RECORD: spoor_core::ScopeDesc = spoor_core::scope_desc!(1, "record_frame");
+/// assert_eq!(RECORD.name(), "record_frame");
+/// ```
+#[macro_export]
+macro_rules! scope_desc {
+    ($id:expr, $name:expr $(,)?) => {
+        $crate::ScopeDesc::new($crate::ScopeDescId::new($id), $name)
+    };
+    ($id:expr, $name:expr, $function:expr $(,)?) => {
+        $crate::ScopeDesc::with_location(
+            $crate::ScopeDescId::new($id),
+            $name,
+            $crate::SourceLocation::new($function, core::file!(), core::line!()),
+        )
+    };
+}
+
+/// Builds a [`CounterDesc`].
+///
+/// Use the `count` and `bytes` forms for common counter units.
+#[macro_export]
+macro_rules! counter_desc {
+    (count, $id:expr, $name:expr $(,)?) => {
+        $crate::CounterDesc::count($crate::CounterDescId::new($id), $name)
+    };
+    (bytes, $id:expr, $name:expr $(,)?) => {
+        $crate::CounterDesc::bytes($crate::CounterDescId::new($id), $name)
+    };
+    ($id:expr, $name:expr, $unit:expr $(,)?) => {
+        $crate::CounterDesc::new($crate::CounterDescId::new($id), $name, $unit)
+    };
+}
+
+/// Builds a [`ResourceKindDesc`].
+#[macro_export]
+macro_rules! resource_kind_desc {
+    ($id:expr, $name:expr $(,)?) => {
+        $crate::ResourceKindDesc::new($crate::ResourceKindId::new($id), $name)
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{CounterDesc, LabelKey, ResourceKindDesc, ScopeDesc, Unit};
+
+    static SCOPE: ScopeDesc = crate::scope_desc!(1, "record_frame", "spoor_core::tests");
+    static COUNTER: CounterDesc = crate::counter_desc!(bytes, 2, "upload_bytes");
+    static RESOURCE: ResourceKindDesc = crate::resource_kind_desc!(3, "atlas");
+
+    #[test]
+    fn macros_build_common_call_site_values() {
+        let context = crate::context!(Frame = 7_u32, Pass = 1_u32);
+
+        assert_eq!(SCOPE.name(), "record_frame");
+        assert!(SCOPE.location().is_some());
+        assert_eq!(COUNTER.unit(), Unit::Bytes);
+        assert_eq!(RESOURCE.name(), "atlas");
+        assert_eq!(
+            context
+                .get(LabelKey::Frame)
+                .and_then(|value| value.as_unsigned()),
+            Some(7)
+        );
+    }
+}

@@ -25,6 +25,52 @@ impl ScopeToken {
     }
 }
 
+/// Drop-based scope guard returned by [`scope`].
+///
+/// Dropping the guard emits the matching [`scope_end`] call. Use
+/// [`ScopeGuard::end`] when a scope must end before the guard leaves lexical
+/// scope.
+#[derive(Debug)]
+#[must_use = "dropping a ScopeGuard immediately ends the scope"]
+pub struct ScopeGuard {
+    token: ScopeToken,
+    active: bool,
+}
+
+impl ScopeGuard {
+    /// Begins a new guarded scope.
+    pub fn new(desc: &ScopeDesc, context: Context) -> Self {
+        Self {
+            token: scope_begin(desc, context),
+            active: true,
+        }
+    }
+
+    /// Returns the underlying scope token.
+    #[must_use]
+    pub const fn token(&self) -> ScopeToken {
+        self.token
+    }
+
+    /// Ends the guarded scope before the guard is dropped.
+    pub fn end(mut self) {
+        self.end_if_active();
+    }
+
+    fn end_if_active(&mut self) {
+        if self.active {
+            scope_end(self.token);
+            self.active = false;
+        }
+    }
+}
+
+impl Drop for ScopeGuard {
+    fn drop(&mut self) {
+        self.end_if_active();
+    }
+}
+
 /// Coarse marker kind used to structure a trace.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum MarkerKind {
@@ -120,6 +166,11 @@ pub fn scope_end(token: ScopeToken) {
     (backend().scope_end)(token);
 }
 
+/// Begins a scope and returns a guard that ends it on drop.
+pub fn scope(desc: &ScopeDesc, context: Context) -> ScopeGuard {
+    ScopeGuard::new(desc, context)
+}
+
 /// Emits a resource-creation observation.
 pub fn resource_create(
     desc: &ResourceKindDesc,
@@ -148,6 +199,36 @@ pub fn resource_drop(desc: &ResourceKindDesc, resource_id: ResourceId, context: 
 /// Emits a frame, transaction, or pass boundary marker.
 pub fn frame_marker(kind: MarkerKind, phase: MarkerPhase, context: Context) {
     (backend().frame_marker)(kind, phase, context);
+}
+
+/// Emits a frame begin marker.
+pub fn frame_begin(context: Context) {
+    frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
+}
+
+/// Emits a frame end marker.
+pub fn frame_end(context: Context) {
+    frame_marker(MarkerKind::Frame, MarkerPhase::End, context);
+}
+
+/// Emits a transaction begin marker.
+pub fn transaction_begin(context: Context) {
+    frame_marker(MarkerKind::Transaction, MarkerPhase::Begin, context);
+}
+
+/// Emits a transaction end marker.
+pub fn transaction_end(context: Context) {
+    frame_marker(MarkerKind::Transaction, MarkerPhase::End, context);
+}
+
+/// Emits a pass begin marker.
+pub fn pass_begin(context: Context) {
+    frame_marker(MarkerKind::Pass, MarkerPhase::Begin, context);
+}
+
+/// Emits a pass end marker.
+pub fn pass_end(context: Context) {
+    frame_marker(MarkerKind::Pass, MarkerPhase::End, context);
 }
 
 /// Starts a causal flow under a semantic context.
@@ -222,8 +303,9 @@ const fn scope_desc_raw(id: ScopeDescId) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        MarkerKind, MarkerPhase, counter_add, flow_begin, flow_end, flow_step, frame_marker,
-        resource_drop, scope_begin, scope_end,
+        MarkerKind, MarkerPhase, counter_add, flow_begin, flow_end, flow_step, frame_begin,
+        frame_end, frame_marker, pass_begin, pass_end, resource_drop, scope, scope_begin,
+        scope_end, transaction_begin, transaction_end,
     };
     use crate::{
         Context, CounterDesc, CounterDescId, FlowId, ResourceId, ResourceKindDesc, ResourceKindId,
@@ -239,6 +321,14 @@ mod tests {
     }
 
     #[test]
+    fn scope_guard_exposes_token_and_can_end_early() {
+        let desc = ScopeDesc::new(ScopeDescId::new(10), "record_pass");
+        let guard = scope(&desc, Context::root());
+        assert_eq!(guard.token().get(), 10);
+        guard.end();
+    }
+
+    #[test]
     fn noop_emission_surface_accepts_all_primitives() {
         let counter = CounterDesc::count(CounterDescId::new(1), "ops");
         let resource = ResourceKindDesc::new(ResourceKindId::new(2), "atlas");
@@ -247,6 +337,12 @@ mod tests {
         counter_add(&counter, context, 5);
         resource_drop(&resource, ResourceId::new(7), context);
         frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
+        frame_begin(context);
+        frame_end(context);
+        transaction_begin(context);
+        transaction_end(context);
+        pass_begin(context);
+        pass_end(context);
         flow_begin(FlowId::new(12), context);
         flow_step(FlowId::new(12), context);
         flow_end(FlowId::new(12), context);

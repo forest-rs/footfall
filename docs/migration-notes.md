@@ -39,3 +39,14 @@ WebTransport codec is an implementation detail of `spoor_session_wtransport`,
 but it is now documented in
 [WebTransport Session Wire Format](session-wire-format.md) and bounded so
 consumer bugs fail predictably instead of allocating from untrusted lengths.
+
+## Ergonomic Helpers
+
+The low-level emission API remains available, but common call sites can now use:
+
+- `scope` and `ScopeGuard` for drop-based scope pairing.
+- marker helpers such as `frame_begin`, `frame_end`, `pass_begin`, and `pass_end`.
+- `context!`, `scope_desc!`, `counter_desc!`, and `resource_kind_desc!` macros
+  for compact static descriptors and contexts.
+- `Runtime::install_global_*` helpers and `Runtime::with_session_name` to avoid
+  spelling `Box::leak` in application setup.

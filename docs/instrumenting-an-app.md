@@ -31,34 +31,32 @@ Example shape:
 
 ```rust
 use spoor::{
-    Context, CounterDesc, CounterDescId, InstrumentationLevel, LabelKey, ScopeDesc, ScopeDescId,
-    counter_add, scope_begin, scope_end,
+    CounterDesc, InstrumentationLevel, ScopeDesc, counter_add, scope,
 };
-use spoor_runtime::{Runtime, install_global};
+use spoor_runtime::Runtime;
 
-static RECORD_SCOPE: ScopeDesc = ScopeDesc::new(ScopeDescId::new(1), "record_frame");
-static DRAW_OPS: CounterDesc = CounterDesc::count(CounterDescId::new(2), "draw_ops");
+static RECORD_SCOPE: ScopeDesc = spoor::scope_desc!(1, "record_frame");
+static DRAW_OPS: CounterDesc = spoor::counter_desc!(count, 2, "draw_ops");
 
 fn install_spoor() -> &'static Runtime {
-    let runtime = Box::leak(Box::new(Runtime::named_with_level(
+    Runtime::install_global_named_with_level(
         "my_app",
         512,
         4096,
         InstrumentationLevel::Scoped,
-    )));
-    install_global(runtime).expect("runtime should install once");
-    runtime
+    )
+    .expect("runtime should install once")
 }
 
 fn record_frame(frame: u32) {
-    let context = Context::root()
-        .with(LabelKey::Frame, frame)
-        .with(LabelKey::Pass, 1_u32);
-    let scope = scope_begin(&RECORD_SCOPE, context);
+    let context = spoor::context!(Frame = frame, Pass = 1_u32);
+    let _scope = scope(&RECORD_SCOPE, context);
     counter_add(&DRAW_OPS, context, 42);
-    scope_end(scope);
 }
 ```
+
+The low-level `scope_begin` and `scope_end` calls remain available when a scope
+crosses lexical boundaries.
 
 ## Context Discipline
 
@@ -134,7 +132,7 @@ The current examples are the reference shape:
 
 The current stack is good enough for external use, but still early:
 
-- there is no macros crate yet
+- there is no descriptor registry or id allocation story yet
 - there is no polished consumer UI yet
 - the current local attach path is intentionally localhost-first
 
