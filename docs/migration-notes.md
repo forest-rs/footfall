@@ -36,5 +36,6 @@ ordered by timestamp during snapshot extraction.
 
 The transport-neutral envelope model remains in `spoor_session`. The
 WebTransport codec is an implementation detail of `spoor_session_wtransport`,
-but it is now documented and bounded so consumer bugs fail predictably instead
-of allocating from untrusted lengths.
+but it is now documented in
+[WebTransport Session Wire Format](session-wire-format.md) and bounded so
+consumer bugs fail predictably instead of allocating from untrusted lengths.

@@ -522,7 +522,8 @@ phase list below records what is done and what remains prototype-grade.
 - Done: `spoor_runtime` exists.
 - Done: it provides a counter bank, bounded event retention, and dropped-data accounting.
 - Done: examples prove snapshot extraction.
-- Prototype: runtime capture levels and low-contention writes need hardening.
+- Done: runtime capture levels are enforced by collection behavior.
+- Done: counter and event storage are sharded to reduce the single-lock write path.
 
 ### Phase 3
 
@@ -542,34 +543,35 @@ phase list below records what is done and what remains prototype-grade.
 ### Phase 6
 
 - Started: `spoor_session` and `spoor_session_wtransport` support local attach.
-- Still needed: wire-format hardening, documented limits, and compatibility tests.
+- Done: the concrete WebTransport wire format is documented, bounded, and covered
+  by rejection tests for oversized payload shapes.
+- Still needed: multi-process discovery policy and external-consumer compatibility
+  fixtures.
 
 ### Phase 7
 
 - Started: `spoor_benchmarks` measures disabled calls, counter updates, scope
   pairs, context construction, trace append, snapshots, and export.
-- Still needed: measured runtime write-path changes before claiming low overhead.
+- Started: measurements now include a parallel counter write case.
+- Still needed: use results to refine context interning and snapshot merge costs.
 
 ## Prototype Boundaries
 
 The crate family is usable for experiments and early external integration, but
 these areas are still prototype-grade:
 
-- Runtime capture policy: levels exist in core, but collection behavior must
-  enforce them.
-- Runtime contention: a single shared state lock is acceptable for proof, not
-  for broad always-on instrumentation.
-- Protocol hardening: the session model is versioned, but the concrete
-  WebTransport wire format needs explicit size limits and compatibility tests.
+- Runtime write costs: counter and event writes are sharded, but context
+  interning and snapshot merge/export remain the measured hotspots.
+- Protocol surface: the WebTransport wire format is bounded and documented, but
+  external-consumer compatibility fixtures and discovery policy still need work.
 - Measurement: the benchmark crate exists, but results still need to drive the
-  runtime write path before low-overhead claims are treated as proven.
+  next runtime changes before low-overhead claims are treated as proven.
 - Real proving ground: examples demonstrate the model, but one production
   subsystem must prove the context vocabulary and exported views.
 
 ## Next Steps Checklist
 
-- Wire `InstrumentationLevel` into `spoor_runtime` and exported examples.
-- Replace the single runtime state lock with a measured sharded or per-thread
-  collection design.
-- Document and harden the WebTransport session wire format.
+- Use benchmark results to reduce context interning and snapshot merge/export
+  costs.
+- Add external-consumer compatibility fixtures for the session wire format.
 - Instrument one real Forest subsystem before broadening the crate family again.

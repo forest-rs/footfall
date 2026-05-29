@@ -32,6 +32,7 @@ Start here:
 
 - [Instrumenting an App](docs/instrumenting-an-app.md)
 - [Session Consumer Contract](docs/session-consumer-contract.md)
+- [WebTransport Session Wire Format](docs/session-wire-format.md)
 - [Migration Notes](docs/migration-notes.md)
 
 ## Local Attach

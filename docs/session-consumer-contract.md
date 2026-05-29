@@ -54,6 +54,8 @@ It should not assume:
 ## Discovery Contract
 
 The current local attach path is implemented by `spoor_session_wtransport`.
+Its concrete WebTransport encoding is documented in
+[WebTransport Session Wire Format](session-wire-format.md).
 
 The consumer-facing contract is:
 
@@ -128,6 +130,7 @@ If the session contract changes, document it in terms of:
 - discovery shape changes
 - new payload kinds or ordering changes
 - consumer behavior that must change
+- wire-format limits that affect allocation or chunking
 
 That is the bar for treating an external UI as a first-class consumer rather
 than an internal experiment.

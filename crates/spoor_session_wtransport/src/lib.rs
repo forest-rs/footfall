@@ -39,6 +39,19 @@ const RESPONSE_DISCOVERY: u8 = 0;
 const RESPONSE_SNAPSHOT: u8 = 1;
 const RESPONSE_ERROR: u8 = 2;
 
+/// Maximum UTF-8 string payload accepted by the session wire codec.
+pub const MAX_SESSION_STRING_BYTES: usize = 64 * 1024;
+/// Maximum encoded envelope frame accepted by the session wire codec.
+pub const MAX_SESSION_ENVELOPE_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum envelope count accepted in one snapshot response.
+pub const MAX_SESSION_ENVELOPES: u64 = 1_000_000;
+/// Maximum session announcements accepted in one discovery response.
+pub const MAX_DISCOVERED_SESSIONS: u64 = 4096;
+/// Maximum rows accepted in one encoded envelope payload.
+pub const MAX_ROWS_PER_ENVELOPE: usize = 65_536;
+/// Maximum context labels accepted for one encoded context row.
+pub const MAX_CONTEXT_ENTRIES_PER_CONTEXT: usize = spoor_core::CONTEXT_INLINE_CAPACITY;
+
 /// Identity and certificate pinning material for a local session server.
 #[derive(Debug)]
 pub struct SessionIdentity {
@@ -371,6 +384,12 @@ impl SessionRequest {
         if self.kind != SessionRequestKind::Discover {
             return self.respond_error("expected discovery request").await;
         }
+        if u64::try_from(sessions.len()).unwrap_or(u64::MAX) > MAX_DISCOVERED_SESSIONS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "too many session announcements",
+            ));
+        }
 
         write_u8_stream(&mut self.send, RESPONSE_DISCOVERY).await?;
         write_u64(
@@ -404,8 +423,7 @@ impl SessionRequest {
         }
 
         let mut consumer = EncodingConsumer::default();
-        publish_snapshot(&snapshot, chunking, &mut consumer)
-            .expect("encoding consumer should not fail");
+        publish_snapshot(&snapshot, chunking, &mut consumer)?;
         write_u8_stream(&mut self.send, RESPONSE_SNAPSHOT).await?;
         write_u64(
             &mut self.send,
@@ -545,7 +563,14 @@ async fn discover_connection(connection: Connection) -> io::Result<Vec<SessionAn
     match read_u8_stream(&mut recv).await? {
         RESPONSE_DISCOVERY => {
             let count = read_u64(&mut recv).await?;
-            let mut sessions = Vec::with_capacity(usize::try_from(count).unwrap_or(0));
+            validate_wire_count(count, MAX_DISCOVERED_SESSIONS, "session announcements")?;
+            let count = usize::try_from(count).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "session announcement count does not fit usize",
+                )
+            })?;
+            let mut sessions = Vec::with_capacity(count);
             for _ in 0..count {
                 sessions.push(decode_session_announcement_stream(&mut recv).await?);
             }
@@ -579,11 +604,19 @@ async fn fetch_named_connection(
     match read_u8_stream(&mut recv).await? {
         RESPONSE_SNAPSHOT => {
             let envelope_count = read_u64(&mut recv).await?;
-            let mut envelopes = Vec::with_capacity(usize::try_from(envelope_count).unwrap_or(0));
+            validate_wire_count(envelope_count, MAX_SESSION_ENVELOPES, "session envelopes")?;
+            let envelope_count = usize::try_from(envelope_count).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "session envelope count does not fit usize",
+                )
+            })?;
+            let mut envelopes = Vec::with_capacity(envelope_count);
             for _ in 0..envelope_count {
                 let len = usize::try_from(read_u32(&mut recv).await?).map_err(|_| {
                     io::Error::new(io::ErrorKind::InvalidData, "invalid envelope length")
                 })?;
+                validate_wire_len(len, MAX_SESSION_ENVELOPE_BYTES, "session envelope frame")?;
                 let mut buffer = vec![0_u8; len];
                 recv.read_exact(&mut buffer)
                     .await
@@ -609,7 +642,19 @@ impl Consumer for EncodingConsumer {
     type Error = io::Error;
 
     fn consume(&mut self, envelope: Envelope<'_>) -> Result<(), Self::Error> {
-        self.frames.push(encode_borrowed_envelope(envelope)?);
+        if u64::try_from(self.frames.len()).unwrap_or(u64::MAX) == MAX_SESSION_ENVELOPES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "too many session envelopes",
+            ));
+        }
+        let encoded = encode_borrowed_envelope(envelope)?;
+        validate_wire_len(
+            encoded.len(),
+            MAX_SESSION_ENVELOPE_BYTES,
+            "session envelope frame",
+        )?;
+        self.frames.push(encoded);
         Ok(())
     }
 }
@@ -666,6 +711,7 @@ async fn read_u8_stream(recv: &mut RecvStream) -> io::Result<u8> {
 
 async fn write_stream_string(send: &mut SendStream, value: &str) -> io::Result<()> {
     let bytes = value.as_bytes();
+    validate_wire_len(bytes.len(), MAX_SESSION_STRING_BYTES, "session string")?;
     write_u32(
         send,
         u32::try_from(bytes.len()).map_err(|_| {
@@ -681,6 +727,7 @@ async fn write_stream_string(send: &mut SendStream, value: &str) -> io::Result<(
 async fn read_stream_string(recv: &mut RecvStream) -> io::Result<String> {
     let len = usize::try_from(read_u32(recv).await?)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid string length"))?;
+    validate_wire_len(len, MAX_SESSION_STRING_BYTES, "session string")?;
     let mut bytes = vec![0_u8; len];
     recv.read_exact(&mut bytes)
         .await
@@ -791,6 +838,11 @@ fn encode_envelope(envelope: &OwnedSessionEnvelope) -> io::Result<Vec<u8>> {
 }
 
 fn decode_envelope(bytes: &[u8]) -> io::Result<OwnedSessionEnvelope> {
+    validate_wire_len(
+        bytes.len(),
+        MAX_SESSION_ENVELOPE_BYTES,
+        "session envelope frame",
+    )?;
     let mut cursor = Cursor::new(bytes);
     let header = decode_header(&mut cursor)?;
     let payload = match decode_u8(&mut cursor)? {
@@ -959,11 +1011,12 @@ fn encode_borrowed_contexts(
 }
 
 fn decode_contexts(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedContextSnapshot>> {
-    let len = decode_usize(cursor)?;
+    let len = decode_bounded_len(cursor, MAX_ROWS_PER_ENVELOPE, "context rows")?;
     let mut contexts = Vec::with_capacity(len);
     for _ in 0..len {
         let id = ContextId::new(decode_u64(cursor)?);
-        let entry_len = decode_usize(cursor)?;
+        let entry_len =
+            decode_bounded_len(cursor, MAX_CONTEXT_ENTRIES_PER_CONTEXT, "context entries")?;
         let mut entries = Vec::with_capacity(entry_len);
         for _ in 0..entry_len {
             entries.push(OwnedContextEntry {
@@ -1032,7 +1085,7 @@ fn encode_borrowed_counters(
 }
 
 fn decode_counters(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedCounterSnapshot>> {
-    let len = decode_usize(cursor)?;
+    let len = decode_bounded_len(cursor, MAX_ROWS_PER_ENVELOPE, "counter rows")?;
     let mut counters = Vec::with_capacity(len);
     for _ in 0..len {
         counters.push(OwnedCounterSnapshot {
@@ -1070,7 +1123,7 @@ fn encode_borrowed_events(
 }
 
 fn decode_events(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedTimedObservation>> {
-    let len = decode_usize(cursor)?;
+    let len = decode_bounded_len(cursor, MAX_ROWS_PER_ENVELOPE, "event rows")?;
     let mut events = Vec::with_capacity(len);
     for _ in 0..len {
         events.push(OwnedTimedObservation {
@@ -1475,14 +1528,51 @@ fn decode_usize(cursor: &mut Cursor<'_>) -> io::Result<usize> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "u32 length does not fit usize"))
 }
 
+fn decode_bounded_len(
+    cursor: &mut Cursor<'_>,
+    max_len: usize,
+    what: &'static str,
+) -> io::Result<usize> {
+    let len = decode_usize(cursor)?;
+    validate_wire_len(len, max_len, what)?;
+    if len > cursor.remaining() {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!("{what} length exceeds remaining envelope bytes"),
+        ));
+    }
+    Ok(len)
+}
+
+fn validate_wire_len(len: usize, max_len: usize, what: &'static str) -> io::Result<()> {
+    if len <= max_len {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("{what} length {len} exceeds maximum {max_len}"),
+    ))
+}
+
+fn validate_wire_count(count: u64, max_count: u64, what: &'static str) -> io::Result<()> {
+    if count <= max_count {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("{what} count {count} exceeds maximum {max_count}"),
+    ))
+}
+
 fn encode_string(bytes: &mut Vec<u8>, value: &str) -> io::Result<()> {
+    validate_wire_len(value.len(), MAX_SESSION_STRING_BYTES, "session string")?;
     encode_len(bytes, value.len())?;
     bytes.extend_from_slice(value.as_bytes());
     Ok(())
 }
 
 fn decode_string(cursor: &mut Cursor<'_>) -> io::Result<String> {
-    let len = decode_usize(cursor)?;
+    let len = decode_bounded_len(cursor, MAX_SESSION_STRING_BYTES, "session string")?;
     let bytes = cursor.read_exact(len)?;
     String::from_utf8(bytes.to_vec())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
@@ -1611,12 +1701,18 @@ impl<'a> Cursor<'a> {
     fn is_exhausted(&self) -> bool {
         self.offset == self.bytes.len()
     }
+
+    fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.offset)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        SessionAnnouncement, SessionRequestKind, decode_envelope, encode_envelope, map_finish_error,
+        MAX_CONTEXT_ENTRIES_PER_CONTEXT, MAX_ROWS_PER_ENVELOPE, MAX_SESSION_ENVELOPE_BYTES,
+        MAX_SESSION_STRING_BYTES, SessionAnnouncement, SessionRequestKind, decode_envelope,
+        encode_envelope, encode_header, encode_u8, encode_u32, encode_u64, map_finish_error,
     };
     use spoor_core::{
         Context, ContextId, CounterDescId, FlowId, FlowPhase, LabelKey, MarkerKind, MarkerPhase,
@@ -1708,6 +1804,85 @@ mod tests {
         let mut encoded = encode_envelope(&envelope).expect("encoding should succeed");
         encoded.push(99);
         let error = decode_envelope(&encoded).expect_err("decoder should reject trailing bytes");
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn decoder_rejects_oversized_envelope_frames() {
+        let bytes = vec![0_u8; MAX_SESSION_ENVELOPE_BYTES + 1];
+        let error = decode_envelope(&bytes).expect_err("decoder should reject oversized frames");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn decoder_rejects_oversized_strings_before_payload_allocation() {
+        let mut bytes = Vec::new();
+        encode_header(
+            &mut bytes,
+            EnvelopeHeader {
+                protocol_version: PROTOCOL_VERSION,
+                session_sequence: 1,
+                chunk_index: 0,
+            },
+        );
+        encode_u8(&mut bytes, 0);
+        encode_u32(
+            &mut bytes,
+            u32::try_from(MAX_SESSION_STRING_BYTES + 1).expect("test string bound should fit u32"),
+        );
+
+        let error = decode_envelope(&bytes).expect_err("decoder should reject oversized strings");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn decoder_rejects_oversized_row_counts_before_allocation() {
+        let mut bytes = Vec::new();
+        encode_header(
+            &mut bytes,
+            EnvelopeHeader {
+                protocol_version: PROTOCOL_VERSION,
+                session_sequence: 1,
+                chunk_index: 0,
+            },
+        );
+        encode_u8(&mut bytes, 1);
+        encode_u32(
+            &mut bytes,
+            u32::try_from(MAX_ROWS_PER_ENVELOPE + 1).expect("row bound should fit u32"),
+        );
+
+        let error =
+            decode_envelope(&bytes).expect_err("decoder should reject oversized row counts");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn decoder_rejects_oversized_context_entry_counts_before_allocation() {
+        let mut bytes = Vec::new();
+        encode_header(
+            &mut bytes,
+            EnvelopeHeader {
+                protocol_version: PROTOCOL_VERSION,
+                session_sequence: 1,
+                chunk_index: 0,
+            },
+        );
+        encode_u8(&mut bytes, 1);
+        encode_u32(&mut bytes, 1);
+        encode_u64(&mut bytes, 0);
+        encode_u32(
+            &mut bytes,
+            u32::try_from(MAX_CONTEXT_ENTRIES_PER_CONTEXT + 1)
+                .expect("context entry bound should fit u32"),
+        );
+
+        let error =
+            decode_envelope(&bytes).expect_err("decoder should reject oversized context entries");
+
         assert_eq!(error.kind(), ErrorKind::InvalidData);
     }
 

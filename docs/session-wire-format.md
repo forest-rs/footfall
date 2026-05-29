@@ -1,0 +1,106 @@
+# WebTransport Session Wire Format
+
+This document records the concrete wire format used by
+`spoor_session_wtransport`. The semantic contract is still the
+transport-neutral envelope model in `spoor_session`; this format is the current
+localhost WebTransport encoding of that model.
+
+## Transport
+
+The default local endpoint is:
+
+- URL: `https://127.0.0.1:43091/spoor/session`
+- Identity: stable self-signed localhost certificate managed by the crate
+- Streams: one bidirectional stream per discovery or snapshot request
+
+All integer fields are little-endian. Strings are encoded as `u32 byte_len`
+followed by UTF-8 bytes.
+
+## Requests
+
+Discovery request:
+
+1. magic bytes `SPOORD01`
+2. end stream
+
+Snapshot request:
+
+1. magic bytes `SPOORS01`
+2. session id string
+3. end stream
+
+## Responses
+
+The first response byte is a response tag:
+
+- `0`: discovery response
+- `1`: snapshot response
+- `2`: error response
+
+Discovery response payload:
+
+1. `u64 session_count`
+2. repeated session announcements
+
+Each session announcement is:
+
+1. session id string
+2. process name string
+3. session name tag, where `0` means absent and `1` means present
+4. session name string when present
+
+Snapshot response payload:
+
+1. `u64 envelope_count`
+2. repeated envelope frames
+
+Each envelope frame is:
+
+1. `u32 frame_len`
+2. exactly `frame_len` encoded envelope bytes
+
+Error response payload:
+
+1. error message string
+
+## Envelope Frame
+
+Each encoded envelope starts with:
+
+1. `u16 protocol_major`
+2. `u16 protocol_minor`
+3. `u64 session_sequence`
+4. `u64 chunk_index`
+5. `u8 payload_tag`
+
+Current codec version is `1.0`. The payload tags are:
+
+- `0`: `SnapshotStart`
+- `1`: `Contexts`
+- `2`: `Counters`
+- `3`: `Events`
+- `4`: `SnapshotEnd`
+
+A decoder rejects unsupported versions, unknown tags, truncated payloads, and
+trailing bytes after a valid payload.
+
+## Payload Limits
+
+The codec enforces these bounds before allocating dynamic payload data:
+
+- string payload: 64 KiB
+- encoded envelope frame: 16 MiB
+- envelopes per snapshot response: 1,000,000
+- session announcements per discovery response: 4,096
+- rows per context, counter, or event envelope: 65,536
+- labels per context row: `spoor_core::CONTEXT_INLINE_CAPACITY`
+
+These are protocol limits, not tuning recommendations. Producers should still
+chunk snapshots to keep latency and consumer memory bounded.
+
+## Compatibility Rule
+
+Changes that add payload tags, reorder snapshot publication, change field
+encoding, or change the meaning of existing tags require a protocol version
+bump and a migration note. Consumers must already handle chunked publication and
+dropped-data summaries, so changing chunk sizes does not require a version bump.
