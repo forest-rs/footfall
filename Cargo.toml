@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "benchmarks/substrate",
     "crates/spoor",
     "crates/spoor_core",
     "crates/spoor_export",

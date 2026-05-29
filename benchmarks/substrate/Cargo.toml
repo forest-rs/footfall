@@ -1,0 +1,23 @@
+[package]
+name = "spoor_benchmarks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Top-level benchmark wind tunnel for Spoor substrate overhead."
+
+[dependencies]
+spoor = { features = ["std"], workspace = true }
+spoor_export.workspace = true
+spoor_runtime.workspace = true
+
+[[bin]]
+name = "substrate"
+path = "src/main.rs"
+
+[lints]
+workspace = true

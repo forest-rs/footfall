@@ -544,7 +544,8 @@ phase list below records what is done and what remains prototype-grade.
 
 ### Phase 7
 
-- Still needed: a separate benchmark crate measuring the core substrate overhead.
+- Started: `spoor_benchmarks` measures disabled calls, counter updates, scope
+  pairs, context construction, trace append, snapshots, and export.
 - Still needed: measured runtime write-path changes before claiming low overhead.
 
 ## Prototype Boundaries
@@ -558,16 +559,14 @@ these areas are still prototype-grade:
   for broad always-on instrumentation.
 - Protocol hardening: the session model is versioned, but the concrete
   WebTransport wire format needs explicit size limits and compatibility tests.
-- Measurement: no benchmark crate exists yet, so low-overhead claims remain
-  architectural intent rather than measured fact.
+- Measurement: the benchmark crate exists, but results still need to drive the
+  runtime write path before low-overhead claims are treated as proven.
 - Real proving ground: examples demonstrate the model, but one production
   subsystem must prove the context vocabulary and exported views.
 
 ## Next Steps Checklist
 
 - Wire `InstrumentationLevel` into `spoor_runtime` and exported examples.
-- Add a separate benchmark crate for disabled calls, counter updates, scope
-  begin/end, context construction, trace append, snapshot, and export cost.
 - Replace the single runtime state lock with a measured sharded or per-thread
   collection design.
 - Document and harden the WebTransport session wire format.

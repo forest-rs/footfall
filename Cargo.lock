@@ -977,6 +977,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "spoor_benchmarks"
+version = "0.1.0"
+dependencies = [
+ "spoor",
+ "spoor_export",
+ "spoor_runtime",
+]
+
+[[package]]
 name = "spoor_core"
 version = "0.1.0"
 
