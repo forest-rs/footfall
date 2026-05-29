@@ -15,6 +15,7 @@ use spoor_export::to_chrome_trace_json;
 use spoor_runtime::{Runtime, install_global};
 use std::{
     hint::black_box,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -25,6 +26,8 @@ static ATLAS_ID: ResourceId = ResourceId::new(4);
 
 const FAST_ITERS: u64 = 100_000;
 const EVENT_ITERS: u64 = 20_000;
+const PARALLEL_THREADS: u64 = 4;
+const PARALLEL_ITERS_PER_THREAD: u64 = 25_000;
 const SNAPSHOT_ITERS: u64 = 1_000;
 const EXPORT_ITERS: u64 = 200;
 
@@ -56,6 +59,13 @@ fn main() {
     results.push(run("runtime/counters counter_add", FAST_ITERS, || {
         counter_add(black_box(&OPS), black_box(context), black_box(1));
     }));
+
+    runtime.reset();
+    results.push(run_parallel_counter_updates(
+        "runtime/counters parallel counter_add",
+        PARALLEL_THREADS,
+        PARALLEL_ITERS_PER_THREAD,
+    ));
 
     runtime.set_level(InstrumentationLevel::Scoped);
     runtime.reset();
@@ -127,6 +137,34 @@ fn run(name: &'static str, iters: u64, mut f: impl FnMut()) -> ResultRow {
     ResultRow {
         name,
         iters,
+        total: start.elapsed(),
+    }
+}
+
+fn run_parallel_counter_updates(
+    name: &'static str,
+    threads: u64,
+    iters_per_thread: u64,
+) -> ResultRow {
+    let start = Instant::now();
+    thread::scope(|scope| {
+        for thread_index in 0..threads {
+            scope.spawn(move || {
+                let context = Context::root()
+                    .with(
+                        LabelKey::Frame,
+                        u32::try_from(thread_index).unwrap_or(u32::MAX),
+                    )
+                    .with(LabelKey::Pass, 1_u32);
+                for _ in 0..iters_per_thread {
+                    counter_add(black_box(&OPS), black_box(context), black_box(1));
+                }
+            });
+        }
+    });
+    ResultRow {
+        name,
+        iters: threads.saturating_mul(iters_per_thread),
         total: start.elapsed(),
     }
 }

@@ -28,6 +28,10 @@ use `Runtime::with_level`, `Runtime::named_with_level`, or `Runtime::set_level`.
 For compatibility, `Runtime::new` and `Runtime::named` continue to default to
 `Trace`.
 
+Runtime collection now uses one context interner plus sharded counter and event
+stores. Snapshot payloads keep the same public shape; event rows are merged and
+ordered by timestamp during snapshot extraction.
+
 ## Session Wire Format
 
 The transport-neutral envelope model remains in `spoor_session`. The

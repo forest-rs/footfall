@@ -13,10 +13,12 @@ use std::{
     string::String,
     sync::{
         Mutex, OnceLock,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
+
+const DEFAULT_SHARD_COUNT: usize = 16;
 
 /// Installs a runtime as the process-wide Spoor backend.
 pub fn install_global(runtime: &'static Runtime) -> Result<(), InstallError> {
@@ -44,7 +46,17 @@ pub struct Runtime {
     process_name: String,
     session_name: Option<String>,
     level: AtomicU8,
-    state: Mutex<State>,
+    counter_capacity: usize,
+    event_capacity: usize,
+    next_scope_token: AtomicU64,
+    counter_count: AtomicUsize,
+    event_count: AtomicUsize,
+    dropped_counters: AtomicU64,
+    dropped_events: AtomicU64,
+    session: Mutex<SessionState>,
+    contexts: Mutex<ContextState>,
+    counter_shards: Vec<Mutex<CounterShard>>,
+    event_shards: Vec<Mutex<EventShard>>,
 }
 
 impl Runtime {
@@ -92,7 +104,20 @@ impl Runtime {
             process_name: process_name.into(),
             session_name: None,
             level: AtomicU8::new(level_to_u8(level)),
-            state: Mutex::new(State::new(counter_capacity, event_capacity)),
+            counter_capacity,
+            event_capacity,
+            next_scope_token: AtomicU64::new(1),
+            counter_count: AtomicUsize::new(0),
+            event_count: AtomicUsize::new(0),
+            dropped_counters: AtomicU64::new(0),
+            dropped_events: AtomicU64::new(0),
+            session: Mutex::new(SessionState::default()),
+            contexts: Mutex::new(ContextState::new(context_capacity(
+                counter_capacity,
+                event_capacity,
+            ))),
+            counter_shards: build_counter_shards(DEFAULT_SHARD_COUNT),
+            event_shards: build_event_shards(DEFAULT_SHARD_COUNT),
         }
     }
 
@@ -121,34 +146,22 @@ impl Runtime {
     #[must_use]
     pub fn snapshot(&self) -> Snapshot {
         let captured_at_micros = self.now_micros();
-        let state = self
-            .state
-            .lock()
-            .expect("runtime mutex should not be poisoned");
-        state.snapshot(self.metadata(state.session_sequence), captured_at_micros)
+        self.snapshot_at(captured_at_micros)
     }
 
     /// Drains the current capture state into a snapshot and starts a fresh session.
     #[must_use]
     pub fn drain_snapshot(&self) -> Snapshot {
         let captured_at_micros = self.now_micros();
-        let mut state = self
-            .state
-            .lock()
-            .expect("runtime mutex should not be poisoned");
-        let snapshot = state.snapshot(self.metadata(state.session_sequence), captured_at_micros);
-        state.reset(captured_at_micros);
+        let snapshot = self.snapshot_at(captured_at_micros);
+        self.reset_at(captured_at_micros);
         snapshot
     }
 
     /// Clears the current capture state and starts a fresh session.
     pub fn reset(&self) {
         let captured_at_micros = self.now_micros();
-        let mut state = self
-            .state
-            .lock()
-            .expect("runtime mutex should not be poisoned");
-        state.reset(captured_at_micros);
+        self.reset_at(captured_at_micros);
     }
 
     fn metadata(&self, session_sequence: u64) -> SnapshotMetadata {
@@ -161,6 +174,193 @@ impl Runtime {
 
     fn now_micros(&self) -> u64 {
         duration_to_micros(self.created_at.elapsed())
+    }
+
+    fn snapshot_at(&self, captured_at_micros: u64) -> Snapshot {
+        let session = self
+            .session
+            .lock()
+            .expect("runtime session mutex should not be poisoned");
+        let contexts = self
+            .contexts
+            .lock()
+            .expect("runtime context mutex should not be poisoned");
+        let mut counters = Vec::with_capacity(self.counter_count.load(Ordering::Relaxed));
+        for shard in &self.counter_shards {
+            counters.extend(
+                shard
+                    .lock()
+                    .expect("runtime counter shard should not be poisoned")
+                    .counters
+                    .values()
+                    .cloned(),
+            );
+        }
+
+        let mut events = Vec::with_capacity(self.event_count.load(Ordering::Relaxed));
+        for shard in &self.event_shards {
+            events.extend(
+                shard
+                    .lock()
+                    .expect("runtime event shard should not be poisoned")
+                    .events
+                    .iter()
+                    .cloned(),
+            );
+        }
+        events.sort_by_key(event_sort_key);
+
+        Snapshot {
+            metadata: self.metadata(session.session_sequence),
+            capture_start_micros: session.capture_start_micros,
+            captured_at_micros,
+            contexts: contexts.contexts.clone(),
+            counters,
+            events,
+            dropped_contexts: contexts.dropped_contexts,
+            dropped_counters: self.dropped_counters.load(Ordering::Relaxed),
+            dropped_events: self.dropped_events.load(Ordering::Relaxed),
+        }
+    }
+
+    fn reset_at(&self, capture_start_micros: u64) {
+        let mut session = self
+            .session
+            .lock()
+            .expect("runtime session mutex should not be poisoned");
+        session.capture_start_micros = capture_start_micros;
+        session.session_sequence = session.session_sequence.saturating_add(1);
+
+        self.next_scope_token.store(1, Ordering::Relaxed);
+        self.counter_count.store(0, Ordering::Relaxed);
+        self.event_count.store(0, Ordering::Relaxed);
+        self.dropped_counters.store(0, Ordering::Relaxed);
+        self.dropped_events.store(0, Ordering::Relaxed);
+
+        self.contexts
+            .lock()
+            .expect("runtime context mutex should not be poisoned")
+            .reset();
+        for shard in &self.counter_shards {
+            shard
+                .lock()
+                .expect("runtime counter shard should not be poisoned")
+                .counters
+                .clear();
+        }
+        for shard in &self.event_shards {
+            shard
+                .lock()
+                .expect("runtime event shard should not be poisoned")
+                .events
+                .clear();
+        }
+    }
+
+    fn counter_add_at(&self, desc: &CounterDesc, context: Context, value: u64, at_micros: u64) {
+        self.counter_update_at(desc, context, value, at_micros, CounterKind::Counter);
+    }
+
+    fn gauge_set_at(&self, desc: &CounterDesc, context: Context, value: u64, at_micros: u64) {
+        self.counter_update_at(desc, context, value, at_micros, CounterKind::Gauge);
+    }
+
+    fn counter_update_at(
+        &self,
+        desc: &CounterDesc,
+        context: Context,
+        value: u64,
+        at_micros: u64,
+        kind: CounterKind,
+    ) {
+        let Some(context_id) = self.context_id(context) else {
+            self.dropped_counters.fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        let key = CounterKey::new(desc.id(), context_id, kind);
+        let shard_index = self.counter_shard_index(key);
+        let mut shard = self.counter_shards[shard_index]
+            .lock()
+            .expect("runtime counter shard should not be poisoned");
+        if let Some(snapshot) = shard.counters.get_mut(&key) {
+            snapshot.value = match kind {
+                CounterKind::Counter => snapshot.value.saturating_add(value),
+                CounterKind::Gauge => value,
+            };
+            snapshot.updated_at_micros = at_micros;
+            return;
+        }
+
+        if !self.reserve_counter_slot() {
+            self.dropped_counters.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+
+        shard.counters.insert(
+            key,
+            CounterSnapshot {
+                desc_id: desc.id(),
+                name: desc.name(),
+                context_id,
+                kind,
+                value,
+                updated_at_micros: at_micros,
+            },
+        );
+    }
+
+    fn next_scope_token(&self) -> ScopeToken {
+        ScopeToken::new(self.next_scope_token.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn push_event_at(&self, observation: Observation, at_micros: u64) {
+        if !self.reserve_event_slot() {
+            self.dropped_events.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+
+        let shard_index = self.event_shard_index(&observation);
+        self.event_shards[shard_index]
+            .lock()
+            .expect("runtime event shard should not be poisoned")
+            .events
+            .push_back(TimedObservation {
+                at_micros,
+                observation,
+            });
+    }
+
+    fn context_id(&self, context: Context) -> Option<ContextId> {
+        self.contexts
+            .lock()
+            .expect("runtime context mutex should not be poisoned")
+            .context_id(context)
+    }
+
+    fn reserve_counter_slot(&self) -> bool {
+        reserve_slot(&self.counter_count, self.counter_capacity)
+    }
+
+    fn reserve_event_slot(&self) -> bool {
+        reserve_slot(&self.event_count, self.event_capacity)
+    }
+
+    fn counter_shard_index(&self, key: CounterKey) -> usize {
+        shard_index(
+            key.desc_id
+                .get()
+                .wrapping_mul(31)
+                .wrapping_add(key.context_id.get())
+                .wrapping_add(counter_kind_discriminant(key.kind)),
+            self.counter_shards.len(),
+        )
+    }
+
+    fn event_shard_index(&self, observation: &Observation) -> usize {
+        let raw = observation
+            .context_id()
+            .map_or_else(|| scope_token_for_observation(observation), ContextId::get);
+        shard_index(raw, self.event_shards.len())
     }
 }
 
@@ -353,73 +553,41 @@ impl Observation {
     }
 }
 
-#[derive(Debug)]
-struct State {
-    counter_capacity: usize,
-    event_capacity: usize,
-    context_capacity: usize,
+#[derive(Clone, Copy, Debug, Default)]
+struct SessionState {
     capture_start_micros: u64,
     session_sequence: u64,
-    next_scope_token: u64,
+}
+
+#[derive(Debug)]
+struct ContextState {
+    capacity: usize,
     next_context_id: u64,
     context_ids: HashMap<Context, ContextId>,
     contexts: Vec<ContextSnapshot>,
-    counters: HashMap<CounterKey, CounterSnapshot>,
-    events: VecDeque<TimedObservation>,
     dropped_contexts: u64,
-    dropped_counters: u64,
-    dropped_events: u64,
 }
 
-impl State {
-    fn new(counter_capacity: usize, event_capacity: usize) -> Self {
-        let context_capacity = counter_capacity
-            .saturating_add(event_capacity)
-            .saturating_add(1);
+impl ContextState {
+    fn new(capacity: usize) -> Self {
         let root_id = ContextId::new(0);
         let root_context = Context::root();
-        let mut context_ids = HashMap::with_capacity(context_capacity);
+        let mut context_ids = HashMap::with_capacity(capacity);
         context_ids.insert(root_context, root_id);
 
         Self {
-            counter_capacity,
-            event_capacity,
-            context_capacity,
-            capture_start_micros: 0,
-            session_sequence: 0,
-            next_scope_token: 1,
+            capacity,
             next_context_id: 1,
             context_ids,
             contexts: vec![ContextSnapshot {
                 id: root_id,
                 context: root_context,
             }],
-            counters: HashMap::with_capacity(counter_capacity),
-            events: VecDeque::with_capacity(event_capacity),
             dropped_contexts: 0,
-            dropped_counters: 0,
-            dropped_events: 0,
         }
     }
 
-    fn snapshot(&self, metadata: SnapshotMetadata, captured_at_micros: u64) -> Snapshot {
-        Snapshot {
-            metadata,
-            capture_start_micros: self.capture_start_micros,
-            captured_at_micros,
-            contexts: self.contexts.clone(),
-            counters: self.counters.values().cloned().collect(),
-            events: self.events.iter().cloned().collect(),
-            dropped_contexts: self.dropped_contexts,
-            dropped_counters: self.dropped_counters,
-            dropped_events: self.dropped_events,
-        }
-    }
-
-    fn reset(&mut self, capture_start_micros: u64) {
-        self.capture_start_micros = capture_start_micros;
-        self.session_sequence = self.session_sequence.saturating_add(1);
-        self.next_scope_token = 1;
+    fn reset(&mut self) {
         self.next_context_id = 1;
         self.context_ids.clear();
         self.contexts.clear();
@@ -430,91 +598,7 @@ impl State {
             id: root_id,
             context: root_context,
         });
-        self.counters.clear();
-        self.events.clear();
         self.dropped_contexts = 0;
-        self.dropped_counters = 0;
-        self.dropped_events = 0;
-    }
-
-    fn counter_add(&mut self, desc: &CounterDesc, context: Context, value: u64, at_micros: u64) {
-        let Some(context_id) = self.context_id(context) else {
-            self.dropped_counters = self.dropped_counters.saturating_add(1);
-            return;
-        };
-
-        let key = CounterKey::new(desc.id(), context_id, CounterKind::Counter);
-        if let Some(snapshot) = self.counters.get_mut(&key) {
-            snapshot.value = snapshot.value.saturating_add(value);
-            snapshot.updated_at_micros = at_micros;
-            return;
-        }
-
-        if self.counters.len() == self.counter_capacity {
-            self.dropped_counters = self.dropped_counters.saturating_add(1);
-            return;
-        }
-
-        self.counters.insert(
-            key,
-            CounterSnapshot {
-                desc_id: desc.id(),
-                name: desc.name(),
-                context_id,
-                kind: CounterKind::Counter,
-                value,
-                updated_at_micros: at_micros,
-            },
-        );
-    }
-
-    fn gauge_set(&mut self, desc: &CounterDesc, context: Context, value: u64, at_micros: u64) {
-        let Some(context_id) = self.context_id(context) else {
-            self.dropped_counters = self.dropped_counters.saturating_add(1);
-            return;
-        };
-
-        let key = CounterKey::new(desc.id(), context_id, CounterKind::Gauge);
-        if let Some(snapshot) = self.counters.get_mut(&key) {
-            snapshot.value = value;
-            snapshot.updated_at_micros = at_micros;
-            return;
-        }
-
-        if self.counters.len() == self.counter_capacity {
-            self.dropped_counters = self.dropped_counters.saturating_add(1);
-            return;
-        }
-
-        self.counters.insert(
-            key,
-            CounterSnapshot {
-                desc_id: desc.id(),
-                name: desc.name(),
-                context_id,
-                kind: CounterKind::Gauge,
-                value,
-                updated_at_micros: at_micros,
-            },
-        );
-    }
-
-    fn next_scope_token(&mut self) -> ScopeToken {
-        let token = ScopeToken::new(self.next_scope_token);
-        self.next_scope_token = self.next_scope_token.saturating_add(1);
-        token
-    }
-
-    fn push_event(&mut self, observation: Observation, at_micros: u64) {
-        if self.events.len() == self.event_capacity {
-            self.dropped_events = self.dropped_events.saturating_add(1);
-            return;
-        }
-
-        self.events.push_back(TimedObservation {
-            at_micros,
-            observation,
-        });
     }
 
     fn context_id(&mut self, context: Context) -> Option<ContextId> {
@@ -522,7 +606,7 @@ impl State {
             return Some(*context_id);
         }
 
-        if self.contexts.len() == self.context_capacity {
+        if self.contexts.len() == self.capacity {
             self.dropped_contexts = self.dropped_contexts.saturating_add(1);
             return None;
         }
@@ -536,6 +620,16 @@ impl State {
         });
         Some(context_id)
     }
+}
+
+#[derive(Debug, Default)]
+struct CounterShard {
+    counters: HashMap<CounterKey, CounterSnapshot>,
+}
+
+#[derive(Debug, Default)]
+struct EventShard {
+    events: VecDeque<TimedObservation>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -575,11 +669,7 @@ fn backend_counter_add(desc: &CounterDesc, context: Context, value: u64) {
             return;
         }
         let at_micros = runtime.now_micros();
-        let mut state = runtime
-            .state
-            .lock()
-            .expect("runtime mutex should not be poisoned");
-        state.counter_add(desc, context, value, at_micros);
+        runtime.counter_add_at(desc, context, value, at_micros);
     });
 }
 
@@ -589,11 +679,7 @@ fn backend_gauge_set(desc: &CounterDesc, context: Context, value: u64) {
             return;
         }
         let at_micros = runtime.now_micros();
-        let mut state = runtime
-            .state
-            .lock()
-            .expect("runtime mutex should not be poisoned");
-        state.gauge_set(desc, context, value, at_micros);
+        runtime.gauge_set_at(desc, context, value, at_micros);
     });
 }
 
@@ -603,16 +689,12 @@ fn backend_scope_begin(desc: &ScopeDesc, context: Context) -> ScopeToken {
             return ScopeToken::new(desc.id().get());
         }
         let at_micros = runtime.now_micros();
-        let mut state = runtime
-            .state
-            .lock()
-            .expect("runtime mutex should not be poisoned");
-        let token = state.next_scope_token();
-        let Some(context_id) = state.context_id(context) else {
-            state.dropped_events = state.dropped_events.saturating_add(1);
+        let token = runtime.next_scope_token();
+        let Some(context_id) = runtime.context_id(context) else {
+            runtime.dropped_events.fetch_add(1, Ordering::Relaxed);
             return token;
         };
-        state.push_event(
+        runtime.push_event_at(
             Observation::ScopeBegin {
                 desc_id: desc.id(),
                 name: desc.name(),
@@ -632,11 +714,7 @@ fn backend_scope_end(token: ScopeToken) {
             return;
         }
         let at_micros = runtime.now_micros();
-        let mut state = runtime
-            .state
-            .lock()
-            .expect("runtime mutex should not be poisoned");
-        state.push_event(Observation::ScopeEnd { token }, at_micros);
+        runtime.push_event_at(Observation::ScopeEnd { token }, at_micros);
     });
 }
 
@@ -651,15 +729,11 @@ fn backend_resource_create(
             return;
         }
         let at_micros = runtime.now_micros();
-        let mut state = runtime
-            .state
-            .lock()
-            .expect("runtime mutex should not be poisoned");
-        let Some(context_id) = state.context_id(context) else {
-            state.dropped_events = state.dropped_events.saturating_add(1);
+        let Some(context_id) = runtime.context_id(context) else {
+            runtime.dropped_events.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        state.push_event(
+        runtime.push_event_at(
             Observation::ResourceCreate {
                 kind_id: desc.id(),
                 kind_name: desc.name(),
@@ -683,15 +757,11 @@ fn backend_resource_update(
             return;
         }
         let at_micros = runtime.now_micros();
-        let mut state = runtime
-            .state
-            .lock()
-            .expect("runtime mutex should not be poisoned");
-        let Some(context_id) = state.context_id(context) else {
-            state.dropped_events = state.dropped_events.saturating_add(1);
+        let Some(context_id) = runtime.context_id(context) else {
+            runtime.dropped_events.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        state.push_event(
+        runtime.push_event_at(
             Observation::ResourceUpdate {
                 kind_id: desc.id(),
                 kind_name: desc.name(),
@@ -710,15 +780,11 @@ fn backend_resource_drop(desc: &ResourceKindDesc, resource_id: ResourceId, conte
             return;
         }
         let at_micros = runtime.now_micros();
-        let mut state = runtime
-            .state
-            .lock()
-            .expect("runtime mutex should not be poisoned");
-        let Some(context_id) = state.context_id(context) else {
-            state.dropped_events = state.dropped_events.saturating_add(1);
+        let Some(context_id) = runtime.context_id(context) else {
+            runtime.dropped_events.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        state.push_event(
+        runtime.push_event_at(
             Observation::ResourceDrop {
                 kind_id: desc.id(),
                 kind_name: desc.name(),
@@ -736,15 +802,11 @@ fn backend_frame_marker(kind: MarkerKind, phase: MarkerPhase, context: Context) 
             return;
         }
         let at_micros = runtime.now_micros();
-        let mut state = runtime
-            .state
-            .lock()
-            .expect("runtime mutex should not be poisoned");
-        let Some(context_id) = state.context_id(context) else {
-            state.dropped_events = state.dropped_events.saturating_add(1);
+        let Some(context_id) = runtime.context_id(context) else {
+            runtime.dropped_events.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        state.push_event(
+        runtime.push_event_at(
             Observation::FrameMarker {
                 kind,
                 phase,
@@ -761,15 +823,11 @@ fn backend_flow(flow_id: FlowId, phase: FlowPhase, context: Context) {
             return;
         }
         let at_micros = runtime.now_micros();
-        let mut state = runtime
-            .state
-            .lock()
-            .expect("runtime mutex should not be poisoned");
-        let Some(context_id) = state.context_id(context) else {
-            state.dropped_events = state.dropped_events.saturating_add(1);
+        let Some(context_id) = runtime.context_id(context) else {
+            runtime.dropped_events.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        state.push_event(
+        runtime.push_event_at(
             Observation::Flow {
                 flow_id,
                 phase,
@@ -782,6 +840,73 @@ fn backend_flow(flow_id: FlowId, phase: FlowPhase, context: Context) {
 
 fn with_runtime<T>(f: impl FnOnce(&Runtime) -> T) -> Option<T> {
     RUNTIME.get().map(|runtime| f(runtime))
+}
+
+fn build_counter_shards(count: usize) -> Vec<Mutex<CounterShard>> {
+    (0..count.max(1))
+        .map(|_| Mutex::new(CounterShard::default()))
+        .collect()
+}
+
+fn build_event_shards(count: usize) -> Vec<Mutex<EventShard>> {
+    (0..count.max(1))
+        .map(|_| Mutex::new(EventShard::default()))
+        .collect()
+}
+
+const fn context_capacity(counter_capacity: usize, event_capacity: usize) -> usize {
+    counter_capacity
+        .saturating_add(event_capacity)
+        .saturating_add(1)
+}
+
+fn reserve_slot(count: &AtomicUsize, capacity: usize) -> bool {
+    let previous = count.fetch_add(1, Ordering::Relaxed);
+    if previous < capacity {
+        true
+    } else {
+        count.fetch_sub(1, Ordering::Relaxed);
+        false
+    }
+}
+
+fn shard_index(raw: u64, shard_count: usize) -> usize {
+    let mixed = raw ^ raw.rotate_left(17) ^ raw.rotate_right(11);
+    usize::try_from(mixed).unwrap_or(0) % shard_count.max(1)
+}
+
+const fn counter_kind_discriminant(kind: CounterKind) -> u64 {
+    match kind {
+        CounterKind::Counter => 0,
+        CounterKind::Gauge => 1,
+    }
+}
+
+fn scope_token_for_observation(observation: &Observation) -> u64 {
+    match observation {
+        Observation::ScopeEnd { token } => token.get(),
+        Observation::ScopeBegin { token, .. } => token.get(),
+        Observation::ResourceCreate { resource_id, .. }
+        | Observation::ResourceUpdate { resource_id, .. }
+        | Observation::ResourceDrop { resource_id, .. } => resource_id.get(),
+        Observation::FrameMarker { .. } | Observation::Flow { .. } => 0,
+    }
+}
+
+fn event_sort_key(event: &TimedObservation) -> (u64, u8) {
+    (event.at_micros, observation_order(&event.observation))
+}
+
+const fn observation_order(observation: &Observation) -> u8 {
+    match observation {
+        Observation::ScopeBegin { .. } => 0,
+        Observation::ResourceCreate { .. } => 1,
+        Observation::ResourceUpdate { .. } => 2,
+        Observation::FrameMarker { .. } => 3,
+        Observation::Flow { .. } => 4,
+        Observation::ResourceDrop { .. } => 5,
+        Observation::ScopeEnd { .. } => 6,
+    }
 }
 
 fn duration_to_micros(duration: Duration) -> u64 {
@@ -824,15 +949,11 @@ mod tests {
         let scope = ScopeDesc::new(ScopeDescId::new(3), "record");
         let context = Context::root().with(spoor_core::LabelKey::Pass, 1_u32);
 
-        let mut state = runtime
-            .state
-            .lock()
-            .expect("runtime mutex should not be poisoned");
-        state.counter_add(&counter, context, 5, 10);
-        state.gauge_set(&counter, context, 9, 11);
-        let token = state.next_scope_token();
-        let context_id = state.context_id(context).expect("context should intern");
-        state.push_event(
+        runtime.counter_add_at(&counter, context, 5, 10);
+        runtime.gauge_set_at(&counter, context, 9, 11);
+        let token = runtime.next_scope_token();
+        let context_id = runtime.context_id(context).expect("context should intern");
+        runtime.push_event_at(
             Observation::ScopeBegin {
                 desc_id: scope.id(),
                 name: scope.name(),
@@ -841,8 +962,8 @@ mod tests {
             },
             12,
         );
-        state.push_event(Observation::ScopeEnd { token }, 13);
-        state.push_event(
+        runtime.push_event_at(Observation::ScopeEnd { token }, 13);
+        runtime.push_event_at(
             Observation::ResourceCreate {
                 kind_id: resource.id(),
                 kind_name: resource.name(),
@@ -852,7 +973,7 @@ mod tests {
             },
             14,
         );
-        state.push_event(
+        runtime.push_event_at(
             Observation::FrameMarker {
                 kind: MarkerKind::Frame,
                 phase: MarkerPhase::Begin,
@@ -860,7 +981,7 @@ mod tests {
             },
             15,
         );
-        state.push_event(
+        runtime.push_event_at(
             Observation::Flow {
                 flow_id: FlowId::new(21),
                 phase: FlowPhase::Begin,
@@ -868,7 +989,6 @@ mod tests {
             },
             16,
         );
-        drop(state);
 
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.metadata.process_name, "spoor");
@@ -896,23 +1016,17 @@ mod tests {
         runtime.set_session_name("recording");
         let runtime = runtime;
 
-        {
-            let mut state = runtime
-                .state
-                .lock()
-                .expect("runtime mutex should not be poisoned");
-            let context_id = state
-                .context_id(Context::root().with(spoor_core::LabelKey::Frame, 1_u32))
-                .expect("context should intern");
-            state.push_event(
-                Observation::FrameMarker {
-                    kind: MarkerKind::Frame,
-                    phase: MarkerPhase::Begin,
-                    context_id,
-                },
-                1,
-            );
-        }
+        let context_id = runtime
+            .context_id(Context::root().with(spoor_core::LabelKey::Frame, 1_u32))
+            .expect("context should intern");
+        runtime.push_event_at(
+            Observation::FrameMarker {
+                kind: MarkerKind::Frame,
+                phase: MarkerPhase::Begin,
+                context_id,
+            },
+            1,
+        );
 
         let drained = runtime.drain_snapshot();
         assert_eq!(drained.metadata.process_name, "demo");
@@ -929,14 +1043,10 @@ mod tests {
     #[test]
     fn runtime_enforces_event_capacity() {
         let runtime = Runtime::new(4, 1);
-        let mut state = runtime
-            .state
-            .lock()
-            .expect("runtime mutex should not be poisoned");
-        let context_id = state
+        let context_id = runtime
             .context_id(Context::root())
             .expect("root context should exist");
-        state.push_event(
+        runtime.push_event_at(
             Observation::FrameMarker {
                 kind: MarkerKind::Frame,
                 phase: MarkerPhase::Begin,
@@ -944,7 +1054,7 @@ mod tests {
             },
             1,
         );
-        state.push_event(
+        runtime.push_event_at(
             Observation::FrameMarker {
                 kind: MarkerKind::Frame,
                 phase: MarkerPhase::End,
@@ -952,11 +1062,25 @@ mod tests {
             },
             2,
         );
-        drop(state);
 
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.events.len(), 1);
         assert_eq!(snapshot.dropped_events, 1);
+    }
+
+    #[test]
+    fn runtime_enforces_counter_capacity_across_shards() {
+        let runtime = Runtime::new(1, 4);
+        let context = Context::root().with(spoor_core::LabelKey::Frame, 1_u32);
+        let first = CounterDesc::count(CounterDescId::new(31), "first");
+        let second = CounterDesc::count(CounterDescId::new(32), "second");
+
+        runtime.counter_add_at(&first, context, 1, 1);
+        runtime.counter_add_at(&second, context, 1, 2);
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.counters.len(), 1);
+        assert_eq!(snapshot.dropped_counters, 1);
     }
 
     #[test]

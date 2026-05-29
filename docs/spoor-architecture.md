@@ -349,20 +349,22 @@ This keeps runtime policy out of the call site while still allowing a bounded, r
 
 ### Runtime Model
 
-The first runtime cut should stay modest:
+The runtime cut stays modest:
 
 - no-op sink
-- counter bank
-- bounded event ring
+- sharded counter banks
+- bounded sharded event retention
 - dropped-event counters
 - frame or transaction flush boundaries
 - snapshot extraction for export
 
-A good initial threading model is "local writes, merge later":
+The current threading model is "shared context interning, sharded writes, merge
+on snapshot":
 
-- per-thread append buffers where practical
-- reduced or merged snapshots at a safe boundary
-- avoid accidental shared contention in the hottest paths
+- contexts are canonicalized through one small interner
+- counters and events are written into independent shards
+- snapshots merge shards at a safe boundary
+- future work can replace shards with per-thread buffers if benchmarks show it
 
 ### Memory Model
 
