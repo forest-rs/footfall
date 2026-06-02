@@ -19,7 +19,7 @@ spoor_export.workspace = true
 spoor_fanout.workspace = true
 spoor_memory = { features = ["std"], workspace = true }
 spoor_runtime.workspace = true
-spoor_session.workspace = true
+spoor_session = { features = ["std"], workspace = true }
 spoor_session_wtransport.workspace = true
 spoor_tracy.workspace = true
 tokio = { features = ["macros", "rt-multi-thread", "signal", "time"], version = "1.51.1" }
