@@ -10,8 +10,8 @@ use spoor_core::{
     ResourceId, ResourceKindId, ScopeDescId, ScopeToken, Unit,
 };
 use spoor_runtime::{
-    ContextSnapshot, CounterKind, CounterSnapshot, Observation, Snapshot, SnapshotMetadata,
-    TimedObservation,
+    ContextSnapshot, CounterKind, CounterSnapshot, HISTOGRAM_BUCKET_COUNT, HistogramSnapshot,
+    Observation, Snapshot, SnapshotMetadata, TimedObservation,
 };
 
 use crate::{PROTOCOL_VERSION, ProtocolVersion};
@@ -23,6 +23,8 @@ pub struct Chunking {
     pub max_contexts: usize,
     /// Maximum number of counters in one envelope. `0` means "all remaining".
     pub max_counters: usize,
+    /// Maximum number of histograms in one envelope. `0` means "all remaining".
+    pub max_histograms: usize,
     /// Maximum number of events in one envelope. `0` means "all remaining".
     pub max_events: usize,
 }
@@ -30,10 +32,16 @@ pub struct Chunking {
 impl Chunking {
     /// Creates an explicit chunking policy.
     #[must_use]
-    pub const fn new(max_contexts: usize, max_counters: usize, max_events: usize) -> Self {
+    pub const fn new(
+        max_contexts: usize,
+        max_counters: usize,
+        max_histograms: usize,
+        max_events: usize,
+    ) -> Self {
         Self {
             max_contexts,
             max_counters,
+            max_histograms,
             max_events,
         }
     }
@@ -41,7 +49,7 @@ impl Chunking {
 
 impl Default for Chunking {
     fn default() -> Self {
-        Self::new(256, 256, 256)
+        Self::new(256, 256, 256, 256)
     }
 }
 
@@ -69,6 +77,8 @@ pub struct SnapshotSummary<'a> {
     pub context_count: usize,
     /// Number of counters in the snapshot.
     pub counter_count: usize,
+    /// Number of histograms in the snapshot.
+    pub histogram_count: usize,
     /// Number of timestamped events in the snapshot.
     pub event_count: usize,
 }
@@ -102,6 +112,8 @@ pub enum Payload<'a> {
     Contexts(&'a [ContextSnapshot]),
     /// One chunk of aggregated counter rows.
     Counters(&'a [CounterSnapshot]),
+    /// One chunk of aggregated histogram rows.
+    Histograms(&'a [HistogramSnapshot]),
     /// One chunk of timestamped event rows.
     Events(&'a [TimedObservation]),
     /// Finishes publication with dropped-data totals.
@@ -144,6 +156,8 @@ pub struct OwnedSnapshotSummary {
     pub context_count: usize,
     /// Number of counters in the snapshot.
     pub counter_count: usize,
+    /// Number of histograms in the snapshot.
+    pub histogram_count: usize,
     /// Number of timestamped events in the snapshot.
     pub event_count: usize,
 }
@@ -203,6 +217,31 @@ pub struct OwnedCounterSnapshot {
     pub kind: CounterKind,
     /// Aggregated value.
     pub value: u64,
+    /// Last update time relative to runtime creation.
+    pub updated_at_micros: u64,
+}
+
+/// Owned histogram row suitable for transport.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnedHistogramSnapshot {
+    /// Counter descriptor id.
+    pub desc_id: CounterDescId,
+    /// Stable descriptor name.
+    pub name: String,
+    /// Unit copied from the counter descriptor.
+    pub unit: Unit,
+    /// Canonical semantic context id.
+    pub context_id: ContextId,
+    /// Number of recorded samples.
+    pub count: u64,
+    /// Saturating sum of recorded samples.
+    pub sum: u64,
+    /// Smallest recorded sample. Meaningless while `count` is zero.
+    pub min: u64,
+    /// Largest recorded sample.
+    pub max: u64,
+    /// Power-of-two bucket counts indexed by sample bit length.
+    pub buckets: [u64; HISTOGRAM_BUCKET_COUNT],
     /// Last update time relative to runtime creation.
     pub updated_at_micros: u64,
 }
@@ -314,6 +353,8 @@ pub enum OwnedSessionPayload {
     Contexts(Vec<OwnedContextSnapshot>),
     /// One chunk of aggregated counter rows.
     Counters(Vec<OwnedCounterSnapshot>),
+    /// One chunk of aggregated histogram rows.
+    Histograms(Vec<OwnedHistogramSnapshot>),
     /// One chunk of timestamped event rows.
     Events(Vec<OwnedTimedObservation>),
     /// Finishes publication with dropped-data totals.
@@ -339,6 +380,7 @@ pub fn publish_snapshot<C: Consumer>(
             captured_at_micros: snapshot.captured_at_micros,
             context_count: snapshot.contexts.len(),
             counter_count: snapshot.counters.len(),
+            histogram_count: snapshot.histograms.len(),
             event_count: snapshot.events.len(),
         }),
     })?;
@@ -362,6 +404,17 @@ pub fn publish_snapshot<C: Consumer>(
         consumer.consume(Envelope {
             header: envelope_header(snapshot, chunk_index),
             payload: Payload::Counters(counters),
+        })?;
+        chunk_index = chunk_index.saturating_add(1);
+    }
+
+    for histograms in snapshot
+        .histograms
+        .chunks(normalized_chunk_size(chunking.max_histograms))
+    {
+        consumer.consume(Envelope {
+            header: envelope_header(snapshot, chunk_index),
+            payload: Payload::Histograms(histograms),
         })?;
         chunk_index = chunk_index.saturating_add(1);
     }
@@ -431,6 +484,7 @@ impl Envelope<'_> {
                         captured_at_micros: summary.captured_at_micros,
                         context_count: summary.context_count,
                         counter_count: summary.counter_count,
+                        histogram_count: summary.histogram_count,
                         event_count: summary.event_count,
                     })
                 }
@@ -439,6 +493,9 @@ impl Envelope<'_> {
                 ),
                 Payload::Counters(counters) => OwnedSessionPayload::Counters(
                     counters.iter().map(owned_counter_snapshot).collect(),
+                ),
+                Payload::Histograms(histograms) => OwnedSessionPayload::Histograms(
+                    histograms.iter().map(owned_histogram_snapshot).collect(),
                 ),
                 Payload::Events(events) => OwnedSessionPayload::Events(
                     events.iter().map(owned_timed_observation).collect(),
@@ -504,6 +561,21 @@ fn owned_counter_snapshot(counter: &CounterSnapshot) -> OwnedCounterSnapshot {
         kind: counter.kind,
         value: counter.value,
         updated_at_micros: counter.updated_at_micros,
+    }
+}
+
+fn owned_histogram_snapshot(histogram: &HistogramSnapshot) -> OwnedHistogramSnapshot {
+    OwnedHistogramSnapshot {
+        desc_id: histogram.desc_id,
+        name: String::from(histogram.name),
+        unit: histogram.unit,
+        context_id: histogram.context_id,
+        count: histogram.count,
+        sum: histogram.sum,
+        min: histogram.min,
+        max: histogram.max,
+        buckets: histogram.buckets,
+        updated_at_micros: histogram.updated_at_micros,
     }
 }
 
@@ -643,6 +715,23 @@ mod tests {
                     updated_at_micros: 21,
                 },
             ],
+            histograms: vec![spoor_runtime::HistogramSnapshot {
+                desc_id: CounterDescId::new(3),
+                name: "frame_micros",
+                unit: Unit::Micros,
+                context_id: ContextId::new(1),
+                count: 2,
+                sum: 24,
+                min: 8,
+                max: 16,
+                buckets: {
+                    let mut buckets = [0; spoor_runtime::HISTOGRAM_BUCKET_COUNT];
+                    buckets[4] = 1;
+                    buckets[5] = 1;
+                    buckets
+                },
+                updated_at_micros: 21,
+            }],
             events: vec![
                 TimedObservation {
                     at_micros: 22,
@@ -665,7 +754,7 @@ mod tests {
         };
 
         let mut consumer = RecordingConsumer::default();
-        publish_snapshot(&snapshot, Chunking::new(1, 1, 1), &mut consumer)
+        publish_snapshot(&snapshot, Chunking::new(1, 1, 1, 1), &mut consumer)
             .expect("publication should succeed");
 
         assert_eq!(consumer.protocol_version, Some(PROTOCOL_VERSION));
@@ -677,6 +766,7 @@ mod tests {
                 "contexts:1",
                 "counters:1",
                 "counters:1",
+                "histograms:1",
                 "events:1",
                 "events:1",
                 "end",
@@ -720,6 +810,12 @@ mod tests {
                     self.payloads.push(match rows.len() {
                         1 => "counters:1",
                         _ => "counters:n",
+                    });
+                }
+                Payload::Histograms(rows) => {
+                    self.payloads.push(match rows.len() {
+                        1 => "histograms:1",
+                        _ => "histograms:n",
                     });
                 }
                 Payload::Events(rows) => {

@@ -116,6 +116,8 @@ pub struct Backend {
     pub counter_add: fn(&CounterDesc, Context, u64),
     /// Gauge update emission.
     pub gauge_set: fn(&CounterDesc, Context, u64),
+    /// Histogram sample emission.
+    pub histogram_record: fn(&CounterDesc, Context, u64),
     /// Scope begin emission.
     pub scope_begin: fn(&ScopeDesc, Context, Args) -> ScopeToken,
     /// Scope end emission.
@@ -137,6 +139,7 @@ impl Backend {
     pub const NOOP: Self = Self {
         counter_add: noop_counter_add,
         gauge_set: noop_gauge_set,
+        histogram_record: noop_histogram_record,
         scope_begin: noop_scope_begin,
         scope_end: noop_scope_end,
         resource_create: noop_resource_create,
@@ -160,6 +163,14 @@ pub fn counter_add(desc: &CounterDesc, context: Context, value: u64) {
 /// Sets a gauge descriptor under a semantic context.
 pub fn gauge_set(desc: &CounterDesc, context: Context, value: u64) {
     (backend().gauge_set)(desc, context, value);
+}
+
+/// Records one sample into a histogram descriptor under a semantic context.
+///
+/// Histograms aggregate a value distribution per descriptor and context, so
+/// consumers can derive percentiles instead of only sums and last values.
+pub fn histogram_record(desc: &CounterDesc, context: Context, value: u64) {
+    (backend().histogram_record)(desc, context, value);
 }
 
 /// Begins a scope under a semantic context.
@@ -285,6 +296,8 @@ static BACKEND: OnceLock<Backend> = OnceLock::new();
 fn noop_counter_add(_desc: &CounterDesc, _context: Context, _value: u64) {}
 
 fn noop_gauge_set(_desc: &CounterDesc, _context: Context, _value: u64) {}
+
+fn noop_histogram_record(_desc: &CounterDesc, _context: Context, _value: u64) {}
 
 fn noop_scope_begin(desc: &ScopeDesc, _context: Context, _args: Args) -> ScopeToken {
     ScopeToken::new(scope_desc_raw(desc.id()))

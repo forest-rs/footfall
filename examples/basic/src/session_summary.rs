@@ -60,6 +60,7 @@ pub(crate) fn summarize(envelopes: &[OwnedSessionEnvelope]) -> SessionSummary {
                     contexts.insert(row.id.get(), row.entries.clone());
                 }
             }
+            OwnedSessionPayload::Histograms(_) => {}
             OwnedSessionPayload::Counters(rows) => {
                 counter_rows += rows.len();
                 for row in rows {

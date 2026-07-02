@@ -24,6 +24,8 @@ static CACHE_MISSES: CounterDesc = spoor::counter_desc!(count, 14, "cache_misses
 static CACHE_EVICTIONS: CounterDesc = spoor::counter_desc!(count, 15, "cache_evictions");
 static SCRATCH_CURRENT: CounterDesc = spoor::counter_desc!(bytes, 16, "scratch_current_bytes");
 static SCRATCH_PEAK: CounterDesc = spoor::counter_desc!(bytes, 17, "scratch_peak_bytes");
+static TESSELLATE_MICROS: CounterDesc =
+    spoor::counter_desc!(19, "tessellate_micros", spoor::Unit::Micros);
 static SCRATCH_GROW: CounterDesc = spoor::counter_desc!(count, 18, "scratch_grow");
 
 static ATLAS: ResourceKindDesc = spoor::resource_kind_desc!(20, "atlas");
@@ -76,6 +78,9 @@ fn main() {
                 scratch.push(index);
             }
             counter_add(&DRAW_OPS, record_context, scratch.len() as u64);
+            for sample in [180_u64, 220, 210, 950] {
+                spoor::histogram_record(&TESSELLATE_MICROS, record_context, sample);
+            }
             flow_step(INVALIDATION_FLOW, record_context);
         }
 

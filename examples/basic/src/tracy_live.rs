@@ -172,7 +172,10 @@ impl Consumer for SummaryConsumer {
             Payload::Events(events) => {
                 self.events = self.events.saturating_add(events.len());
             }
-            Payload::SnapshotStart(_) | Payload::Contexts(_) | Payload::SnapshotEnd(_) => {}
+            Payload::SnapshotStart(_)
+            | Payload::Contexts(_)
+            | Payload::Histograms(_)
+            | Payload::SnapshotEnd(_) => {}
         }
         Ok(())
     }

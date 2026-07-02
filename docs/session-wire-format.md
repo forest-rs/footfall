@@ -83,6 +83,11 @@ Current codec version is `1.0`. The payload tags are:
 - `2`: `Counters`
 - `3`: `Events`
 - `4`: `SnapshotEnd`
+- `5`: `Histograms`
+
+Publication order is `SnapshotStart`, `Contexts`, `Counters`, `Histograms`,
+`Events`, `SnapshotEnd`; the `Histograms` tag is numerically last only because
+it was added after the original five.
 
 A decoder rejects unsupported versions, unknown tags, truncated payloads, and
 trailing bytes after a valid payload. Minor versions are additive: a decoder
@@ -114,6 +119,11 @@ by `spoor_core::ARGS_INLINE_CAPACITY`, followed by that many entries of key
 string plus tagged label value (the same value encoding used by context
 labels).
 
+Histogram rows carry descriptor id, name string, unit tag, and context id,
+followed by `count`, `sum`, `min`, `max`, all
+`spoor_runtime::HISTOGRAM_BUCKET_COUNT` bucket values, and the last update
+time, each as `u64`.
+
 ## Payload Limits
 
 The codec enforces these bounds before allocating dynamic payload data:
@@ -122,7 +132,7 @@ The codec enforces these bounds before allocating dynamic payload data:
 - encoded envelope frame: 16 MiB
 - envelopes per snapshot response: 1,000,000
 - session announcements per discovery response: 4,096
-- rows per context, counter, or event envelope: 65,536
+- rows per context, counter, histogram, or event envelope: 65,536
 - labels per context row: `spoor_core::CONTEXT_INLINE_CAPACITY`
 
 These are protocol limits, not tuning recommendations. Producers should still

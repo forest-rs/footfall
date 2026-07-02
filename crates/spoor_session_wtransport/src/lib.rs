@@ -13,9 +13,9 @@ use spoor_core::{
 use spoor_runtime::{CounterKind, Snapshot};
 use spoor_session::{
     Chunking, Consumer, DroppedSummary, Envelope, EnvelopeHeader, OwnedArgEntry, OwnedContextEntry,
-    OwnedContextSnapshot, OwnedCounterSnapshot, OwnedLabelValue, OwnedObservation,
-    OwnedSessionEnvelope, OwnedSessionPayload, OwnedSnapshotMetadata, OwnedSnapshotSummary,
-    OwnedTimedObservation, Payload, ProtocolVersion, publish_snapshot,
+    OwnedContextSnapshot, OwnedCounterSnapshot, OwnedHistogramSnapshot, OwnedLabelValue,
+    OwnedObservation, OwnedSessionEnvelope, OwnedSessionPayload, OwnedSnapshotMetadata,
+    OwnedSnapshotSummary, OwnedTimedObservation, Payload, ProtocolVersion, publish_snapshot,
 };
 use std::{
     env, fmt, io,
@@ -828,6 +828,10 @@ fn encode_borrowed_envelope(envelope: Envelope<'_>) -> io::Result<Vec<u8>> {
             encode_u8(&mut bytes, 2);
             encode_borrowed_counters(&mut bytes, counters)?;
         }
+        Payload::Histograms(histograms) => {
+            encode_u8(&mut bytes, 5);
+            encode_borrowed_histograms(&mut bytes, histograms)?;
+        }
         Payload::Events(events) => {
             encode_u8(&mut bytes, 3);
             encode_borrowed_events(&mut bytes, events)?;
@@ -857,6 +861,10 @@ fn encode_envelope(envelope: &OwnedSessionEnvelope) -> io::Result<Vec<u8>> {
             encode_u8(&mut bytes, 2);
             encode_counters(&mut bytes, counters)?;
         }
+        OwnedSessionPayload::Histograms(histograms) => {
+            encode_u8(&mut bytes, 5);
+            encode_histograms(&mut bytes, histograms)?;
+        }
         OwnedSessionPayload::Events(events) => {
             encode_u8(&mut bytes, 3);
             encode_events(&mut bytes, events)?;
@@ -883,6 +891,7 @@ fn decode_envelope(bytes: &[u8]) -> io::Result<OwnedSessionEnvelope> {
         2 => OwnedSessionPayload::Counters(decode_counters(&mut cursor)?),
         3 => OwnedSessionPayload::Events(decode_events(&mut cursor)?),
         4 => OwnedSessionPayload::SnapshotEnd(decode_dropped_summary(&mut cursor)?),
+        5 => OwnedSessionPayload::Histograms(decode_histograms(&mut cursor)?),
         tag => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -932,6 +941,7 @@ fn encode_snapshot_summary(bytes: &mut Vec<u8>, summary: &OwnedSnapshotSummary) 
     encode_u64(bytes, summary.captured_at_micros);
     encode_usize(bytes, summary.context_count)?;
     encode_usize(bytes, summary.counter_count)?;
+    encode_usize(bytes, summary.histogram_count)?;
     encode_usize(bytes, summary.event_count)?;
     Ok(())
 }
@@ -945,6 +955,7 @@ fn encode_borrowed_snapshot_summary(
     encode_u64(bytes, summary.captured_at_micros);
     encode_usize(bytes, summary.context_count)?;
     encode_usize(bytes, summary.counter_count)?;
+    encode_usize(bytes, summary.histogram_count)?;
     encode_usize(bytes, summary.event_count)?;
     Ok(())
 }
@@ -956,6 +967,7 @@ fn decode_snapshot_summary(cursor: &mut Cursor<'_>) -> io::Result<OwnedSnapshotS
         captured_at_micros: decode_u64(cursor)?,
         context_count: decode_usize(cursor)?,
         counter_count: decode_usize(cursor)?,
+        histogram_count: decode_usize(cursor)?,
         event_count: decode_usize(cursor)?,
     })
 }
@@ -1136,6 +1148,101 @@ fn decode_counters(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedCounterSnapsh
         });
     }
     Ok(counters)
+}
+
+#[cfg(test)]
+fn encode_histograms(bytes: &mut Vec<u8>, histograms: &[OwnedHistogramSnapshot]) -> io::Result<()> {
+    encode_len(bytes, histograms.len())?;
+    for histogram in histograms {
+        encode_u64(bytes, histogram.desc_id.get());
+        encode_string(bytes, &histogram.name)?;
+        encode_u8(bytes, encode_unit(histogram.unit));
+        encode_u64(bytes, histogram.context_id.get());
+        encode_histogram_body(
+            bytes,
+            histogram.count,
+            histogram.sum,
+            histogram.min,
+            histogram.max,
+            &histogram.buckets,
+            histogram.updated_at_micros,
+        );
+    }
+    Ok(())
+}
+
+fn encode_borrowed_histograms(
+    bytes: &mut Vec<u8>,
+    histograms: &[spoor_runtime::HistogramSnapshot],
+) -> io::Result<()> {
+    encode_len(bytes, histograms.len())?;
+    for histogram in histograms {
+        encode_u64(bytes, histogram.desc_id.get());
+        encode_string(bytes, histogram.name)?;
+        encode_u8(bytes, encode_unit(histogram.unit));
+        encode_u64(bytes, histogram.context_id.get());
+        encode_histogram_body(
+            bytes,
+            histogram.count,
+            histogram.sum,
+            histogram.min,
+            histogram.max,
+            &histogram.buckets,
+            histogram.updated_at_micros,
+        );
+    }
+    Ok(())
+}
+
+fn encode_histogram_body(
+    bytes: &mut Vec<u8>,
+    count: u64,
+    sum: u64,
+    min: u64,
+    max: u64,
+    buckets: &[u64; spoor_runtime::HISTOGRAM_BUCKET_COUNT],
+    updated_at_micros: u64,
+) {
+    encode_u64(bytes, count);
+    encode_u64(bytes, sum);
+    encode_u64(bytes, min);
+    encode_u64(bytes, max);
+    for bucket in buckets {
+        encode_u64(bytes, *bucket);
+    }
+    encode_u64(bytes, updated_at_micros);
+}
+
+fn decode_histograms(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedHistogramSnapshot>> {
+    let len = decode_bounded_len(cursor, MAX_ROWS_PER_ENVELOPE, "histogram rows")?;
+    let mut histograms = Vec::with_capacity(len);
+    for _ in 0..len {
+        let desc_id = CounterDescId::new(decode_u64(cursor)?);
+        let name = decode_string(cursor)?;
+        let unit = decode_unit(decode_u8(cursor)?)?;
+        let context_id = ContextId::new(decode_u64(cursor)?);
+        let count = decode_u64(cursor)?;
+        let sum = decode_u64(cursor)?;
+        let min = decode_u64(cursor)?;
+        let max = decode_u64(cursor)?;
+        let mut buckets = [0_u64; spoor_runtime::HISTOGRAM_BUCKET_COUNT];
+        for bucket in &mut buckets {
+            *bucket = decode_u64(cursor)?;
+        }
+        histograms.push(OwnedHistogramSnapshot {
+            desc_id,
+            name,
+            unit,
+            context_id,
+            count,
+            sum,
+            min,
+            max,
+            buckets,
+            updated_at_micros: decode_u64(cursor)?,
+        });
+    }
+    Ok(histograms)
 }
 
 #[cfg(test)]
@@ -1957,6 +2064,23 @@ mod tests {
                 value: 7,
                 updated_at_micros: 14,
             }],
+            histograms: vec![spoor_runtime::HistogramSnapshot {
+                desc_id: CounterDescId::new(4),
+                name: "frame_micros",
+                unit: spoor_core::Unit::Micros,
+                context_id: ContextId::new(0),
+                count: 2,
+                sum: 24,
+                min: 8,
+                max: 16,
+                buckets: {
+                    let mut buckets = [0; spoor_runtime::HISTOGRAM_BUCKET_COUNT];
+                    buckets[4] = 1;
+                    buckets[5] = 1;
+                    buckets
+                },
+                updated_at_micros: 15,
+            }],
             events: vec![spoor_runtime::TimedObservation {
                 at_micros: 15,
                 thread_id: 2,
@@ -1971,7 +2095,7 @@ mod tests {
             dropped_events: 2,
         };
 
-        let envelopes = collect_snapshot(&snapshot, Chunking::new(8, 8, 8));
+        let envelopes = collect_snapshot(&snapshot, Chunking::new(8, 8, 8, 8));
         let round_tripped = envelopes
             .iter()
             .map(|envelope| {
@@ -1983,6 +2107,11 @@ mod tests {
         assert_eq!(round_tripped, envelopes);
         assert!(matches!(
             &round_tripped[3].payload,
+            OwnedSessionPayload::Histograms(histograms)
+                if histograms[0].name == "frame_micros" && histograms[0].buckets[4] == 1
+        ));
+        assert!(matches!(
+            &round_tripped[4].payload,
             OwnedSessionPayload::Events(events)
                 if matches!(&events[0].observation, OwnedObservation::Flow {
                     flow_id,

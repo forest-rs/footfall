@@ -243,15 +243,13 @@ impl Runtime {
             .lock()
             .expect("runtime context mutex should not be poisoned");
         let mut counters = Vec::with_capacity(self.counter_count.load(Ordering::Relaxed));
+        let mut histograms = Vec::new();
         for shard in &self.counter_shards {
-            counters.extend(
-                shard
-                    .lock()
-                    .expect("runtime counter shard should not be poisoned")
-                    .counters
-                    .values()
-                    .cloned(),
-            );
+            let shard = shard
+                .lock()
+                .expect("runtime counter shard should not be poisoned");
+            counters.extend(shard.counters.values().cloned());
+            histograms.extend(shard.histograms.values().cloned());
         }
 
         let mut events = Vec::with_capacity(self.event_count.load(Ordering::Relaxed));
@@ -273,6 +271,7 @@ impl Runtime {
             captured_at_micros,
             contexts: contexts.contexts.clone(),
             counters,
+            histograms,
             events,
             dropped_contexts: contexts.dropped_contexts,
             dropped_counters: self.dropped_counters.load(Ordering::Relaxed),
@@ -300,11 +299,11 @@ impl Runtime {
             .expect("runtime context mutex should not be poisoned")
             .reset();
         for shard in &self.counter_shards {
-            shard
+            let mut shard = shard
                 .lock()
-                .expect("runtime counter shard should not be poisoned")
-                .counters
-                .clear();
+                .expect("runtime counter shard should not be poisoned");
+            shard.counters.clear();
+            shard.histograms.clear();
         }
         for shard in &self.event_shards {
             shard
@@ -321,6 +320,40 @@ impl Runtime {
 
     fn gauge_set_at(&self, desc: &CounterDesc, context: Context, value: u64, at_micros: u64) {
         self.counter_update_at(desc, context, value, at_micros, CounterKind::Gauge);
+    }
+
+    fn histogram_record_at(
+        &self,
+        desc: &CounterDesc,
+        context: Context,
+        value: u64,
+        at_micros: u64,
+    ) {
+        let Some(context_id) = self.context_id(context) else {
+            self.dropped_counters.fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        let key = HistogramKey {
+            desc_id: desc.id(),
+            context_id,
+        };
+        let shard_index = self.histogram_shard_index(key);
+        let mut shard = self.counter_shards[shard_index]
+            .lock()
+            .expect("runtime counter shard should not be poisoned");
+        if let Some(histogram) = shard.histograms.get_mut(&key) {
+            histogram.record(value, at_micros);
+            return;
+        }
+
+        if !self.reserve_counter_slot() {
+            self.dropped_counters.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+
+        let mut histogram = HistogramSnapshot::new(desc, context_id);
+        histogram.record(value, at_micros);
+        shard.histograms.insert(key, histogram);
     }
 
     fn counter_update_at(
@@ -416,6 +449,17 @@ impl Runtime {
         )
     }
 
+    fn histogram_shard_index(&self, key: HistogramKey) -> usize {
+        shard_index(
+            key.desc_id
+                .get()
+                .wrapping_mul(31)
+                .wrapping_add(key.context_id.get())
+                .wrapping_add(2),
+            self.counter_shards.len(),
+        )
+    }
+
     fn event_shard_index(&self, observation: &Observation) -> usize {
         let raw = observation
             .context_id()
@@ -446,6 +490,8 @@ pub struct Snapshot {
     pub contexts: Vec<ContextSnapshot>,
     /// Aggregated counters and gauges.
     pub counters: Vec<CounterSnapshot>,
+    /// Aggregated value distributions.
+    pub histograms: Vec<HistogramSnapshot>,
     /// Bounded sequence of timestamped observation records.
     pub events: Vec<TimedObservation>,
     /// Count of observations dropped because a new context could not be interned.
@@ -520,6 +566,77 @@ pub enum CounterKind {
     Counter,
     /// Last-value gauge.
     Gauge,
+}
+
+/// Number of power-of-two buckets carried by a histogram.
+pub const HISTOGRAM_BUCKET_COUNT: usize = 64;
+
+/// One aggregated value distribution.
+///
+/// Bucket `i` counts samples whose bit length is `i`: bucket `0` holds zero
+/// values, bucket `1` holds `1`, bucket `2` holds `2..=3`, and so on. The top
+/// bucket merges 63-bit and 64-bit samples. Histogram keys count against the
+/// runtime counter capacity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistogramSnapshot {
+    /// Counter descriptor id.
+    pub desc_id: CounterDescId,
+    /// Stable descriptor name.
+    pub name: &'static str,
+    /// Unit copied from the counter descriptor.
+    pub unit: Unit,
+    /// Canonical semantic context id.
+    pub context_id: ContextId,
+    /// Number of recorded samples.
+    pub count: u64,
+    /// Saturating sum of recorded samples.
+    pub sum: u64,
+    /// Smallest recorded sample. Meaningless while `count` is zero.
+    pub min: u64,
+    /// Largest recorded sample.
+    pub max: u64,
+    /// Power-of-two bucket counts indexed by sample bit length.
+    pub buckets: [u64; HISTOGRAM_BUCKET_COUNT],
+    /// Last update time relative to runtime creation.
+    pub updated_at_micros: u64,
+}
+
+impl HistogramSnapshot {
+    fn new(desc: &CounterDesc, context_id: ContextId) -> Self {
+        Self {
+            desc_id: desc.id(),
+            name: desc.name(),
+            unit: desc.unit(),
+            context_id,
+            count: 0,
+            sum: 0,
+            min: u64::MAX,
+            max: 0,
+            buckets: [0; HISTOGRAM_BUCKET_COUNT],
+            updated_at_micros: 0,
+        }
+    }
+
+    fn record(&mut self, value: u64, at_micros: u64) {
+        self.count = self.count.saturating_add(1);
+        self.sum = self.sum.saturating_add(value);
+        self.min = self.min.min(value);
+        self.max = self.max.max(value);
+        self.buckets[histogram_bucket_index(value)] += 1;
+        self.updated_at_micros = at_micros;
+    }
+}
+
+/// Returns the bucket index for one histogram sample.
+#[must_use]
+pub fn histogram_bucket_index(value: u64) -> usize {
+    ((u64::BITS - value.leading_zeros()) as usize).min(HISTOGRAM_BUCKET_COUNT - 1)
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct HistogramKey {
+    desc_id: CounterDescId,
+    context_id: ContextId,
 }
 
 /// Observation paired with a timestamp relative to runtime creation.
@@ -703,6 +820,7 @@ impl ContextState {
 #[derive(Debug, Default)]
 struct CounterShard {
     counters: HashMap<CounterKey, CounterSnapshot>,
+    histograms: HashMap<HistogramKey, HistogramSnapshot>,
 }
 
 #[derive(Debug, Default)]
@@ -732,6 +850,7 @@ static RUNTIME: OnceLock<&'static Runtime> = OnceLock::new();
 const BACKEND: Backend = Backend {
     counter_add: backend_counter_add,
     gauge_set: backend_gauge_set,
+    histogram_record: backend_histogram_record,
     scope_begin: backend_scope_begin,
     scope_end: backend_scope_end,
     resource_create: backend_resource_create,
@@ -758,6 +877,16 @@ fn backend_gauge_set(desc: &CounterDesc, context: Context, value: u64) {
         }
         let at_micros = runtime.now_micros();
         runtime.gauge_set_at(desc, context, value, at_micros);
+    });
+}
+
+fn backend_histogram_record(desc: &CounterDesc, context: Context, value: u64) {
+    with_runtime(|runtime| {
+        if !runtime.level().captures_counters() {
+            return;
+        }
+        let at_micros = runtime.now_micros();
+        runtime.histogram_record_at(desc, context, value, at_micros);
     });
 }
 
@@ -1034,6 +1163,48 @@ mod tests {
         InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc,
         ResourceKindId, ScopeDesc, ScopeDescId, Unit,
     };
+
+    #[test]
+    fn histograms_aggregate_bucketed_distributions() {
+        let runtime = Runtime::new(8, 8);
+        let latency = CounterDesc::new(CounterDescId::new(9), "frame_micros", Unit::Micros);
+        let context = Context::root().with(spoor_core::LabelKey::Pass, 1_u32);
+
+        runtime.histogram_record_at(&latency, context, 0, 1);
+        runtime.histogram_record_at(&latency, context, 1, 2);
+        runtime.histogram_record_at(&latency, context, 3, 3);
+        runtime.histogram_record_at(&latency, context, 1000, 4);
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.histograms.len(), 1);
+        let histogram = &snapshot.histograms[0];
+        assert_eq!(histogram.name, "frame_micros");
+        assert_eq!(histogram.unit, Unit::Micros);
+        assert_eq!(histogram.count, 4);
+        assert_eq!(histogram.sum, 1004);
+        assert_eq!(histogram.min, 0);
+        assert_eq!(histogram.max, 1000);
+        assert_eq!(histogram.buckets[super::histogram_bucket_index(0)], 1);
+        assert_eq!(histogram.buckets[super::histogram_bucket_index(1)], 1);
+        assert_eq!(histogram.buckets[super::histogram_bucket_index(3)], 1);
+        assert_eq!(histogram.buckets[super::histogram_bucket_index(1000)], 1);
+        assert_eq!(histogram.updated_at_micros, 4);
+
+        // Histogram keys share the counter capacity budget.
+        let drained = runtime.drain_snapshot();
+        assert_eq!(drained.histograms.len(), 1);
+        assert!(runtime.snapshot().histograms.is_empty());
+    }
+
+    #[test]
+    fn histogram_bucket_indices_follow_bit_length() {
+        assert_eq!(super::histogram_bucket_index(0), 0);
+        assert_eq!(super::histogram_bucket_index(1), 1);
+        assert_eq!(super::histogram_bucket_index(2), 2);
+        assert_eq!(super::histogram_bucket_index(3), 2);
+        assert_eq!(super::histogram_bucket_index(4), 3);
+        assert_eq!(super::histogram_bucket_index(u64::MAX), 63);
+    }
 
     #[test]
     fn parallel_counter_writes_aggregate_without_loss() {

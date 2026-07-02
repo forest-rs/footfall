@@ -33,9 +33,9 @@ pub use context::{CONTEXT_INLINE_CAPACITY, Context, ContextCapacityError, Contex
 pub use descriptor::{CounterDesc, ResourceKindDesc, ScopeDesc, SourceLocation};
 pub use emit::{
     Backend, FlowPhase, MarkerKind, MarkerPhase, ScopeGuard, ScopeToken, counter_add, flow_begin,
-    flow_end, flow_step, frame_begin, frame_end, frame_marker, gauge_set, pass_begin, pass_end,
-    resource_create, resource_drop, resource_update, scope, scope_begin, scope_begin_with,
-    scope_end, scope_with, transaction_begin, transaction_end,
+    flow_end, flow_step, frame_begin, frame_end, frame_marker, gauge_set, histogram_record,
+    pass_begin, pass_end, resource_create, resource_drop, resource_update, scope, scope_begin,
+    scope_begin_with, scope_end, scope_with, transaction_begin, transaction_end,
 };
 #[cfg(feature = "std")]
 pub use emit::{InstallBackendError, install_backend};

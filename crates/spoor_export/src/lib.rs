@@ -6,7 +6,9 @@
 use spoor_core::{
     Context, ContextId, FlowPhase, LabelValue, MarkerKind, MarkerPhase, ResourceId, ScopeToken,
 };
-use spoor_runtime::{CounterKind, CounterSnapshot, Observation, Snapshot, TimedObservation};
+use spoor_runtime::{
+    CounterKind, CounterSnapshot, HistogramSnapshot, Observation, Snapshot, TimedObservation,
+};
 use std::{
     collections::HashMap,
     fmt::{self, Write},
@@ -54,6 +56,10 @@ pub fn write_chrome_trace_json(snapshot: &Snapshot, writer: &mut impl Write) -> 
 
     for counter in &snapshot.counters {
         events.push(build_counter_event(snapshot, counter)?);
+    }
+
+    for histogram in &snapshot.histograms {
+        events.push(build_histogram_event(snapshot, histogram)?);
     }
 
     let mut scope_tracks = HashMap::<ScopeToken, ContextId>::new();
@@ -234,6 +240,91 @@ fn build_counter_event(
         order: 1,
         json,
     })
+}
+
+fn build_histogram_event(
+    snapshot: &Snapshot,
+    histogram: &HistogramSnapshot,
+) -> Result<ExportEvent, fmt::Error> {
+    let context = snapshot
+        .context(histogram.context_id)
+        .map(|context| context.context)
+        .unwrap_or_else(Context::root);
+    let mut json = String::new();
+    json.push('{');
+    write_json_field_str(&mut json, "name", histogram.name)?;
+    json.push(',');
+    write_json_field_str(&mut json, "cat", "histogram")?;
+    json.push(',');
+    write_json_field_str(&mut json, "ph", "i")?;
+    json.push_str(",\"s\":\"t\",");
+    write_json_field_u64(&mut json, "ts", histogram.updated_at_micros)?;
+    json.push(',');
+    write_json_field_u64(&mut json, "pid", 1)?;
+    json.push(',');
+    write_json_field_u64(&mut json, "tid", histogram.context_id.get())?;
+    json.push_str(",\"args\":{");
+    write_json_field_u64(&mut json, "count", histogram.count)?;
+    json.push(',');
+    write_json_field_u64(&mut json, "sum", histogram.sum)?;
+    json.push(',');
+    write_json_field_u64(
+        &mut json,
+        "min",
+        if histogram.count == 0 {
+            0
+        } else {
+            histogram.min
+        },
+    )?;
+    json.push(',');
+    write_json_field_u64(&mut json, "max", histogram.max)?;
+    json.push(',');
+    write_json_field_u64(&mut json, "p50", histogram_percentile(histogram, 0.50))?;
+    json.push(',');
+    write_json_field_u64(&mut json, "p90", histogram_percentile(histogram, 0.90))?;
+    json.push(',');
+    write_json_field_u64(&mut json, "p99", histogram_percentile(histogram, 0.99))?;
+    json.push_str(",\"unit\":");
+    write_json_string(&mut json, histogram.unit.as_str())?;
+    json.push_str(",\"context\":");
+    write_context(&mut json, context)?;
+    json.push_str("}}");
+    Ok(ExportEvent {
+        ts_micros: histogram.updated_at_micros,
+        order: 1,
+        json,
+    })
+}
+
+/// Estimates a percentile from power-of-two buckets.
+///
+/// Returns the upper bound of the bucket containing the requested rank,
+/// clamped to the observed maximum.
+fn histogram_percentile(histogram: &HistogramSnapshot, quantile: f64) -> u64 {
+    if histogram.count == 0 {
+        return 0;
+    }
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "rank estimation tolerates precision loss at extreme counts"
+    )]
+    let rank = ((histogram.count as f64) * quantile).ceil().max(1.0) as u64;
+    let mut cumulative = 0_u64;
+    for (index, bucket) in histogram.buckets.iter().enumerate() {
+        cumulative = cumulative.saturating_add(*bucket);
+        if cumulative >= rank {
+            let upper = if index == 0 {
+                0
+            } else {
+                u64::MAX >> (u64::BITS as usize - index)
+            };
+            return upper.min(histogram.max);
+        }
+    }
+    histogram.max
 }
 
 fn build_internal_counter_event(at_micros: u64, name: &str, value: u64) -> ExportEvent {
@@ -666,6 +757,7 @@ mod tests {
                 value: 4096,
                 updated_at_micros: 10,
             }],
+            histograms: vec![],
             events: vec![
                 TimedObservation {
                     at_micros: 20,

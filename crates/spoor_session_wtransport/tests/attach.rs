@@ -43,6 +43,7 @@ fn demo_snapshot() -> Snapshot {
             value: 4096,
             updated_at_micros: 20,
         }],
+        histograms: vec![],
         events: vec![TimedObservation {
             at_micros: 25,
             thread_id: 3,
@@ -88,7 +89,7 @@ async fn discovery_and_snapshot_fetch_round_trip() {
                     if session_id == served_announcement.id =>
                 {
                     request
-                        .respond_snapshot(demo_snapshot(), Chunking::new(1, 1, 1))
+                        .respond_snapshot(demo_snapshot(), Chunking::new(1, 1, 1, 1))
                         .await
                         .expect("snapshot response should succeed");
                 }

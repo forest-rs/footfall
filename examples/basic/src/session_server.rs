@@ -53,7 +53,7 @@ async fn main() {
                         SessionRequestKind::Snapshot { session_id } if session_id == announcement.id => {
                             let snapshot = capture.capture_frame(frame);
                             let served = request
-                                .respond_snapshot(snapshot, Chunking::new(4, 4, 32))
+                                .respond_snapshot(snapshot, Chunking::new(4, 4, 4, 32))
                                 .await
                                 .expect("snapshot response should succeed");
                             if let ServedRequestKind::Snapshot { envelope_count } = served.kind {

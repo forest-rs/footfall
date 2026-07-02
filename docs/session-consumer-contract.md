@@ -30,8 +30,9 @@ Snapshot publication has a fixed shape:
 1. `SnapshotStart`
 2. zero or more `Contexts` chunks
 3. zero or more `Counters` chunks
-4. zero or more `Events` chunks
-5. `SnapshotEnd`
+4. zero or more `Histograms` chunks
+5. zero or more `Events` chunks
+6. `SnapshotEnd`
 
 That ordering is the contract a consumer should rely on.
 

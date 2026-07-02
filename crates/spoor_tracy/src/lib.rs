@@ -298,6 +298,7 @@ static TRACY: OnceLock<&'static Tracy> = OnceLock::new();
 const BACKEND: Backend = Backend {
     counter_add: backend_counter_add,
     gauge_set: backend_gauge_set,
+    histogram_record: backend_histogram_record,
     scope_begin: backend_scope_begin,
     scope_end: backend_scope_end,
     resource_create: backend_resource_create,
@@ -309,6 +310,12 @@ const BACKEND: Backend = Backend {
 
 fn backend_counter_add(desc: &CounterDesc, _context: Context, value: u64) {
     with_tracy(|tracy| tracy.observe_counter(desc, value, CounterUpdate::Add));
+}
+
+fn backend_histogram_record(desc: &CounterDesc, _context: Context, value: u64) {
+    // Tracy has no histogram primitive; plot each sample so the distribution
+    // is at least visible as a time series.
+    with_tracy(|tracy| tracy.observe_counter(desc, value, CounterUpdate::Set));
 }
 
 fn backend_gauge_set(desc: &CounterDesc, _context: Context, value: u64) {

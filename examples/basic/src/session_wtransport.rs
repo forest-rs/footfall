@@ -51,7 +51,7 @@ async fn main() {
                 {
                     let snapshot = capture.capture_frame(11);
                     let served = request
-                        .respond_snapshot(snapshot, Chunking::new(2, 2, 16))
+                        .respond_snapshot(snapshot, Chunking::new(2, 2, 2, 16))
                         .await
                         .expect("snapshot response should succeed");
                     if let ServedRequestKind::Snapshot { .. } = served.kind {

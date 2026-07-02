@@ -95,6 +95,7 @@ static FANOUT: OnceLock<&'static Fanout> = OnceLock::new();
 const BACKEND: Backend = Backend {
     counter_add: backend_counter_add,
     gauge_set: backend_gauge_set,
+    histogram_record: backend_histogram_record,
     scope_begin: backend_scope_begin,
     scope_end: backend_scope_end,
     resource_create: backend_resource_create,
@@ -108,6 +109,13 @@ fn backend_counter_add(desc: &CounterDesc, context: Context, value: u64) {
     let _ = with_fanout(|fanout| {
         (fanout.primary.counter_add)(desc, context, value);
         (fanout.secondary.counter_add)(desc, context, value);
+    });
+}
+
+fn backend_histogram_record(desc: &CounterDesc, context: Context, value: u64) {
+    let _ = with_fanout(|fanout| {
+        (fanout.primary.histogram_record)(desc, context, value);
+        (fanout.secondary.histogram_record)(desc, context, value);
     });
 }
 
@@ -234,6 +242,7 @@ mod tests {
         Backend {
             counter_add: primary_counter_add,
             gauge_set: primary_gauge_set,
+            histogram_record: primary_histogram_record,
             scope_begin: primary_scope_begin,
             scope_end: primary_scope_end,
             resource_create: primary_resource_create,
@@ -248,6 +257,7 @@ mod tests {
         Backend {
             counter_add: secondary_counter_add,
             gauge_set: secondary_gauge_set,
+            histogram_record: secondary_histogram_record,
             scope_begin: secondary_scope_begin,
             scope_end: secondary_scope_end,
             resource_create: secondary_resource_create,
@@ -267,6 +277,10 @@ mod tests {
 
     fn primary_counter_add(_desc: &CounterDesc, _context: Context, _value: u64) {
         record("primary counter_add");
+    }
+
+    fn primary_histogram_record(_desc: &CounterDesc, _context: Context, _value: u64) {
+        record("primary histogram_record");
     }
 
     fn primary_gauge_set(_desc: &CounterDesc, _context: Context, _value: u64) {
@@ -326,6 +340,10 @@ mod tests {
 
     fn secondary_counter_add(_desc: &CounterDesc, _context: Context, _value: u64) {
         record("secondary counter_add");
+    }
+
+    fn secondary_histogram_record(_desc: &CounterDesc, _context: Context, _value: u64) {
+        record("secondary histogram_record");
     }
 
     fn secondary_gauge_set(_desc: &CounterDesc, _context: Context, _value: u64) {
