@@ -91,6 +91,11 @@ version, and rejects a different major version or a newer minor version.
 
 ## Row Fields Worth Calling Out
 
+Snapshot metadata carries a `u64` wall-clock anchor after the session
+sequence: the wall-clock time of runtime creation in microseconds since the
+Unix epoch. All snapshot timestamps are relative to runtime creation, so
+`anchor + at_micros` yields wall-clock time for any row.
+
 Counter rows carry a `u8` unit tag after the descriptor name:
 
 - `0`: bytes

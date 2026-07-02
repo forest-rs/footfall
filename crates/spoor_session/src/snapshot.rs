@@ -126,6 +126,9 @@ pub struct OwnedSnapshotMetadata {
     pub session_name: Option<String>,
     /// Monotonic sequence number of the capture session.
     pub session_sequence: u64,
+    /// Wall-clock time of runtime creation in microseconds since the Unix
+    /// epoch; adding it to any snapshot timestamp yields wall-clock time.
+    pub wall_clock_anchor_micros: u64,
 }
 
 /// Owned description of one snapshot window.
@@ -411,6 +414,7 @@ impl Envelope<'_> {
                             process_name: summary.metadata.process_name.clone(),
                             session_name: summary.metadata.session_name.clone(),
                             session_sequence: summary.metadata.session_sequence,
+                            wall_clock_anchor_micros: summary.metadata.wall_clock_anchor_micros,
                         },
                         capture_start_micros: summary.capture_start_micros,
                         captured_at_micros: summary.captured_at_micros,
@@ -583,6 +587,7 @@ mod tests {
                 process_name: String::from("demo"),
                 session_name: Some(String::from("capture")),
                 session_sequence: 3,
+                wall_clock_anchor_micros: 1_700_000_000_000_000,
             },
             capture_start_micros: 10,
             captured_at_micros: 30,

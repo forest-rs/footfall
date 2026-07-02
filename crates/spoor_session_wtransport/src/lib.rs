@@ -972,6 +972,7 @@ fn encode_snapshot_metadata(
         None => encode_u8(bytes, 0),
     }
     encode_u64(bytes, metadata.session_sequence);
+    encode_u64(bytes, metadata.wall_clock_anchor_micros);
     Ok(())
 }
 
@@ -988,6 +989,7 @@ fn encode_snapshot_metadata_borrowed(
         None => encode_u8(bytes, 0),
     }
     encode_u64(bytes, metadata.session_sequence);
+    encode_u64(bytes, metadata.wall_clock_anchor_micros);
     Ok(())
 }
 
@@ -1007,6 +1009,7 @@ fn decode_snapshot_metadata(cursor: &mut Cursor<'_>) -> io::Result<OwnedSnapshot
         process_name,
         session_name,
         session_sequence: decode_u64(cursor)?,
+        wall_clock_anchor_micros: decode_u64(cursor)?,
     })
 }
 
@@ -1881,6 +1884,7 @@ mod tests {
                 process_name: String::from("demo"),
                 session_name: Some(String::from("wt")),
                 session_sequence: 4,
+                wall_clock_anchor_micros: 1_700_000_000_000_000,
             },
             capture_start_micros: 12,
             captured_at_micros: 20,

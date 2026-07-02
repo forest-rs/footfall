@@ -176,6 +176,13 @@ fn build_capture_window_event(snapshot: &Snapshot) -> ExportEvent {
         snapshot.metadata.session_sequence,
     )
     .expect("string write should succeed");
+    json.push(',');
+    write_json_field_u64(
+        &mut json,
+        "wall_clock_anchor_micros",
+        snapshot.metadata.wall_clock_anchor_micros,
+    )
+    .expect("string write should succeed");
     json.push_str("}}");
     ExportEvent {
         ts_micros: snapshot.captured_at_micros,
@@ -614,6 +621,7 @@ mod tests {
                 process_name: String::from("spoor"),
                 session_name: Some(String::from("recording")),
                 session_sequence: 3,
+                wall_clock_anchor_micros: 1_700_000_000_000_000,
             },
             capture_start_micros: 0,
             captured_at_micros: 30,

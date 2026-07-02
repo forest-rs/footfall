@@ -20,6 +20,7 @@ fn demo_snapshot() -> Snapshot {
             process_name: String::from("attach_test"),
             session_name: Some(String::from("e2e")),
             session_sequence: 6,
+            wall_clock_anchor_micros: 1_700_000_000_000_000,
         },
         capture_start_micros: 0,
         captured_at_micros: 40,

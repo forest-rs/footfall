@@ -16,7 +16,7 @@ use std::{
         Mutex, OnceLock,
         atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const DEFAULT_SHARD_COUNT: usize = 16;
@@ -44,6 +44,7 @@ pub const fn backend() -> Backend {
 #[derive(Debug)]
 pub struct Runtime {
     created_at: Instant,
+    wall_clock_anchor_micros: u64,
     process_name: String,
     level: AtomicU8,
     counter_capacity: usize,
@@ -101,6 +102,11 @@ impl Runtime {
     ) -> Self {
         Self {
             created_at: Instant::now(),
+            wall_clock_anchor_micros: duration_to_micros(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or(Duration::ZERO),
+            ),
             process_name: process_name.into(),
             level: AtomicU8::new(level_to_u8(level)),
             counter_capacity,
@@ -219,6 +225,7 @@ impl Runtime {
             process_name: self.process_name.clone(),
             session_name: session.session_name.clone(),
             session_sequence: session.session_sequence,
+            wall_clock_anchor_micros: self.wall_clock_anchor_micros,
         }
     }
 
@@ -468,6 +475,14 @@ pub struct SnapshotMetadata {
     pub session_name: Option<String>,
     /// Monotonic sequence number of the capture session.
     pub session_sequence: u64,
+    /// Wall-clock time of runtime creation in microseconds since the Unix
+    /// epoch.
+    ///
+    /// All snapshot timestamps are relative to runtime creation, so adding
+    /// this anchor to any `*_micros` value yields wall-clock time. The anchor
+    /// lets consumers correlate captures with logs and merge sessions from
+    /// multiple processes onto one timeline.
+    pub wall_clock_anchor_micros: u64,
 }
 
 /// One canonical context carried by a snapshot.
@@ -1186,6 +1201,10 @@ mod tests {
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.metadata.process_name, "spoor");
         assert_eq!(snapshot.metadata.session_sequence, 0);
+        assert!(
+            snapshot.metadata.wall_clock_anchor_micros > 0,
+            "runtime creation should anchor snapshots to wall-clock time"
+        );
         assert_eq!(snapshot.contexts[0].id, ContextId::new(0));
         assert_eq!(snapshot.contexts[1].context, context);
         assert_eq!(snapshot.counters.len(), 2);
