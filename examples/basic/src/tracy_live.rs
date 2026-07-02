@@ -49,9 +49,9 @@ static ATLAS_ID: ResourceId = ResourceId::new(9);
 const FRAME_COUNT: u32 = 300;
 
 fn main() {
-    let mut runtime = Runtime::named("tracy_live", 512, 2048);
-    runtime.set_session_name("tracy_live");
-    let runtime = Box::leak(Box::new(runtime));
+    let runtime = Box::leak(Box::new(
+        Runtime::named("tracy_live", 512, 2048).with_session_name("tracy_live"),
+    ));
     let tracy = Box::leak(Box::new(Tracy::new()));
     register_runtime(runtime).expect("global runtime should register once");
     register_tracy(tracy).expect("global Tracy backend should register once");

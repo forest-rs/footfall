@@ -45,7 +45,6 @@ pub const fn backend() -> Backend {
 pub struct Runtime {
     created_at: Instant,
     process_name: String,
-    session_name: Option<String>,
     level: AtomicU8,
     counter_capacity: usize,
     event_capacity: usize,
@@ -103,7 +102,6 @@ impl Runtime {
         Self {
             created_at: Instant::now(),
             process_name: process_name.into(),
-            session_name: None,
             level: AtomicU8::new(level_to_u8(level)),
             counter_capacity,
             event_capacity,
@@ -124,7 +122,7 @@ impl Runtime {
 
     /// Adds a capture-session label and returns the runtime.
     #[must_use]
-    pub fn with_session_name(mut self, session_name: impl Into<String>) -> Self {
+    pub fn with_session_name(self, session_name: impl Into<String>) -> Self {
         self.set_session_name(session_name);
         self
     }
@@ -176,13 +174,22 @@ impl Runtime {
     }
 
     /// Sets an optional capture-session label for future snapshots.
-    pub fn set_session_name(&mut self, session_name: impl Into<String>) {
-        self.session_name = Some(session_name.into());
+    ///
+    /// The label persists across session resets until cleared, and can be
+    /// changed after the runtime is installed as the process-wide backend.
+    pub fn set_session_name(&self, session_name: impl Into<String>) {
+        self.session
+            .lock()
+            .expect("runtime session mutex should not be poisoned")
+            .session_name = Some(session_name.into());
     }
 
     /// Clears the capture-session label for future snapshots.
-    pub fn clear_session_name(&mut self) {
-        self.session_name = None;
+    pub fn clear_session_name(&self) {
+        self.session
+            .lock()
+            .expect("runtime session mutex should not be poisoned")
+            .session_name = None;
     }
 
     /// Returns a snapshot of the currently collected counters, contexts, and events.
@@ -207,11 +214,11 @@ impl Runtime {
         self.reset_at(captured_at_micros);
     }
 
-    fn metadata(&self, session_sequence: u64) -> SnapshotMetadata {
+    fn metadata(&self, session: &SessionState) -> SnapshotMetadata {
         SnapshotMetadata {
             process_name: self.process_name.clone(),
-            session_name: self.session_name.clone(),
-            session_sequence,
+            session_name: session.session_name.clone(),
+            session_sequence: session.session_sequence,
         }
     }
 
@@ -254,7 +261,7 @@ impl Runtime {
         events.sort_by_key(event_sort_key);
 
         Snapshot {
-            metadata: self.metadata(session.session_sequence),
+            metadata: self.metadata(&session),
             capture_start_micros: session.capture_start_micros,
             captured_at_micros,
             contexts: contexts.contexts.clone(),
@@ -596,10 +603,11 @@ impl Observation {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct SessionState {
     capture_start_micros: u64,
     session_sequence: u64,
+    session_name: Option<String>,
 }
 
 #[derive(Debug)]
@@ -1055,9 +1063,8 @@ mod tests {
 
     #[test]
     fn drain_snapshot_clears_state_and_advances_session_sequence() {
-        let mut runtime = Runtime::named("demo", 8, 8);
+        let runtime = Runtime::named("demo", 8, 8);
         runtime.set_session_name("recording");
-        let runtime = runtime;
 
         let context_id = runtime
             .context_id(Context::root().with(spoor_core::LabelKey::Frame, 1_u32))
@@ -1081,6 +1088,29 @@ mod tests {
         assert_eq!(snapshot.metadata.session_sequence, 1);
         assert_eq!(snapshot.events.len(), 0);
         assert_eq!(snapshot.contexts.len(), 1);
+    }
+
+    #[test]
+    fn session_name_changes_through_shared_reference() {
+        let runtime = Runtime::named("demo", 8, 8).with_session_name("first");
+        let shared: &Runtime = &runtime;
+
+        assert_eq!(
+            shared.snapshot().metadata.session_name.as_deref(),
+            Some("first")
+        );
+
+        shared.set_session_name("second");
+        let drained = shared.drain_snapshot();
+        assert_eq!(drained.metadata.session_name.as_deref(), Some("second"));
+
+        // The label persists across the session reset until cleared.
+        assert_eq!(
+            shared.snapshot().metadata.session_name.as_deref(),
+            Some("second")
+        );
+        shared.clear_session_name();
+        assert_eq!(shared.snapshot().metadata.session_name, None);
     }
 
     #[test]
