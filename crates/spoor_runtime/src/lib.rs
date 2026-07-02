@@ -281,7 +281,8 @@ impl Runtime {
         session.capture_start_micros = capture_start_micros;
         session.session_sequence = session.session_sequence.saturating_add(1);
 
-        self.next_scope_token.store(1, Ordering::Relaxed);
+        // Scope tokens stay monotonic across session resets so a scope that
+        // straddles a drain cannot collide with tokens issued afterwards.
         self.counter_count.store(0, Ordering::Relaxed);
         self.event_count.store(0, Ordering::Relaxed);
         self.dropped_counters.store(0, Ordering::Relaxed);
@@ -1088,6 +1089,19 @@ mod tests {
         assert_eq!(snapshot.metadata.session_sequence, 1);
         assert_eq!(snapshot.events.len(), 0);
         assert_eq!(snapshot.contexts.len(), 1);
+    }
+
+    #[test]
+    fn scope_tokens_stay_unique_across_session_resets() {
+        let runtime = Runtime::new(8, 8);
+        let before_reset = runtime.next_scope_token();
+        let _ = runtime.drain_snapshot();
+        let after_reset = runtime.next_scope_token();
+        assert_ne!(
+            before_reset, after_reset,
+            "a scope straddling a drain must not collide with new tokens"
+        );
+        assert!(after_reset.get() > before_reset.get());
     }
 
     #[test]
