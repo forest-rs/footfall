@@ -18,6 +18,7 @@ spoor_runtime.workspace = true
 spoor_session = { features = ["std"], workspace = true }
 tokio = { features = ["io-util", "macros", "rt-multi-thread", "sync", "time"], version = "1.51.1" }
 wtransport = "0.7.0"
+x509-parser = "0.17.0"
 
 [lib]
 path = "src/lib.rs"

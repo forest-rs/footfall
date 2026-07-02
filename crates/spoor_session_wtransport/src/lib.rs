@@ -39,6 +39,12 @@ const RESPONSE_DISCOVERY: u8 = 0;
 const RESPONSE_SNAPSHOT: u8 = 1;
 const RESPONSE_ERROR: u8 = 2;
 
+/// Self-signed localhost certificates are valid for 14 days (the WebTransport
+/// certificate-hash rule). A persisted identity is regenerated once it has
+/// less than this many whole days of validity left, so an attach session
+/// started right after load does not race certificate expiry.
+const IDENTITY_RENEWAL_MARGIN_DAYS: i64 = 2;
+
 /// Maximum UTF-8 string payload accepted by the session wire codec.
 pub const MAX_SESSION_STRING_BYTES: usize = 64 * 1024;
 /// Maximum encoded envelope frame accepted by the session wire codec.
@@ -97,14 +103,23 @@ impl SessionIdentity {
         })
     }
 
-    /// Loads a stable local localhost identity, creating and storing one if needed.
+    /// Loads the local localhost identity, creating and storing one if needed.
+    ///
+    /// Self-signed localhost certificates expire after 14 days, so a persisted
+    /// identity is regenerated automatically when it is expired or close to
+    /// expiry. The pinned certificate hash changes on regeneration; clients
+    /// that read the hash through [`Self::load_localhost_certificate_hash`]
+    /// pick up the fresh identity transparently.
     pub async fn load_or_create_localhost() -> io::Result<Self> {
         let paths = local_identity_paths()?;
         if paths.cert.exists() && paths.key.exists() {
             let identity = Identity::load_pemfiles(&paths.cert, &paths.key)
                 .await
                 .map_err(|error| io::Error::other(error.to_string()))?;
-            return Self::from_identity(identity);
+            let loaded = Self::from_identity(identity)?;
+            if !loaded.needs_renewal() {
+                return Ok(loaded);
+            }
         }
 
         let identity = Identity::self_signed(["localhost", "127.0.0.1", "::1"])
@@ -119,6 +134,21 @@ impl SessionIdentity {
             .store_secret_pemfile(&paths.key)
             .await?;
         Self::from_identity(identity)
+    }
+
+    /// Returns true when the identity is expired, not yet valid, unparseable,
+    /// or within the renewal margin of expiry.
+    fn needs_renewal(&self) -> bool {
+        let Some(certificate) = self.identity.certificate_chain().as_slice().first() else {
+            return true;
+        };
+        let Ok((_, parsed)) = x509_parser::parse_x509_certificate(certificate.der()) else {
+            return true;
+        };
+        match parsed.validity().time_to_expiration() {
+            Some(remaining) => remaining.whole_days() < IDENTITY_RENEWAL_MARGIN_DAYS,
+            None => true,
+        }
     }
 
     /// Loads the stable local certificate hash used for localhost session connections.
@@ -1759,6 +1789,29 @@ mod tests {
     };
     use std::io::ErrorKind;
     use wtransport::{VarInt, error::StreamWriteError};
+
+    #[test]
+    fn identity_renewal_tracks_certificate_validity() {
+        let fresh = wtransport::Identity::self_signed_builder()
+            .subject_alt_names(["localhost"])
+            .from_now_utc()
+            .validity_days(14)
+            .build()
+            .expect("fresh identity should build");
+        let fresh = super::SessionIdentity::from_identity(fresh)
+            .expect("fresh identity should have a certificate");
+        assert!(!fresh.needs_renewal());
+
+        let expiring = wtransport::Identity::self_signed_builder()
+            .subject_alt_names(["localhost"])
+            .from_now_utc()
+            .validity_days(1)
+            .build()
+            .expect("expiring identity should build");
+        let expiring = super::SessionIdentity::from_identity(expiring)
+            .expect("expiring identity should have a certificate");
+        assert!(expiring.needs_renewal());
+    }
 
     fn to_hex(bytes: &[u8]) -> String {
         use std::fmt::Write as _;

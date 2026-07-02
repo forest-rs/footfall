@@ -10,7 +10,10 @@ localhost WebTransport encoding of that model.
 The default local endpoint is:
 
 - URL: `https://127.0.0.1:43091/spoor/session`
-- Identity: stable self-signed localhost certificate managed by the crate
+- Identity: self-signed localhost certificate managed by the crate; the
+  certificate is valid for 14 days and is rotated automatically when it is
+  expired or close to expiry, so clients should re-read the pinned hash on
+  each connection attempt
 - Streams: one bidirectional stream per discovery or snapshot request
 
 All integer fields are little-endian. Strings are encoded as `u32 byte_len`
