@@ -7,7 +7,7 @@ use alloc::{string::String, vec::Vec};
 
 use spoor_core::{
     ContextId, CounterDescId, FlowId, FlowPhase, LabelKey, LabelValue, MarkerKind, MarkerPhase,
-    ResourceId, ResourceKindId, ScopeDescId, ScopeToken,
+    ResourceId, ResourceKindId, ScopeDescId, ScopeToken, Unit,
 };
 use spoor_runtime::{
     ContextSnapshot, CounterKind, CounterSnapshot, Observation, Snapshot, SnapshotMetadata,
@@ -183,6 +183,8 @@ pub struct OwnedCounterSnapshot {
     pub desc_id: CounterDescId,
     /// Stable descriptor name.
     pub name: String,
+    /// Unit copied from the counter descriptor.
+    pub unit: Unit,
     /// Canonical semantic context id.
     pub context_id: ContextId,
     /// Whether the value is additive or gauge-like.
@@ -198,6 +200,8 @@ pub struct OwnedCounterSnapshot {
 pub struct OwnedTimedObservation {
     /// Observation time in microseconds since runtime creation.
     pub at_micros: u64,
+    /// Runtime-assigned id of the thread that recorded the observation.
+    pub thread_id: u64,
     /// Observation payload.
     pub observation: OwnedObservation,
 }
@@ -471,6 +475,7 @@ fn owned_counter_snapshot(counter: &CounterSnapshot) -> OwnedCounterSnapshot {
     OwnedCounterSnapshot {
         desc_id: counter.desc_id,
         name: String::from(counter.name),
+        unit: counter.unit,
         context_id: counter.context_id,
         kind: counter.kind,
         value: counter.value,
@@ -481,6 +486,7 @@ fn owned_counter_snapshot(counter: &CounterSnapshot) -> OwnedCounterSnapshot {
 fn owned_timed_observation(observation: &TimedObservation) -> OwnedTimedObservation {
     OwnedTimedObservation {
         at_micros: observation.at_micros,
+        thread_id: observation.thread_id,
         observation: owned_observation(&observation.observation),
     }
 }

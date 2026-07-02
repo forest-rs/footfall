@@ -8,7 +8,7 @@
 
 use spoor_core::{
     ContextId, CounterDescId, FlowId, FlowPhase, LabelKey, MarkerKind, MarkerPhase, ResourceId,
-    ResourceKindId, ScopeDescId, ScopeToken,
+    ResourceKindId, ScopeDescId, ScopeToken, Unit,
 };
 use spoor_runtime::{CounterKind, Snapshot};
 use spoor_session::{
@@ -1060,6 +1060,7 @@ fn encode_counters(bytes: &mut Vec<u8>, counters: &[OwnedCounterSnapshot]) -> io
     for counter in counters {
         encode_u64(bytes, counter.desc_id.get());
         encode_string(bytes, &counter.name)?;
+        encode_u8(bytes, encode_unit(counter.unit));
         encode_u64(bytes, counter.context_id.get());
         encode_u8(bytes, encode_counter_kind(counter.kind));
         encode_u64(bytes, counter.value);
@@ -1076,6 +1077,7 @@ fn encode_borrowed_counters(
     for counter in counters {
         encode_u64(bytes, counter.desc_id.get());
         encode_string(bytes, counter.name)?;
+        encode_u8(bytes, encode_unit(counter.unit));
         encode_u64(bytes, counter.context_id.get());
         encode_u8(bytes, encode_counter_kind(counter.kind));
         encode_u64(bytes, counter.value);
@@ -1091,6 +1093,7 @@ fn decode_counters(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedCounterSnapsh
         counters.push(OwnedCounterSnapshot {
             desc_id: CounterDescId::new(decode_u64(cursor)?),
             name: decode_string(cursor)?,
+            unit: decode_unit(decode_u8(cursor)?)?,
             context_id: ContextId::new(decode_u64(cursor)?),
             kind: decode_counter_kind(decode_u8(cursor)?)?,
             value: decode_u64(cursor)?,
@@ -1105,6 +1108,7 @@ fn encode_events(bytes: &mut Vec<u8>, events: &[OwnedTimedObservation]) -> io::R
     encode_len(bytes, events.len())?;
     for event in events {
         encode_u64(bytes, event.at_micros);
+        encode_u64(bytes, event.thread_id);
         encode_observation(bytes, &event.observation)?;
     }
     Ok(())
@@ -1117,6 +1121,7 @@ fn encode_borrowed_events(
     encode_len(bytes, events.len())?;
     for event in events {
         encode_u64(bytes, event.at_micros);
+        encode_u64(bytes, event.thread_id);
         encode_borrowed_observation(bytes, &event.observation)?;
     }
     Ok(())
@@ -1128,6 +1133,7 @@ fn decode_events(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedTimedObservatio
     for _ in 0..len {
         events.push(OwnedTimedObservation {
             at_micros: decode_u64(cursor)?,
+            thread_id: decode_u64(cursor)?,
             observation: decode_observation(cursor)?,
         });
     }
@@ -1448,6 +1454,32 @@ fn decode_counter_kind(tag: u8) -> io::Result<CounterKind> {
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("unknown counter kind tag: {tag}"),
+        )),
+    }
+}
+
+fn encode_unit(unit: Unit) -> u8 {
+    match unit {
+        Unit::Bytes => 0,
+        Unit::Count => 1,
+        Unit::Nanos => 2,
+        Unit::Micros => 3,
+        Unit::Ratio => 4,
+        Unit::Items => 5,
+    }
+}
+
+fn decode_unit(tag: u8) -> io::Result<Unit> {
+    match tag {
+        0 => Ok(Unit::Bytes),
+        1 => Ok(Unit::Count),
+        2 => Ok(Unit::Nanos),
+        3 => Ok(Unit::Micros),
+        4 => Ok(Unit::Ratio),
+        5 => Ok(Unit::Items),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unknown unit tag: {tag}"),
         )),
     }
 }
@@ -1798,6 +1830,7 @@ mod tests {
             },
             payload: OwnedSessionPayload::Events(vec![OwnedTimedObservation {
                 at_micros: 2,
+                thread_id: 1,
                 observation: OwnedObservation::FrameMarker {
                     kind: MarkerKind::Frame,
                     phase: MarkerPhase::Begin,
@@ -1900,6 +1933,7 @@ mod tests {
             },
             payload: OwnedSessionPayload::Events(vec![OwnedTimedObservation {
                 at_micros: 3,
+                thread_id: 4,
                 observation: OwnedObservation::ScopeEnd {
                     token: ScopeToken::new(11),
                 },

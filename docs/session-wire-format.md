@@ -84,6 +84,21 @@ Current codec version is `1.0`. The payload tags are:
 A decoder rejects unsupported versions, unknown tags, truncated payloads, and
 trailing bytes after a valid payload.
 
+## Row Fields Worth Calling Out
+
+Counter rows carry a `u8` unit tag after the descriptor name:
+
+- `0`: bytes
+- `1`: count
+- `2`: nanos
+- `3`: micros
+- `4`: ratio
+- `5`: items
+
+Event rows carry a `u64` runtime-assigned thread id after the timestamp. Ids
+are small integers assigned in first-emission order within one process
+lifetime; they are not OS thread ids.
+
 ## Payload Limits
 
 The codec enforces these bounds before allocating dynamic payload data:
