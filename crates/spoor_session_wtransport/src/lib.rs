@@ -1760,6 +1760,67 @@ mod tests {
     use std::io::ErrorKind;
     use wtransport::{VarInt, error::StreamWriteError};
 
+    fn to_hex(bytes: &[u8]) -> String {
+        use std::fmt::Write as _;
+        bytes.iter().fold(String::new(), |mut hex, byte| {
+            write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
+            hex
+        })
+    }
+
+    /// Golden wire fixtures. These freeze the encoded byte layout that external
+    /// consumers depend on; a change here means the wire format changed and the
+    /// wire-format document must be updated to match.
+    #[test]
+    fn encoded_envelopes_match_golden_fixtures() {
+        let counters = OwnedSessionEnvelope {
+            header: EnvelopeHeader {
+                protocol_version: PROTOCOL_VERSION,
+                session_sequence: 4,
+                chunk_index: 2,
+            },
+            payload: OwnedSessionPayload::Counters(vec![spoor_session::OwnedCounterSnapshot {
+                desc_id: CounterDescId::new(3),
+                name: String::from("ops"),
+                unit: spoor_core::Unit::Count,
+                context_id: ContextId::new(1),
+                kind: CounterKind::Counter,
+                value: 7,
+                updated_at_micros: 14,
+            }]),
+        };
+        let encoded = encode_envelope(&counters).expect("encoding should succeed");
+        assert_eq!(
+            to_hex(&encoded),
+            "010000000400000000000000020000000000000002010000000300000000000000030000\
+             006f70730101000000000000000007000000000000000e00000000000000"
+        );
+
+        let events = OwnedSessionEnvelope {
+            header: EnvelopeHeader {
+                protocol_version: PROTOCOL_VERSION,
+                session_sequence: 4,
+                chunk_index: 3,
+            },
+            payload: OwnedSessionPayload::Events(vec![OwnedTimedObservation {
+                at_micros: 15,
+                thread_id: 2,
+                observation: OwnedObservation::ScopeBegin {
+                    desc_id: spoor_core::ScopeDescId::new(5),
+                    name: String::from("record"),
+                    context_id: ContextId::new(1),
+                    token: ScopeToken::new(9),
+                },
+            }]),
+        };
+        let encoded = encode_envelope(&events).expect("encoding should succeed");
+        assert_eq!(
+            to_hex(&encoded),
+            "010000000400000000000000030000000000000003010000000f0000000000000002000000\
+             00000000000500000000000000060000007265636f726401000000000000000900000000000000"
+        );
+    }
+
     #[test]
     fn codec_round_trips_owned_session_envelopes() {
         let snapshot = Snapshot {
