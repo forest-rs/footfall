@@ -58,4 +58,30 @@ impl ProtocolVersion {
     pub const fn minor(self) -> u16 {
         self.minor
     }
+
+    /// Returns true when a decoder supporting `self` can decode data produced
+    /// at version `produced`.
+    ///
+    /// Minor versions are additive: a decoder understands everything produced
+    /// at the same major version with an equal or older minor version. A
+    /// different major version or a newer minor version is not decodable.
+    #[must_use]
+    pub const fn can_decode(self, produced: Self) -> bool {
+        self.major == produced.major && produced.minor <= self.minor
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProtocolVersion;
+
+    #[test]
+    fn minor_versions_are_additive_for_decoders() {
+        let supported = ProtocolVersion::new(1, 2);
+        assert!(supported.can_decode(ProtocolVersion::new(1, 0)));
+        assert!(supported.can_decode(ProtocolVersion::new(1, 2)));
+        assert!(!supported.can_decode(ProtocolVersion::new(1, 3)));
+        assert!(!supported.can_decode(ProtocolVersion::new(2, 0)));
+        assert!(!supported.can_decode(ProtocolVersion::new(0, 2)));
+    }
 }

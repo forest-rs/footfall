@@ -876,7 +876,7 @@ fn encode_header(bytes: &mut Vec<u8>, header: EnvelopeHeader) {
 
 fn decode_header(cursor: &mut Cursor<'_>) -> io::Result<EnvelopeHeader> {
     let protocol_version = ProtocolVersion::new(decode_u16(cursor)?, decode_u16(cursor)?);
-    if protocol_version != CODEC_VERSION {
+    if !CODEC_VERSION.can_decode(protocol_version) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
@@ -1943,6 +1943,38 @@ mod tests {
             decode_envelope(&encode_envelope(&envelope).expect("encoding should succeed"))
                 .expect("decoding should succeed");
         assert_eq!(decoded, envelope);
+    }
+
+    #[test]
+    fn decoder_rejects_incompatible_codec_versions() {
+        let envelope = OwnedSessionEnvelope {
+            header: EnvelopeHeader {
+                protocol_version: PROTOCOL_VERSION,
+                session_sequence: 1,
+                chunk_index: 0,
+            },
+            payload: OwnedSessionPayload::SnapshotEnd(spoor_session::DroppedSummary {
+                contexts: 0,
+                counters: 0,
+                events: 0,
+            }),
+        };
+        let encoded = encode_envelope(&envelope).expect("encoding should succeed");
+
+        // The frame starts with little-endian u16 major and u16 minor.
+        let mut different_major = encoded.clone();
+        different_major[0..2].copy_from_slice(&2_u16.to_le_bytes());
+        let error = decode_envelope(&different_major)
+            .expect_err("decoder should reject a different major version");
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+
+        let mut newer_minor = encoded.clone();
+        newer_minor[2..4].copy_from_slice(&(crate::CODEC_VERSION.minor() + 1).to_le_bytes());
+        let error =
+            decode_envelope(&newer_minor).expect_err("decoder should reject a newer minor version");
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+
+        decode_envelope(&encoded).expect("decoder should accept the supported version");
     }
 
     #[test]

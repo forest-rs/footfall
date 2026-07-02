@@ -82,7 +82,9 @@ Current codec version is `1.0`. The payload tags are:
 - `4`: `SnapshotEnd`
 
 A decoder rejects unsupported versions, unknown tags, truncated payloads, and
-trailing bytes after a valid payload.
+trailing bytes after a valid payload. Minor versions are additive: a decoder
+accepts envelopes with its own major version and an equal or older minor
+version, and rejects a different major version or a newer minor version.
 
 ## Row Fields Worth Calling Out
 
