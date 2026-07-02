@@ -3,7 +3,8 @@
 
 use spoor::LabelKey;
 use spoor_session::{
-    OwnedContextEntry, OwnedLabelValue, OwnedObservation, OwnedSessionEnvelope, OwnedSessionPayload,
+    OwnedArgEntry, OwnedContextEntry, OwnedLabelValue, OwnedObservation, OwnedSessionEnvelope,
+    OwnedSessionPayload,
 };
 use std::collections::BTreeMap;
 
@@ -13,9 +14,14 @@ pub(crate) struct SessionSummary {
     pub(crate) session_name: Option<String>,
     pub(crate) context_rows: usize,
     pub(crate) counter_rows: usize,
+    pub(crate) histogram_rows: usize,
     pub(crate) event_rows: usize,
     pub(crate) caches: Vec<CacheSummary>,
     pub(crate) resources: Vec<ResourceSummary>,
+    pub(crate) histograms: Vec<HistogramSummary>,
+    pub(crate) messages: Vec<MessageSummary>,
+    pub(crate) scopes: Vec<ScopeSummary>,
+    pub(crate) flows: Vec<FlowSummary>,
 }
 
 #[derive(Debug)]
@@ -38,15 +44,52 @@ pub(crate) struct ResourceSummary {
     pub(crate) last_size: Option<u64>,
 }
 
+#[derive(Debug)]
+pub(crate) struct HistogramSummary {
+    pub(crate) name: String,
+    pub(crate) unit: String,
+    pub(crate) context: String,
+    pub(crate) count: u64,
+    pub(crate) min: u64,
+    pub(crate) max: u64,
+}
+
+#[derive(Debug)]
+pub(crate) struct MessageSummary {
+    pub(crate) name: String,
+    pub(crate) text: String,
+    pub(crate) context: String,
+    pub(crate) args: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct ScopeSummary {
+    pub(crate) name: String,
+    pub(crate) context: String,
+    pub(crate) args: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct FlowSummary {
+    pub(crate) flow_id: u64,
+    pub(crate) phase: String,
+    pub(crate) context: String,
+}
+
 pub(crate) fn summarize(envelopes: &[OwnedSessionEnvelope]) -> SessionSummary {
     let mut process_name = String::new();
     let mut session_name = None;
     let mut context_rows = 0_usize;
     let mut counter_rows = 0_usize;
+    let mut histogram_rows = 0_usize;
     let mut event_rows = 0_usize;
     let mut contexts = BTreeMap::<u64, Vec<OwnedContextEntry>>::new();
     let mut caches = BTreeMap::<String, CacheSummary>::new();
     let mut resources = BTreeMap::<(String, u64, String), ResourceSummary>::new();
+    let mut histograms = Vec::<HistogramSummary>::new();
+    let mut messages = Vec::<MessageSummary>::new();
+    let mut scopes = Vec::<ScopeSummary>::new();
+    let mut flows = Vec::<FlowSummary>::new();
 
     for envelope in envelopes {
         match &envelope.payload {
@@ -60,7 +103,23 @@ pub(crate) fn summarize(envelopes: &[OwnedSessionEnvelope]) -> SessionSummary {
                     contexts.insert(row.id.get(), row.entries.clone());
                 }
             }
-            OwnedSessionPayload::Histograms(_) => {}
+            OwnedSessionPayload::Histograms(rows) => {
+                histogram_rows += rows.len();
+                for row in rows {
+                    let context = contexts
+                        .get(&row.context_id.get())
+                        .map(|entries| format_context(entries))
+                        .unwrap_or_else(|| String::from("unknown"));
+                    histograms.push(HistogramSummary {
+                        name: row.name.clone(),
+                        unit: row.unit.as_str().to_owned(),
+                        context,
+                        count: row.count,
+                        min: row.min,
+                        max: row.max,
+                    });
+                }
+            }
             OwnedSessionPayload::Counters(rows) => {
                 counter_rows += rows.len();
                 for row in rows {
@@ -167,11 +226,57 @@ pub(crate) fn summarize(envelopes: &[OwnedSessionEnvelope]) -> SessionSummary {
                                 });
                             resource.drops = resource.drops.saturating_add(1);
                         }
-                        OwnedObservation::ScopeBegin { .. }
-                        | OwnedObservation::ScopeEnd { .. }
-                        | OwnedObservation::FrameMarker { .. }
-                        | OwnedObservation::Flow { .. }
-                        | OwnedObservation::Message { .. } => {}
+                        OwnedObservation::ScopeBegin {
+                            name,
+                            context_id,
+                            args,
+                            ..
+                        } => {
+                            let context = contexts
+                                .get(&context_id.get())
+                                .map(|entries| format_context(entries))
+                                .unwrap_or_else(|| String::from("unknown"));
+                            scopes.push(ScopeSummary {
+                                name: name.clone(),
+                                context,
+                                args: format_args(args),
+                            });
+                        }
+                        OwnedObservation::Flow {
+                            flow_id,
+                            phase,
+                            context_id,
+                        } => {
+                            let context = contexts
+                                .get(&context_id.get())
+                                .map(|entries| format_context(entries))
+                                .unwrap_or_else(|| String::from("unknown"));
+                            flows.push(FlowSummary {
+                                flow_id: flow_id.get(),
+                                phase: format!("{phase:?}"),
+                                context,
+                            });
+                        }
+                        OwnedObservation::Message {
+                            name,
+                            context_id,
+                            text,
+                            args,
+                            ..
+                        } => {
+                            let context = contexts
+                                .get(&context_id.get())
+                                .map(|entries| format_context(entries))
+                                .unwrap_or_else(|| String::from("unknown"));
+                            messages.push(MessageSummary {
+                                name: name.clone(),
+                                text: text.clone(),
+                                context,
+                                args: format_args(args),
+                            });
+                        }
+                        OwnedObservation::ScopeEnd { .. }
+                        | OwnedObservation::FrameMarker { .. } => {}
                     }
                 }
             }
@@ -184,9 +289,14 @@ pub(crate) fn summarize(envelopes: &[OwnedSessionEnvelope]) -> SessionSummary {
         session_name,
         context_rows,
         counter_rows,
+        histogram_rows,
         event_rows,
         caches: caches.into_values().collect(),
         resources: resources.into_values().collect(),
+        histograms,
+        messages,
+        scopes,
+        flows,
     }
 }
 
@@ -196,9 +306,23 @@ pub(crate) fn print_summary(summary: &SessionSummary) {
         println!("session: {session_name}");
     }
     println!(
-        "rows: {} contexts, {} counters, {} events",
-        summary.context_rows, summary.counter_rows, summary.event_rows
+        "rows: {} contexts, {} counters, {} histograms, {} events",
+        summary.context_rows, summary.counter_rows, summary.histogram_rows, summary.event_rows
     );
+    if !summary.histograms.is_empty() {
+        println!("histograms:");
+        for histogram in &summary.histograms {
+            println!(
+                "  {} unit={} count={} min={} max={} context=[{}]",
+                histogram.name,
+                histogram.unit,
+                histogram.count,
+                histogram.min,
+                histogram.max,
+                histogram.context
+            );
+        }
+    }
     if !summary.caches.is_empty() {
         println!("caches:");
         for cache in &summary.caches {
@@ -223,6 +347,38 @@ pub(crate) fn print_summary(summary: &SessionSummary) {
                     .last_size
                     .map(|size| size.to_string())
                     .unwrap_or_else(|| String::from("-"))
+            );
+        }
+    }
+    if !summary.scopes.is_empty() {
+        println!("scopes:");
+        for scope in summary.scopes.iter().take(8) {
+            println!(
+                "  {} context=[{}] args={}",
+                scope.name,
+                scope.context,
+                empty_dash(&scope.args)
+            );
+        }
+    }
+    if !summary.messages.is_empty() {
+        println!("messages:");
+        for message in summary.messages.iter().take(8) {
+            println!(
+                "  {}: {:?} context=[{}] args={}",
+                message.name,
+                message.text,
+                message.context,
+                empty_dash(&message.args)
+            );
+        }
+    }
+    if !summary.flows.is_empty() {
+        println!("flows:");
+        for flow in &summary.flows {
+            println!(
+                "  flow#{} phase={} context=[{}]",
+                flow.flow_id, flow.phase, flow.context
             );
         }
     }
@@ -258,4 +414,24 @@ fn format_context(entries: &[OwnedContextEntry]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" / ")
+}
+
+fn format_args(args: &[OwnedArgEntry]) -> String {
+    args.iter()
+        .map(|entry| format!("{}={}", entry.key, format_label_value(&entry.value)))
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+fn format_label_value(value: &OwnedLabelValue) -> String {
+    match value {
+        OwnedLabelValue::Unsigned(value) => value.to_string(),
+        OwnedLabelValue::Signed(value) => value.to_string(),
+        OwnedLabelValue::Bool(value) => value.to_string(),
+        OwnedLabelValue::String(value) => value.clone(),
+    }
+}
+
+fn empty_dash(value: &str) -> &str {
+    if value.is_empty() { "-" } else { value }
 }

@@ -47,5 +47,13 @@ The current local attach workflow is:
 
 The examples show that flow directly:
 
+- `cargo run -p basic --bin session_wtransport` for a one-process
+  serve/discover/fetch round trip
 - `cargo run -p basic --bin session_server`
 - `cargo run -p basic --bin session_consumer`
+
+The session examples include direct Spoor instrumentation plus `tracing`
+spans/events bridged through `spoor_tracing`. For a compact Chrome Trace JSON
+view of just the tracing bridge:
+
+- `cargo run -p basic --bin tracing_demo > /tmp/spoor-tracing.json`

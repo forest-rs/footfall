@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use spoor::{
-    Context, CounterDesc, LabelKey, ResourceId, ResourceKindDesc, ScopeDesc, counter_add,
-    frame_begin, frame_end, resource_create, resource_drop, resource_update, scope,
+    Context, CounterDesc, EventDesc, FlowId, LabelKey, ResourceId, ResourceKindDesc, ScopeDesc,
+    counter_add, flow_begin, flow_end, flow_step, frame_begin, frame_end, histogram_record,
+    message_with, pass_begin, pass_end, resource_create, resource_drop, resource_update, scope,
+    scope_with,
 };
 use spoor_memory::{CacheMetrics, CacheStats, ScratchMetrics, TrackedScratchVec};
 use spoor_runtime::{Runtime, Snapshot};
+use spoor_tracing::SpoorLayer;
+use tracing_subscriber::layer::SubscriberExt as _;
 
 static RECORD_FRAME: ScopeDesc = spoor::scope_desc!(
     1,
@@ -33,9 +37,13 @@ static CACHE_EVICTIONS: CounterDesc = spoor::counter_desc!(count, 15, "cache_evi
 static SCRATCH_CURRENT: CounterDesc = spoor::counter_desc!(bytes, 16, "scratch_current_bytes");
 static SCRATCH_PEAK: CounterDesc = spoor::counter_desc!(bytes, 17, "scratch_peak_bytes");
 static SCRATCH_GROW: CounterDesc = spoor::counter_desc!(count, 18, "scratch_grow");
+static TESSELLATE_MICROS: CounterDesc =
+    spoor::counter_desc!(19, "tessellate_micros", spoor::Unit::Micros);
+static APP_LOG: EventDesc = spoor::event_desc!(21, "app_log");
 
 static ATLAS: ResourceKindDesc = spoor::resource_kind_desc!(20, "atlas");
 static ATLAS_ID: ResourceId = ResourceId::new(9);
+static INVALIDATION_FLOW: FlowId = FlowId::new(1);
 
 pub(crate) struct DemoCapture {
     runtime: &'static Runtime,
@@ -51,6 +59,11 @@ impl DemoCapture {
     }
 
     pub(crate) fn capture_frame(&self, frame: u32) -> Snapshot {
+        let subscriber = tracing_subscriber::registry().with(SpoorLayer::default());
+        tracing::subscriber::with_default(subscriber, || self.capture_frame_with_tracing(frame))
+    }
+
+    fn capture_frame_with_tracing(&self, frame: u32) -> Snapshot {
         let frame_context = Context::root()
             .with(LabelKey::Frame, frame)
             .with(LabelKey::Transaction, 1_u32 + frame / 8);
@@ -75,17 +88,52 @@ impl DemoCapture {
         };
 
         frame_begin(frame_context);
+        pass_begin(record_context);
+        flow_begin(
+            INVALIDATION_FLOW,
+            frame_context.with(LabelKey::Reason, "layout_invalidation"),
+        );
         {
             let _frame_scope = scope(&RECORD_FRAME, frame_context);
+            let tracing_frame = tracing::info_span!(
+                "session_frame",
+                frame = u64::from(frame),
+                transaction = u64::from(1_u32 + frame / 8)
+            );
+            let _entered_frame = tracing_frame.enter();
+
             {
-                let _tessellate_scope = scope(&TESSELLATE_NODE, record_context);
-                let mut scratch = TrackedScratchVec::<u32>::new(scratch_metrics, record_context);
                 let scratch_items = 16_u32 + (frame % 20);
+                let _tessellate_scope = scope_with(
+                    &TESSELLATE_NODE,
+                    record_context,
+                    spoor::args!("scratch_items" => scratch_items),
+                );
+                let tracing_tessellate =
+                    tracing::debug_span!("session_tessellate", paths = u64::from(scratch_items));
+                let _entered_tessellate = tracing_tessellate.enter();
+
+                let mut scratch = TrackedScratchVec::<u32>::new(scratch_metrics, record_context);
                 scratch.reserve(scratch_items as usize);
                 for index in 0..scratch_items {
                     scratch.push(index);
                 }
                 counter_add(&DRAW_OPS, record_context, u64::from(scratch_items));
+                for sample in tessellate_samples(frame) {
+                    histogram_record(&TESSELLATE_MICROS, record_context, sample);
+                }
+                message_with(
+                    &APP_LOG,
+                    record_context,
+                    "tessellation finished",
+                    spoor::args!("items" => scratch_items, "level" => "info"),
+                );
+                tracing::debug!(
+                    scratch_items = u64::from(scratch_items),
+                    bytes = u64::from(scratch_items) * 4,
+                    "scratch populated"
+                );
+                flow_step(INVALIDATION_FLOW, record_context);
             }
 
             let mut cache = CacheStats::new(cache_metrics, cache_context);
@@ -112,11 +160,20 @@ impl DemoCapture {
                     atlas_context,
                     resident_bytes + upload_bytes,
                 );
+                tracing::info!(upload_bytes, "atlas uploaded");
+                flow_step(INVALIDATION_FLOW, atlas_context);
             }
             resource_drop(&ATLAS, ATLAS_ID, atlas_context);
+            flow_end(INVALIDATION_FLOW, atlas_context);
         }
+        pass_end(record_context);
         frame_end(frame_context);
 
         self.runtime.drain_snapshot()
     }
+}
+
+fn tessellate_samples(frame: u32) -> [u64; 4] {
+    let base = 180_u64 + u64::from(frame % 7) * 10;
+    [base, base + 25, base + 40, base + 320]
 }
