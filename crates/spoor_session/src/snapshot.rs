@@ -594,6 +594,7 @@ mod tests {
                 CounterSnapshot {
                     desc_id: CounterDescId::new(1),
                     name: "ops",
+                    unit: spoor_core::Unit::Count,
                     context_id: ContextId::new(1),
                     kind: CounterKind::Counter,
                     value: 5,
@@ -602,6 +603,7 @@ mod tests {
                 CounterSnapshot {
                     desc_id: CounterDescId::new(2),
                     name: "bytes",
+                    unit: spoor_core::Unit::Bytes,
                     context_id: ContextId::new(1),
                     kind: CounterKind::Gauge,
                     value: 9,
@@ -611,12 +613,14 @@ mod tests {
             events: vec![
                 TimedObservation {
                     at_micros: 22,
+                    thread_id: 1,
                     observation: Observation::ScopeEnd {
                         token: spoor_core::ScopeToken::new(1),
                     },
                 },
                 TimedObservation {
                     at_micros: 23,
+                    thread_id: 2,
                     observation: Observation::ScopeEnd {
                         token: spoor_core::ScopeToken::new(2),
                     },

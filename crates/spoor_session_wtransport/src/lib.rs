@@ -1747,6 +1747,7 @@ mod tests {
             counters: vec![spoor_runtime::CounterSnapshot {
                 desc_id: CounterDescId::new(3),
                 name: "ops",
+                unit: spoor_core::Unit::Count,
                 context_id: ContextId::new(0),
                 kind: CounterKind::Counter,
                 value: 7,
@@ -1754,6 +1755,7 @@ mod tests {
             }],
             events: vec![spoor_runtime::TimedObservation {
                 at_micros: 15,
+                thread_id: 2,
                 observation: spoor_runtime::Observation::Flow {
                     flow_id: FlowId::new(8),
                     phase: FlowPhase::Step,

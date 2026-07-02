@@ -6,7 +6,7 @@
 use spoor_core::{
     Backend, Context, ContextId, CounterDesc, CounterDescId, FlowId, FlowPhase,
     InstallBackendError, InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId,
-    ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, ScopeToken, install_backend,
+    ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, ScopeToken, Unit, install_backend,
 };
 use std::{
     boxed::Box,
@@ -352,6 +352,7 @@ impl Runtime {
             CounterSnapshot {
                 desc_id: desc.id(),
                 name: desc.name(),
+                unit: desc.unit(),
                 context_id,
                 kind,
                 value,
@@ -377,6 +378,7 @@ impl Runtime {
             .events
             .push_back(TimedObservation {
                 at_micros,
+                thread_id: current_thread_id(),
                 observation,
             });
     }
@@ -484,6 +486,8 @@ pub struct CounterSnapshot {
     pub desc_id: CounterDescId,
     /// Stable descriptor name.
     pub name: &'static str,
+    /// Unit copied from the counter descriptor.
+    pub unit: Unit,
     /// Canonical semantic context id.
     pub context_id: ContextId,
     /// Whether the value is additive or gauge-like.
@@ -508,6 +512,11 @@ pub enum CounterKind {
 pub struct TimedObservation {
     /// Observation time in microseconds since runtime creation.
     pub at_micros: u64,
+    /// Runtime-assigned id of the thread that recorded the observation.
+    ///
+    /// Ids are small integers assigned in first-emission order. They identify
+    /// threads within one process lifetime and are not OS thread ids.
+    pub thread_id: u64,
     /// Observation payload.
     pub observation: Observation,
 }
@@ -894,6 +903,21 @@ fn with_runtime<T>(f: impl FnOnce(&Runtime) -> T) -> Option<T> {
     RUNTIME.get().map(|runtime| f(runtime))
 }
 
+static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1);
+
+std::thread_local! {
+    static THREAD_ID: u64 = NEXT_THREAD_ID.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Returns the runtime-assigned id for the calling thread.
+///
+/// Ids are assigned in first-use order starting at `1` and remain stable for
+/// the lifetime of the thread.
+#[must_use]
+pub fn current_thread_id() -> u64 {
+    THREAD_ID.with(|id| *id)
+}
+
 fn build_counter_shards(count: usize) -> Vec<Mutex<CounterShard>> {
     (0..count.max(1))
         .map(|_| Mutex::new(CounterShard::default()))
@@ -1052,10 +1076,12 @@ mod tests {
             counter.kind == CounterKind::Counter
                 && counter.value == 5
                 && counter.name == "ops"
+                && counter.unit == spoor_core::Unit::Count
                 && counter.context_id == context_id
         }));
         assert_eq!(snapshot.events.len(), 5);
         assert_eq!(snapshot.events[0].at_micros, 12);
+        assert_eq!(snapshot.events[0].thread_id, super::current_thread_id());
         assert_eq!(
             snapshot.events[0].observation.context_id(),
             Some(context_id)

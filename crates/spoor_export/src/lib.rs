@@ -216,6 +216,8 @@ fn build_counter_event(
             CounterKind::Gauge => "gauge",
         },
     )?;
+    json.push_str(",\"unit\":");
+    write_json_string(&mut json, counter.unit.as_str())?;
     json.push_str(",\"context\":");
     write_context(&mut json, context)?;
     json.push_str("}}");
@@ -282,7 +284,9 @@ fn build_timed_observation(
             write_json_field_u64(&mut json, "pid", 1)?;
             json.push(',');
             write_json_field_u64(&mut json, "tid", context_id.get())?;
-            json.push_str(",\"args\":{\"context\":");
+            json.push_str(",\"args\":{");
+            write_json_field_u64(&mut json, "thread", event.thread_id)?;
+            json.push_str(",\"context\":");
             write_context(&mut json, context)?;
             json.push_str("}}");
             Ok(ExportEvent {
@@ -321,6 +325,7 @@ fn build_timed_observation(
         } => build_resource_event(
             snapshot,
             event.at_micros,
+            event.thread_id,
             "resource_create",
             kind_name,
             *resource_id,
@@ -336,6 +341,7 @@ fn build_timed_observation(
         } => build_resource_event(
             snapshot,
             event.at_micros,
+            event.thread_id,
             "resource_update",
             kind_name,
             *resource_id,
@@ -350,6 +356,7 @@ fn build_timed_observation(
         } => build_resource_event(
             snapshot,
             event.at_micros,
+            event.thread_id,
             "resource_drop",
             kind_name,
             *resource_id,
@@ -378,7 +385,9 @@ fn build_timed_observation(
             write_json_field_u64(&mut json, "pid", 1)?;
             json.push(',');
             write_json_field_u64(&mut json, "tid", context_id.get())?;
-            json.push_str(",\"args\":{\"context\":");
+            json.push_str(",\"args\":{");
+            write_json_field_u64(&mut json, "thread", event.thread_id)?;
+            json.push_str(",\"context\":");
             write_context(&mut json, context)?;
             json.push_str("}}");
             Ok(ExportEvent {
@@ -411,7 +420,9 @@ fn build_timed_observation(
             write_json_field_u64(&mut json, "tid", context_id.get())?;
             json.push(',');
             write_json_field_u64(&mut json, "id", flow_id.get())?;
-            json.push_str(",\"args\":{\"context\":");
+            json.push_str(",\"args\":{");
+            write_json_field_u64(&mut json, "thread", event.thread_id)?;
+            json.push_str(",\"context\":");
             write_context(&mut json, context)?;
             json.push_str("}}");
             Ok(ExportEvent {
@@ -426,6 +437,7 @@ fn build_timed_observation(
 fn build_resource_event(
     snapshot: &Snapshot,
     at_micros: u64,
+    thread_id: u64,
     name: &str,
     kind_name: &str,
     resource_id: ResourceId,
@@ -450,6 +462,8 @@ fn build_resource_event(
     json.push(',');
     write_json_field_u64(&mut json, "tid", context_id.get())?;
     json.push_str(",\"args\":{");
+    write_json_field_u64(&mut json, "thread", thread_id)?;
+    json.push(',');
     write_json_field_str(&mut json, "kind", kind_name)?;
     json.push(',');
     write_json_field_u64(&mut json, "resource_id", resource_id.get())?;
@@ -618,6 +632,7 @@ mod tests {
             counters: vec![CounterSnapshot {
                 desc_id: CounterDescId::new(1),
                 name: CounterDesc::bytes(CounterDescId::new(1), "upload_bytes").name(),
+                unit: spoor_core::Unit::Bytes,
                 context_id: ContextId::new(1),
                 kind: CounterKind::Counter,
                 value: 4096,
@@ -626,6 +641,7 @@ mod tests {
             events: vec![
                 TimedObservation {
                     at_micros: 20,
+                    thread_id: 3,
                     observation: Observation::ScopeBegin {
                         desc_id: spoor_core::ScopeDescId::new(2),
                         name: "record",
@@ -635,12 +651,14 @@ mod tests {
                 },
                 TimedObservation {
                     at_micros: 22,
+                    thread_id: 3,
                     observation: Observation::ScopeEnd {
                         token: ScopeToken::new(9),
                     },
                 },
                 TimedObservation {
                     at_micros: 24,
+                    thread_id: 3,
                     observation: Observation::FrameMarker {
                         kind: MarkerKind::Frame,
                         phase: MarkerPhase::Begin,
@@ -649,6 +667,7 @@ mod tests {
                 },
                 TimedObservation {
                     at_micros: 26,
+                    thread_id: 3,
                     observation: Observation::Flow {
                         flow_id: FlowId::new(8),
                         phase: FlowPhase::Begin,
