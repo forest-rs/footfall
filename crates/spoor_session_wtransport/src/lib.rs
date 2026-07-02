@@ -138,7 +138,7 @@ impl SessionIdentity {
         Self::from_identity(identity)
     }
 
-    /// Returns true when the identity is expired, not yet valid, unparseable,
+    /// Returns true when the identity is expired, not yet valid, unparsable,
     /// or within the renewal margin of expiry.
     fn needs_renewal(&self) -> bool {
         let Some(certificate) = self.identity.certificate_chain().as_slice().first() else {
