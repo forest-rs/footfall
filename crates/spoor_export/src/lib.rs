@@ -573,6 +573,9 @@ fn write_json_string(writer: &mut impl Write, value: &str) -> fmt::Result {
             '\n' => writer.write_str("\\n")?,
             '\r' => writer.write_str("\\r")?,
             '\t' => writer.write_str("\\t")?,
+            ch if ch < '\u{20}' => {
+                writer.write_fmt(format_args!("\\u{:04x}", u32::from(ch)))?;
+            }
             _ => writer.write_char(ch)?,
         }
     }
@@ -676,5 +679,12 @@ mod tests {
             .with(LabelKey::Frame, 3_u32)
             .with(LabelKey::Reason, "invalidate");
         assert_eq!(track_name(context), "frame=3 / reason=invalidate");
+    }
+
+    #[test]
+    fn json_strings_escape_control_characters() {
+        let mut out = String::new();
+        super::write_json_string(&mut out, "a\u{1}b\u{1f}c\"d\\e\nf").expect("write succeeds");
+        assert_eq!(out, "\"a\\u0001b\\u001fc\\\"d\\\\e\\nf\"");
     }
 }
