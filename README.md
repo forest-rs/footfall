@@ -16,6 +16,8 @@ The workspace currently contains:
 - `spoor_session_wtransport`: local attach path for discovery and snapshot
   fetch over WebTransport
 - `spoor_fanout`: backend composition for feeding multiple sinks at once
+- `spoor_tracing`: a `tracing` subscriber layer that forwards spans and
+  events into Spoor
 - `spoor_benchmarks`: top-level benchmark wind tunnel for substrate overhead
 - `examples/basic`: a top-level example crate to avoid spreading dev
   dependencies through core packages

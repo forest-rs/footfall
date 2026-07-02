@@ -21,8 +21,11 @@ spoor_memory = { features = ["std"], workspace = true }
 spoor_runtime.workspace = true
 spoor_session = { features = ["std"], workspace = true }
 spoor_session_wtransport.workspace = true
+spoor_tracing.workspace = true
 spoor_tracy.workspace = true
 tokio = { features = ["macros", "rt-multi-thread", "signal", "time"], version = "1.51.1" }
+tracing = "0.1.41"
+tracing-subscriber = { default-features = false, features = ["registry", "std"], version = "0.3.20" }
 
 [[bin]]
 name = "basic"
@@ -43,6 +46,10 @@ path = "src/session_server.rs"
 [[bin]]
 name = "session_consumer"
 path = "src/session_consumer.rs"
+
+[[bin]]
+name = "tracing_demo"
+path = "src/tracing_demo.rs"
 
 [lints]
 workspace = true

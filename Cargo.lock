@@ -73,8 +73,11 @@ dependencies = [
  "spoor_runtime",
  "spoor_session",
  "spoor_session_wtransport",
+ "spoor_tracing",
  "spoor_tracy",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1036,6 +1039,17 @@ dependencies = [
  "tokio",
  "wtransport",
  "x509-parser 0.17.0",
+]
+
+[[package]]
+name = "spoor_tracing"
+version = "0.1.0"
+dependencies = [
+ "spoor_core",
+ "spoor_runtime",
+ "tracing",
+ "tracing-core",
+ "tracing-subscriber",
 ]
 
 [[package]]

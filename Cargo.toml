@@ -9,6 +9,7 @@ members = [
     "crates/spoor_runtime",
     "crates/spoor_session",
     "crates/spoor_session_wtransport",
+    "crates/spoor_tracing",
     "crates/spoor_tracy",
     "examples/basic",
 ]
@@ -36,6 +37,7 @@ spoor_memory = { default-features = false, path = "crates/spoor_memory" }
 spoor_runtime = { default-features = false, path = "crates/spoor_runtime" }
 spoor_session = { default-features = false, path = "crates/spoor_session" }
 spoor_session_wtransport = { default-features = false, path = "crates/spoor_session_wtransport" }
+spoor_tracing = { default-features = false, path = "crates/spoor_tracing" }
 spoor_tracy = { default-features = false, path = "crates/spoor_tracy" }
 tracy-client = { default-features = false, version = "0.18.4" }
 
