@@ -11,8 +11,8 @@
 //! forcing extra indirection into `spoor_core`.
 
 use spoor_core::{
-    Backend, Context, CounterDesc, FlowId, FlowPhase, InstallBackendError, MarkerKind, MarkerPhase,
-    ResourceId, ResourceKindDesc, ScopeDesc, ScopeToken, install_backend,
+    Args, Backend, Context, CounterDesc, FlowId, FlowPhase, InstallBackendError, MarkerKind,
+    MarkerPhase, ResourceId, ResourceKindDesc, ScopeDesc, ScopeToken, install_backend,
 };
 use std::{
     collections::HashMap,
@@ -60,9 +60,9 @@ impl Fanout {
         }
     }
 
-    fn begin_scope(&self, desc: &ScopeDesc, context: Context) -> ScopeToken {
-        let primary = (self.primary.scope_begin)(desc, context);
-        let secondary = (self.secondary.scope_begin)(desc, context);
+    fn begin_scope(&self, desc: &ScopeDesc, context: Context, args: Args) -> ScopeToken {
+        let primary = (self.primary.scope_begin)(desc, context, args);
+        let secondary = (self.secondary.scope_begin)(desc, context, args);
         let token = ScopeToken::new(self.next_scope_token.fetch_add(1, Ordering::Relaxed));
         self.scopes
             .lock()
@@ -118,8 +118,8 @@ fn backend_gauge_set(desc: &CounterDesc, context: Context, value: u64) {
     });
 }
 
-fn backend_scope_begin(desc: &ScopeDesc, context: Context) -> ScopeToken {
-    with_fanout(|fanout| fanout.begin_scope(desc, context)).unwrap_or_default()
+fn backend_scope_begin(desc: &ScopeDesc, context: Context, args: Args) -> ScopeToken {
+    with_fanout(|fanout| fanout.begin_scope(desc, context, args)).unwrap_or_default()
 }
 
 fn backend_scope_end(token: ScopeToken) {
@@ -205,7 +205,7 @@ mod tests {
         let context = Context::root().with(LabelKey::Frame, 1_u32);
 
         super::backend_counter_add(&COUNTER, context, 3);
-        let token = super::backend_scope_begin(&SCOPE, context);
+        let token = super::backend_scope_begin(&SCOPE, context, spoor_core::Args::none());
         super::backend_scope_end(token);
         super::backend_frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
 
@@ -273,7 +273,11 @@ mod tests {
         record("primary gauge_set");
     }
 
-    fn primary_scope_begin(_desc: &ScopeDesc, _context: Context) -> spoor_core::ScopeToken {
+    fn primary_scope_begin(
+        _desc: &ScopeDesc,
+        _context: Context,
+        _args: spoor_core::Args,
+    ) -> spoor_core::ScopeToken {
         record("primary scope_begin");
         spoor_core::ScopeToken::new(11)
     }
@@ -328,7 +332,11 @@ mod tests {
         record("secondary gauge_set");
     }
 
-    fn secondary_scope_begin(_desc: &ScopeDesc, _context: Context) -> spoor_core::ScopeToken {
+    fn secondary_scope_begin(
+        _desc: &ScopeDesc,
+        _context: Context,
+        _args: spoor_core::Args,
+    ) -> spoor_core::ScopeToken {
         record("secondary scope_begin");
         spoor_core::ScopeToken::new(22)
     }

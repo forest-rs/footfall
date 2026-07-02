@@ -20,7 +20,7 @@
 //! composed through an adapter such as `spoor_fanout`.
 
 use spoor_core::{
-    Backend, Context, CounterDesc, CounterDescId, FlowId, FlowPhase, InstallBackendError,
+    Args, Backend, Context, CounterDesc, CounterDescId, FlowId, FlowPhase, InstallBackendError,
     LabelValue, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ScopeDesc, ScopeDescId,
     ScopeToken, SourceLocation, Unit, install_backend,
 };
@@ -147,7 +147,7 @@ impl Tracy {
         ScopeToken::new(raw)
     }
 
-    fn begin_scope(&self, desc: &ScopeDesc, context: Context) -> ScopeToken {
+    fn begin_scope(&self, desc: &ScopeDesc, context: Context, args: Args) -> ScopeToken {
         let token = self.next_scope_token();
         let span = if let Some(location) = desc.location() {
             let location = self.cached_span_location(desc, location);
@@ -166,6 +166,10 @@ impl Tracy {
         let context_text = context_text(context);
         if !context_text.is_empty() {
             span.emit_text(&context_text);
+        }
+        let args_text = args_text(args);
+        if !args_text.is_empty() {
+            span.emit_text(&args_text);
         }
 
         OPEN_SPANS.with(|spans| {
@@ -311,8 +315,8 @@ fn backend_gauge_set(desc: &CounterDesc, _context: Context, value: u64) {
     with_tracy(|tracy| tracy.observe_counter(desc, value, CounterUpdate::Set));
 }
 
-fn backend_scope_begin(desc: &ScopeDesc, context: Context) -> ScopeToken {
-    with_tracy(|tracy| tracy.begin_scope(desc, context)).unwrap_or_default()
+fn backend_scope_begin(desc: &ScopeDesc, context: Context, args: Args) -> ScopeToken {
+    with_tracy(|tracy| tracy.begin_scope(desc, context, args)).unwrap_or_default()
 }
 
 fn backend_scope_end(token: ScopeToken) {
@@ -425,6 +429,19 @@ fn context_text(context: Context) -> String {
             text.push_str(" / ");
         }
         text.push_str(entry.key().as_str());
+        text.push('=');
+        push_label_value(&mut text, entry.value());
+    }
+    text
+}
+
+fn args_text(args: Args) -> String {
+    let mut text = String::new();
+    for (index, entry) in args.iter().enumerate() {
+        if index > 0 {
+            text.push_str(" / ");
+        }
+        text.push_str(entry.key());
         text.push('=');
         push_label_value(&mut text, entry.value());
     }

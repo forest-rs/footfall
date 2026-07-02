@@ -109,6 +109,11 @@ Event rows carry a `u64` runtime-assigned thread id after the timestamp. Ids
 are small integers assigned in first-emission order within one process
 lifetime; they are not OS thread ids.
 
+Scope-begin rows end with a per-instance argument list: a `u8` count bounded
+by `spoor_core::ARGS_INLINE_CAPACITY`, followed by that many entries of key
+string plus tagged label value (the same value encoding used by context
+labels).
+
 ## Payload Limits
 
 The codec enforces these bounds before allocating dynamic payload data:

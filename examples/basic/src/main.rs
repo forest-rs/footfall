@@ -65,7 +65,11 @@ fn main() {
     {
         let _frame_scope = scope(&RECORD_FRAME, frame_context);
         {
-            let _tessellate_scope = scope(&TESSELLATE_NODE, record_context);
+            let _tessellate_scope = spoor::scope_with(
+                &TESSELLATE_NODE,
+                record_context,
+                spoor::args!("reserved" => 32_u32),
+            );
             let mut scratch = TrackedScratchVec::<u32>::new(scratch_metrics, record_context);
             scratch.reserve(32);
             for index in 0_u32..24 {

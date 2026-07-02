@@ -24,7 +24,7 @@ pub use live::{
 };
 #[cfg(feature = "std")]
 pub use snapshot::{
-    Chunking, Consumer, DroppedSummary, Envelope, EnvelopeHeader, OwnedContextEntry,
+    Chunking, Consumer, DroppedSummary, Envelope, EnvelopeHeader, OwnedArgEntry, OwnedContextEntry,
     OwnedContextSnapshot, OwnedCounterSnapshot, OwnedLabelValue, OwnedObservation,
     OwnedSessionEnvelope, OwnedSessionPayload, OwnedSnapshotMetadata, OwnedSnapshotSummary,
     OwnedTimedObservation, Payload, SnapshotSummary, collect_snapshot, publish_snapshot,

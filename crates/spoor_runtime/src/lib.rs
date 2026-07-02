@@ -4,7 +4,7 @@
 //! Bounded runtime collection for Spoor.
 
 use spoor_core::{
-    Backend, Context, ContextId, CounterDesc, CounterDescId, FlowId, FlowPhase,
+    Args, Backend, Context, ContextId, CounterDesc, CounterDescId, FlowId, FlowPhase,
     InstallBackendError, InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId,
     ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, ScopeToken, Unit, install_backend,
 };
@@ -549,6 +549,8 @@ pub enum Observation {
         context_id: ContextId,
         /// Opaque scope token returned to the caller.
         token: ScopeToken,
+        /// Per-instance arguments carried by this scope begin.
+        args: Args,
     },
     /// Scope end event.
     ScopeEnd {
@@ -759,7 +761,7 @@ fn backend_gauge_set(desc: &CounterDesc, context: Context, value: u64) {
     });
 }
 
-fn backend_scope_begin(desc: &ScopeDesc, context: Context) -> ScopeToken {
+fn backend_scope_begin(desc: &ScopeDesc, context: Context, args: Args) -> ScopeToken {
     with_runtime(|runtime| {
         if !runtime.level().captures_scopes() {
             return ScopeToken::new(desc.id().get());
@@ -776,6 +778,7 @@ fn backend_scope_begin(desc: &ScopeDesc, context: Context) -> ScopeToken {
                 name: desc.name(),
                 context_id,
                 token,
+                args,
             },
             at_micros,
         );
@@ -1027,9 +1030,9 @@ const fn level_from_u8(level: u8) -> InstrumentationLevel {
 mod tests {
     use super::{CounterKind, Observation, Runtime};
     use spoor_core::{
-        Context, ContextId, CounterDesc, CounterDescId, FlowId, FlowPhase, InstrumentationLevel,
-        MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ResourceKindId, ScopeDesc,
-        ScopeDescId,
+        Args, Context, ContextId, CounterDesc, CounterDescId, FlowId, FlowPhase,
+        InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc,
+        ResourceKindId, ScopeDesc, ScopeDescId, Unit,
     };
 
     #[test]
@@ -1167,6 +1170,7 @@ mod tests {
                 name: scope.name(),
                 context_id,
                 token,
+                args: Args::none().with("items", 3_u32),
             },
             12,
         );
@@ -1212,7 +1216,7 @@ mod tests {
             counter.kind == CounterKind::Counter
                 && counter.value == 5
                 && counter.name == "ops"
-                && counter.unit == spoor_core::Unit::Count
+                && counter.unit == Unit::Count
                 && counter.context_id == context_id
         }));
         assert_eq!(snapshot.events.len(), 5);
@@ -1349,7 +1353,7 @@ mod tests {
 
         let context = Context::root().with(spoor_core::LabelKey::Frame, 3_u32);
         super::backend_counter_add(&COUNTER, context, 1);
-        let token = super::backend_scope_begin(&SCOPE, context);
+        let token = super::backend_scope_begin(&SCOPE, context, Args::none());
         super::backend_scope_end(token);
         super::backend_resource_create(&RESOURCE, ResourceId::new(7), context, 64);
         super::backend_frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
@@ -1362,7 +1366,7 @@ mod tests {
         runtime.set_level(InstrumentationLevel::Trace);
         runtime.reset();
         super::backend_counter_add(&COUNTER, context, 1);
-        let token = super::backend_scope_begin(&SCOPE, context);
+        let token = super::backend_scope_begin(&SCOPE, context, Args::none());
         super::backend_scope_end(token);
         super::backend_resource_create(&RESOURCE, ResourceId::new(7), context, 64);
         super::backend_frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);

@@ -12,7 +12,7 @@ use spoor_core::{
 };
 use spoor_runtime::{CounterKind, Snapshot};
 use spoor_session::{
-    Chunking, Consumer, DroppedSummary, Envelope, EnvelopeHeader, OwnedContextEntry,
+    Chunking, Consumer, DroppedSummary, Envelope, EnvelopeHeader, OwnedArgEntry, OwnedContextEntry,
     OwnedContextSnapshot, OwnedCounterSnapshot, OwnedLabelValue, OwnedObservation,
     OwnedSessionEnvelope, OwnedSessionPayload, OwnedSnapshotMetadata, OwnedSnapshotSummary,
     OwnedTimedObservation, Payload, ProtocolVersion, publish_snapshot,
@@ -57,6 +57,8 @@ pub const MAX_DISCOVERED_SESSIONS: u64 = 4096;
 pub const MAX_ROWS_PER_ENVELOPE: usize = 65_536;
 /// Maximum context labels accepted for one encoded context row.
 pub const MAX_CONTEXT_ENTRIES_PER_CONTEXT: usize = spoor_core::CONTEXT_INLINE_CAPACITY;
+/// Maximum per-instance arguments accepted for one encoded observation.
+pub const MAX_ARGS_PER_OBSERVATION: usize = spoor_core::ARGS_INLINE_CAPACITY;
 
 /// Identity and certificate pinning material for a local session server.
 #[derive(Debug)]
@@ -1183,12 +1185,14 @@ fn encode_borrowed_observation(
             name,
             context_id,
             token,
+            args,
         } => {
             encode_u8(bytes, 0);
             encode_u64(bytes, desc_id.get());
             encode_string(bytes, name)?;
             encode_u64(bytes, context_id.get());
             encode_u64(bytes, token.get());
+            encode_borrowed_args(bytes, *args)?;
         }
         spoor_runtime::Observation::ScopeEnd { token } => {
             encode_u8(bytes, 1);
@@ -1258,6 +1262,47 @@ fn encode_borrowed_observation(
     Ok(())
 }
 
+#[cfg(test)]
+fn encode_args(bytes: &mut Vec<u8>, args: &[OwnedArgEntry]) -> io::Result<()> {
+    let count = u8::try_from(args.len().min(MAX_ARGS_PER_OBSERVATION))
+        .expect("bounded args count fits into u8");
+    encode_u8(bytes, count);
+    for entry in args.iter().take(usize::from(count)) {
+        encode_string(bytes, &entry.key)?;
+        encode_label_value(bytes, &entry.value)?;
+    }
+    Ok(())
+}
+
+fn encode_borrowed_args(bytes: &mut Vec<u8>, args: spoor_core::Args) -> io::Result<()> {
+    let count = u8::try_from(args.len().min(MAX_ARGS_PER_OBSERVATION))
+        .expect("bounded args count fits into u8");
+    encode_u8(bytes, count);
+    for entry in args.iter().take(usize::from(count)) {
+        encode_string(bytes, entry.key())?;
+        encode_borrowed_label_value(bytes, entry.value())?;
+    }
+    Ok(())
+}
+
+fn decode_args(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedArgEntry>> {
+    let count = usize::from(decode_u8(cursor)?);
+    if count > MAX_ARGS_PER_OBSERVATION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("too many observation args: {count}"),
+        ));
+    }
+    let mut args = Vec::with_capacity(count);
+    for _ in 0..count {
+        args.push(OwnedArgEntry {
+            key: decode_string(cursor)?,
+            value: decode_label_value(cursor)?,
+        });
+    }
+    Ok(args)
+}
+
 fn encode_dropped_summary(bytes: &mut Vec<u8>, dropped: DroppedSummary) {
     encode_u64(bytes, dropped.contexts);
     encode_u64(bytes, dropped.counters);
@@ -1316,12 +1361,14 @@ fn encode_observation(bytes: &mut Vec<u8>, observation: &OwnedObservation) -> io
             name,
             context_id,
             token,
+            args,
         } => {
             encode_u8(bytes, 0);
             encode_u64(bytes, desc_id.get());
             encode_string(bytes, name)?;
             encode_u64(bytes, context_id.get());
             encode_u64(bytes, token.get());
+            encode_args(bytes, args)?;
         }
         OwnedObservation::ScopeEnd { token } => {
             encode_u8(bytes, 1);
@@ -1398,6 +1445,7 @@ fn decode_observation(cursor: &mut Cursor<'_>) -> io::Result<OwnedObservation> {
             name: decode_string(cursor)?,
             context_id: ContextId::new(decode_u64(cursor)?),
             token: ScopeToken::new(decode_u64(cursor)?),
+            args: decode_args(cursor)?,
         }),
         1 => Ok(OwnedObservation::ScopeEnd {
             token: ScopeToken::new(decode_u64(cursor)?),
@@ -1787,8 +1835,9 @@ mod tests {
     };
     use spoor_runtime::{CounterKind, Snapshot, SnapshotMetadata};
     use spoor_session::{
-        Chunking, EnvelopeHeader, OwnedObservation, OwnedSessionEnvelope, OwnedSessionPayload,
-        OwnedTimedObservation, PROTOCOL_VERSION, collect_snapshot,
+        Chunking, EnvelopeHeader, OwnedArgEntry, OwnedCounterSnapshot, OwnedLabelValue,
+        OwnedObservation, OwnedSessionEnvelope, OwnedSessionPayload, OwnedTimedObservation,
+        PROTOCOL_VERSION, collect_snapshot,
     };
     use std::io::ErrorKind;
     use wtransport::{VarInt, error::StreamWriteError};
@@ -1835,7 +1884,7 @@ mod tests {
                 session_sequence: 4,
                 chunk_index: 2,
             },
-            payload: OwnedSessionPayload::Counters(vec![spoor_session::OwnedCounterSnapshot {
+            payload: OwnedSessionPayload::Counters(vec![OwnedCounterSnapshot {
                 desc_id: CounterDescId::new(3),
                 name: String::from("ops"),
                 unit: spoor_core::Unit::Count,
@@ -1866,6 +1915,10 @@ mod tests {
                     name: String::from("record"),
                     context_id: ContextId::new(1),
                     token: ScopeToken::new(9),
+                    args: vec![OwnedArgEntry {
+                        key: String::from("items"),
+                        value: OwnedLabelValue::Unsigned(3),
+                    }],
                 },
             }]),
         };
@@ -1873,7 +1926,8 @@ mod tests {
         assert_eq!(
             to_hex(&encoded),
             "010000000400000000000000030000000000000003010000000f0000000000000002000000\
-             00000000000500000000000000060000007265636f726401000000000000000900000000000000"
+             00000000000500000000000000060000007265636f7264010000000000000009000000000000\
+             0001050000006974656d73000300000000000000"
         );
     }
 

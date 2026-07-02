@@ -271,6 +271,7 @@ fn build_timed_observation(
             name,
             context_id,
             token,
+            args,
             ..
         } => {
             scope_tracks.insert(*token, *context_id);
@@ -293,6 +294,10 @@ fn build_timed_observation(
             write_json_field_u64(&mut json, "tid", context_id.get())?;
             json.push_str(",\"args\":{");
             write_json_field_u64(&mut json, "thread", event.thread_id)?;
+            if !args.is_empty() {
+                json.push_str(",\"values\":");
+                write_args(&mut json, *args)?;
+            }
             json.push_str(",\"context\":");
             write_context(&mut json, context)?;
             json.push_str("}}");
@@ -488,6 +493,21 @@ fn build_resource_event(
     })
 }
 
+fn write_args(writer: &mut impl Write, args: spoor_core::Args) -> fmt::Result {
+    writer.write_char('{')?;
+    let mut first = true;
+    for entry in args.iter() {
+        if !first {
+            writer.write_char(',')?;
+        }
+        first = false;
+        write_json_string(writer, entry.key())?;
+        writer.write_char(':')?;
+        write_label_value(writer, entry.value())?;
+    }
+    writer.write_char('}')
+}
+
 fn write_context(writer: &mut impl Write, context: Context) -> fmt::Result {
     writer.write_char('{')?;
     let mut first = true;
@@ -607,8 +627,8 @@ fn write_json_string(writer: &mut impl Write, value: &str) -> fmt::Result {
 mod tests {
     use super::{to_chrome_trace_json, track_name};
     use spoor_core::{
-        Context, ContextId, CounterDesc, CounterDescId, FlowId, FlowPhase, LabelKey, MarkerKind,
-        MarkerPhase, ScopeToken,
+        Args, Context, ContextId, CounterDesc, CounterDescId, FlowId, FlowPhase, LabelKey,
+        MarkerKind, MarkerPhase, ScopeToken, Unit,
     };
     use spoor_runtime::{
         ContextSnapshot, CounterKind, CounterSnapshot, Observation, Snapshot, TimedObservation,
@@ -640,7 +660,7 @@ mod tests {
             counters: vec![CounterSnapshot {
                 desc_id: CounterDescId::new(1),
                 name: CounterDesc::bytes(CounterDescId::new(1), "upload_bytes").name(),
-                unit: spoor_core::Unit::Bytes,
+                unit: Unit::Bytes,
                 context_id: ContextId::new(1),
                 kind: CounterKind::Counter,
                 value: 4096,
@@ -655,6 +675,7 @@ mod tests {
                         name: "record",
                         context_id: ContextId::new(1),
                         token: ScopeToken::new(9),
+                        args: Args::none().with("items", 3_u32),
                     },
                 },
                 TimedObservation {
@@ -694,6 +715,7 @@ mod tests {
         assert!(json.contains("frame=7 / pass=1"));
         assert!(json.contains("\"tid\":1"));
         assert!(json.contains("\"ph\":\"B\""));
+        assert!(json.contains("\"values\":{\"items\":3}"));
         assert!(json.contains("\"ph\":\"E\""));
         assert!(json.contains("\"ph\":\"s\""));
         assert!(json.contains("\"spoor_capture\""));

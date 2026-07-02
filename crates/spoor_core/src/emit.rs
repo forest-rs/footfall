@@ -1,7 +1,9 @@
 // Copyright 2026 the Spoor Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use crate::{Context, CounterDesc, FlowId, ResourceId, ResourceKindDesc, ScopeDesc, ScopeDescId};
+use crate::{
+    Args, Context, CounterDesc, FlowId, ResourceId, ResourceKindDesc, ScopeDesc, ScopeDescId,
+};
 #[cfg(feature = "std")]
 use std::sync::OnceLock;
 
@@ -40,8 +42,13 @@ pub struct ScopeGuard {
 impl ScopeGuard {
     /// Begins a new guarded scope.
     pub fn new(desc: &ScopeDesc, context: Context) -> Self {
+        Self::with_args(desc, context, Args::none())
+    }
+
+    /// Begins a new guarded scope carrying per-instance arguments.
+    pub fn with_args(desc: &ScopeDesc, context: Context, args: Args) -> Self {
         Self {
-            token: scope_begin(desc, context),
+            token: scope_begin_with(desc, context, args),
             active: true,
         }
     }
@@ -110,7 +117,7 @@ pub struct Backend {
     /// Gauge update emission.
     pub gauge_set: fn(&CounterDesc, Context, u64),
     /// Scope begin emission.
-    pub scope_begin: fn(&ScopeDesc, Context) -> ScopeToken,
+    pub scope_begin: fn(&ScopeDesc, Context, Args) -> ScopeToken,
     /// Scope end emission.
     pub scope_end: fn(ScopeToken),
     /// Resource creation emission.
@@ -158,7 +165,13 @@ pub fn gauge_set(desc: &CounterDesc, context: Context, value: u64) {
 /// Begins a scope under a semantic context.
 #[must_use]
 pub fn scope_begin(desc: &ScopeDesc, context: Context) -> ScopeToken {
-    (backend().scope_begin)(desc, context)
+    scope_begin_with(desc, context, Args::none())
+}
+
+/// Begins a scope carrying per-instance arguments.
+#[must_use]
+pub fn scope_begin_with(desc: &ScopeDesc, context: Context, args: Args) -> ScopeToken {
+    (backend().scope_begin)(desc, context, args)
 }
 
 /// Ends a previously-begun scope.
@@ -169,6 +182,11 @@ pub fn scope_end(token: ScopeToken) {
 /// Begins a scope and returns a guard that ends it on drop.
 pub fn scope(desc: &ScopeDesc, context: Context) -> ScopeGuard {
     ScopeGuard::new(desc, context)
+}
+
+/// Begins a guarded scope carrying per-instance arguments.
+pub fn scope_with(desc: &ScopeDesc, context: Context, args: Args) -> ScopeGuard {
+    ScopeGuard::with_args(desc, context, args)
 }
 
 /// Emits a resource-creation observation.
@@ -268,7 +286,7 @@ fn noop_counter_add(_desc: &CounterDesc, _context: Context, _value: u64) {}
 
 fn noop_gauge_set(_desc: &CounterDesc, _context: Context, _value: u64) {}
 
-fn noop_scope_begin(desc: &ScopeDesc, _context: Context) -> ScopeToken {
+fn noop_scope_begin(desc: &ScopeDesc, _context: Context, _args: Args) -> ScopeToken {
     ScopeToken::new(scope_desc_raw(desc.id()))
 }
 

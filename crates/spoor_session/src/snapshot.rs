@@ -179,6 +179,15 @@ pub enum OwnedLabelValue {
     String(String),
 }
 
+/// Owned per-instance argument suitable for transport.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnedArgEntry {
+    /// Argument key.
+    pub key: String,
+    /// Argument value.
+    pub value: OwnedLabelValue,
+}
+
 /// Owned counter row suitable for transport.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedCounterSnapshot {
@@ -222,6 +231,8 @@ pub enum OwnedObservation {
         context_id: ContextId,
         /// Opaque scope token returned to the caller.
         token: ScopeToken,
+        /// Per-instance arguments carried by this scope begin.
+        args: Vec<OwnedArgEntry>,
     },
     /// Scope end event.
     ScopeEnd {
@@ -466,6 +477,15 @@ fn owned_context_snapshot(snapshot: &ContextSnapshot) -> OwnedContextSnapshot {
     }
 }
 
+fn owned_args(args: spoor_core::Args) -> Vec<OwnedArgEntry> {
+    args.iter()
+        .map(|entry| OwnedArgEntry {
+            key: String::from(entry.key()),
+            value: owned_label_value(entry.value()),
+        })
+        .collect()
+}
+
 fn owned_label_value(value: LabelValue) -> OwnedLabelValue {
     match value {
         LabelValue::Unsigned(value) => OwnedLabelValue::Unsigned(value),
@@ -502,11 +522,13 @@ fn owned_observation(observation: &Observation) -> OwnedObservation {
             name,
             context_id,
             token,
+            args,
         } => OwnedObservation::ScopeBegin {
             desc_id: *desc_id,
             name: String::from(*name),
             context_id: *context_id,
             token: *token,
+            args: owned_args(*args),
         },
         Observation::ScopeEnd { token } => OwnedObservation::ScopeEnd { token: *token },
         Observation::ResourceCreate {
@@ -571,7 +593,7 @@ fn owned_observation(observation: &Observation) -> OwnedObservation {
 mod tests {
     use alloc::{string::String, vec, vec::Vec};
 
-    use spoor_core::{Context, ContextId, CounterDescId, LabelKey};
+    use spoor_core::{Context, ContextId, CounterDescId, LabelKey, Unit};
     use spoor_runtime::{
         ContextSnapshot, CounterKind, CounterSnapshot, Observation, Snapshot, SnapshotMetadata,
         TimedObservation,
@@ -605,7 +627,7 @@ mod tests {
                 CounterSnapshot {
                     desc_id: CounterDescId::new(1),
                     name: "ops",
-                    unit: spoor_core::Unit::Count,
+                    unit: Unit::Count,
                     context_id: ContextId::new(1),
                     kind: CounterKind::Counter,
                     value: 5,
@@ -614,7 +636,7 @@ mod tests {
                 CounterSnapshot {
                     desc_id: CounterDescId::new(2),
                     name: "bytes",
-                    unit: spoor_core::Unit::Bytes,
+                    unit: Unit::Bytes,
                     context_id: ContextId::new(1),
                     kind: CounterKind::Gauge,
                     value: 9,

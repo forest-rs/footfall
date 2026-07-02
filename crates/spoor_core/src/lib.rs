@@ -19,6 +19,7 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
+mod args;
 mod context;
 mod descriptor;
 mod emit;
@@ -27,13 +28,14 @@ mod label;
 mod level;
 mod unit;
 
+pub use args::{ARGS_INLINE_CAPACITY, ArgEntry, Args, ArgsCapacityError};
 pub use context::{CONTEXT_INLINE_CAPACITY, Context, ContextCapacityError, ContextEntry};
 pub use descriptor::{CounterDesc, ResourceKindDesc, ScopeDesc, SourceLocation};
 pub use emit::{
     Backend, FlowPhase, MarkerKind, MarkerPhase, ScopeGuard, ScopeToken, counter_add, flow_begin,
     flow_end, flow_step, frame_begin, frame_end, frame_marker, gauge_set, pass_begin, pass_end,
-    resource_create, resource_drop, resource_update, scope, scope_begin, scope_end,
-    transaction_begin, transaction_end,
+    resource_create, resource_drop, resource_update, scope, scope_begin, scope_begin_with,
+    scope_end, scope_with, transaction_begin, transaction_end,
 };
 #[cfg(feature = "std")]
 pub use emit::{InstallBackendError, install_backend};
@@ -61,6 +63,28 @@ macro_rules! context {
             let context = context.with($crate::LabelKey::$key, $value);
         )+
         context
+    }};
+}
+
+/// Builds an [`Args`] list from `key => value` assignments.
+///
+/// # Examples
+///
+/// ```
+/// let args = spoor_core::args!("bytes" => 64_u32, "items" => 3_u32);
+/// assert_eq!(args.len(), 2);
+/// ```
+#[macro_export]
+macro_rules! args {
+    () => {
+        $crate::Args::none()
+    };
+    ($($key:literal => $value:expr),+ $(,)?) => {{
+        let args = $crate::Args::none();
+        $(
+            let args = args.with($key, $value);
+        )+
+        args
     }};
 }
 
