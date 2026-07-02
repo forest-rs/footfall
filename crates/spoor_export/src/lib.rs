@@ -534,6 +534,47 @@ fn build_timed_observation(
                 json,
             })
         }
+        Observation::Message {
+            name,
+            context_id,
+            text,
+            args,
+            ..
+        } => {
+            let context = snapshot
+                .context(*context_id)
+                .map(|context| context.context)
+                .unwrap_or_else(Context::root);
+            let mut json = String::new();
+            json.push('{');
+            write_json_field_str(&mut json, "name", name)?;
+            json.push(',');
+            write_json_field_str(&mut json, "cat", "message")?;
+            json.push(',');
+            write_json_field_str(&mut json, "ph", "i")?;
+            json.push_str(",\"s\":\"t\",");
+            write_json_field_u64(&mut json, "ts", event.at_micros)?;
+            json.push(',');
+            write_json_field_u64(&mut json, "pid", 1)?;
+            json.push(',');
+            write_json_field_u64(&mut json, "tid", context_id.get())?;
+            json.push_str(",\"args\":{");
+            write_json_field_u64(&mut json, "thread", event.thread_id)?;
+            json.push(',');
+            write_json_field_str(&mut json, "text", text)?;
+            if !args.is_empty() {
+                json.push_str(",\"values\":");
+                write_args(&mut json, *args)?;
+            }
+            json.push_str(",\"context\":");
+            write_context(&mut json, context)?;
+            json.push_str("}}");
+            Ok(ExportEvent {
+                ts_micros: event.at_micros,
+                order: 1,
+                json,
+            })
+        }
     }
 }
 

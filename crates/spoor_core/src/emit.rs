@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::{
-    Args, Context, CounterDesc, FlowId, ResourceId, ResourceKindDesc, ScopeDesc, ScopeDescId,
+    Args, Context, CounterDesc, EventDesc, FlowId, ResourceId, ResourceKindDesc, ScopeDesc,
+    ScopeDescId,
 };
 #[cfg(feature = "std")]
 use std::sync::OnceLock;
@@ -132,6 +133,8 @@ pub struct Backend {
     pub frame_marker: fn(MarkerKind, MarkerPhase, Context),
     /// Causal flow emission.
     pub flow: fn(FlowId, FlowPhase, Context),
+    /// Message event emission.
+    pub message: fn(&EventDesc, Context, &str, Args),
 }
 
 impl Backend {
@@ -147,6 +150,7 @@ impl Backend {
         resource_drop: noop_resource_drop,
         frame_marker: noop_frame_marker,
         flow: noop_flow,
+        message: noop_message,
     };
 }
 
@@ -275,6 +279,22 @@ pub fn flow_end(flow_id: FlowId, context: Context) {
     (backend().flow)(flow_id, FlowPhase::End, context);
 }
 
+/// Emits a message event under a semantic context.
+///
+/// The text is borrowed for the duration of the call; backends that retain
+/// messages copy and may truncate it. Message formatting cost is only paid by
+/// the caller when a backend is installed and the level captures messages, so
+/// prefer emitting through a facility that already formatted the text, such
+/// as a log or tracing bridge.
+pub fn message(desc: &EventDesc, context: Context, text: &str) {
+    (backend().message)(desc, context, text, Args::none());
+}
+
+/// Emits a message event carrying per-instance arguments.
+pub fn message_with(desc: &EventDesc, context: Context, text: &str, args: Args) {
+    (backend().message)(desc, context, text, args);
+}
+
 /// Installs a process-wide runtime backend.
 #[cfg(feature = "std")]
 pub fn install_backend(backend: Backend) -> Result<(), InstallBackendError> {
@@ -326,6 +346,8 @@ fn noop_resource_drop(_desc: &ResourceKindDesc, _resource_id: ResourceId, _conte
 fn noop_frame_marker(_kind: MarkerKind, _phase: MarkerPhase, _context: Context) {}
 
 fn noop_flow(_flow_id: FlowId, _phase: FlowPhase, _context: Context) {}
+
+fn noop_message(_desc: &EventDesc, _context: Context, _text: &str, _args: Args) {}
 
 const fn scope_desc_raw(id: ScopeDescId) -> u64 {
     id.get()

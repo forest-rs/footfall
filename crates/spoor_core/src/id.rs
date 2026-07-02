@@ -54,6 +54,11 @@ define_id!(
     FlowId
 );
 
+define_id!(
+    /// Stable id for one point-event descriptor.
+    EventDescId
+);
+
 #[cfg(test)]
 mod tests {
     use super::{ContextId, CounterDescId, FlowId, ResourceId, ResourceKindId, ScopeDescId};

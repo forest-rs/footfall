@@ -4,8 +4,8 @@
 //! Bounded runtime collection for Spoor.
 
 use spoor_core::{
-    Args, Backend, Context, ContextId, CounterDesc, CounterDescId, FlowId, FlowPhase,
-    InstallBackendError, InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId,
+    Args, Backend, Context, ContextId, CounterDesc, CounterDescId, EventDesc, EventDescId, FlowId,
+    FlowPhase, InstallBackendError, InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId,
     ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, ScopeToken, Unit, install_backend,
 };
 use std::{
@@ -20,6 +20,12 @@ use std::{
 };
 
 const DEFAULT_SHARD_COUNT: usize = 16;
+
+/// Maximum retained message text length in bytes.
+///
+/// Longer texts are truncated on a UTF-8 boundary before retention so one
+/// noisy log line cannot dominate event memory.
+pub const MESSAGE_TEXT_MAX_BYTES: usize = 256;
 
 /// Installs a runtime as the process-wide Spoor backend.
 pub fn install_global(runtime: &'static Runtime) -> Result<(), InstallError> {
@@ -729,6 +735,19 @@ pub enum Observation {
         /// Canonical semantic context id.
         context_id: ContextId,
     },
+    /// Message event with bounded text.
+    Message {
+        /// Descriptor id for the message channel.
+        desc_id: EventDescId,
+        /// Stable descriptor name.
+        name: &'static str,
+        /// Canonical semantic context id.
+        context_id: ContextId,
+        /// Message text, truncated to [`MESSAGE_TEXT_MAX_BYTES`].
+        text: String,
+        /// Per-instance arguments carried by this message.
+        args: Args,
+    },
 }
 
 impl Observation {
@@ -741,7 +760,8 @@ impl Observation {
             | Self::ResourceUpdate { context_id, .. }
             | Self::ResourceDrop { context_id, .. }
             | Self::FrameMarker { context_id, .. }
-            | Self::Flow { context_id, .. } => Some(*context_id),
+            | Self::Flow { context_id, .. }
+            | Self::Message { context_id, .. } => Some(*context_id),
             Self::ScopeEnd { .. } => None,
         }
     }
@@ -858,6 +878,7 @@ const BACKEND: Backend = Backend {
     resource_drop: backend_resource_drop,
     frame_marker: backend_frame_marker,
     flow: backend_flow,
+    message: backend_message,
 };
 
 fn backend_counter_add(desc: &CounterDesc, context: Context, value: u64) {
@@ -1046,6 +1067,40 @@ fn backend_flow(flow_id: FlowId, phase: FlowPhase, context: Context) {
     });
 }
 
+fn backend_message(desc: &EventDesc, context: Context, text: &str, args: Args) {
+    with_runtime(|runtime| {
+        if !runtime.level().captures_messages() {
+            return;
+        }
+        let at_micros = runtime.now_micros();
+        let Some(context_id) = runtime.context_id(context) else {
+            runtime.dropped_events.fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        runtime.push_event_at(
+            Observation::Message {
+                desc_id: desc.id(),
+                name: desc.name(),
+                context_id,
+                text: truncate_message_text(text),
+                args,
+            },
+            at_micros,
+        );
+    });
+}
+
+fn truncate_message_text(text: &str) -> String {
+    if text.len() <= MESSAGE_TEXT_MAX_BYTES {
+        return String::from(text);
+    }
+    let mut end = MESSAGE_TEXT_MAX_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    String::from(&text[..end])
+}
+
 fn with_runtime<T>(f: impl FnOnce(&Runtime) -> T) -> Option<T> {
     RUNTIME.get().map(|runtime| f(runtime))
 }
@@ -1112,7 +1167,9 @@ fn scope_token_for_observation(observation: &Observation) -> u64 {
         Observation::ResourceCreate { resource_id, .. }
         | Observation::ResourceUpdate { resource_id, .. }
         | Observation::ResourceDrop { resource_id, .. } => resource_id.get(),
-        Observation::FrameMarker { .. } | Observation::Flow { .. } => 0,
+        Observation::FrameMarker { .. }
+        | Observation::Flow { .. }
+        | Observation::Message { .. } => 0,
     }
 }
 
@@ -1127,6 +1184,7 @@ const fn observation_order(observation: &Observation) -> u8 {
         Observation::ResourceUpdate { .. } => 2,
         Observation::FrameMarker { .. } => 3,
         Observation::Flow { .. } => 4,
+        Observation::Message { .. } => 4,
         Observation::ResourceDrop { .. } => 5,
         Observation::ScopeEnd { .. } => 6,
     }
@@ -1163,6 +1221,47 @@ mod tests {
         InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc,
         ResourceKindId, ScopeDesc, ScopeDescId, Unit,
     };
+
+    #[test]
+    fn messages_are_captured_with_truncated_text() {
+        let runtime = Runtime::new(8, 8);
+        let channel = spoor_core::EventDesc::new(spoor_core::EventDescId::new(21), "app_log");
+        let context_id = runtime
+            .context_id(Context::root())
+            .expect("root context should exist");
+
+        let long_text = "x".repeat(super::MESSAGE_TEXT_MAX_BYTES + 64);
+        runtime.push_event_at(
+            Observation::Message {
+                desc_id: channel.id(),
+                name: channel.name(),
+                context_id,
+                text: super::truncate_message_text(&long_text),
+                args: Args::none().with("level", "warn"),
+            },
+            5,
+        );
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.events.len(), 1);
+        let Observation::Message { text, args, .. } = &snapshot.events[0].observation else {
+            panic!("expected a message observation");
+        };
+        assert_eq!(text.len(), super::MESSAGE_TEXT_MAX_BYTES);
+        assert_eq!(
+            args.get("level").and_then(|value| value.as_static_str()),
+            Some("warn")
+        );
+    }
+
+    #[test]
+    fn message_truncation_respects_char_boundaries() {
+        let text = "é".repeat(super::MESSAGE_TEXT_MAX_BYTES);
+        let truncated = super::truncate_message_text(&text);
+        assert!(truncated.len() <= super::MESSAGE_TEXT_MAX_BYTES);
+        assert!(truncated.chars().all(|ch| ch == 'é'));
+        assert_eq!(super::truncate_message_text("short"), "short");
+    }
 
     #[test]
     fn histograms_aggregate_bucketed_distributions() {

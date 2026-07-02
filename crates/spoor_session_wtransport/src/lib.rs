@@ -7,8 +7,8 @@
 //! over a single WebTransport stream; it does not participate in hot-path instrumentation.
 
 use spoor_core::{
-    ContextId, CounterDescId, FlowId, FlowPhase, LabelKey, MarkerKind, MarkerPhase, ResourceId,
-    ResourceKindId, ScopeDescId, ScopeToken, Unit,
+    ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, LabelKey, MarkerKind, MarkerPhase,
+    ResourceId, ResourceKindId, ScopeDescId, ScopeToken, Unit,
 };
 use spoor_runtime::{CounterKind, Snapshot};
 use spoor_session::{
@@ -1365,6 +1365,20 @@ fn encode_borrowed_observation(
             encode_u8(bytes, encode_flow_phase(*phase));
             encode_u64(bytes, context_id.get());
         }
+        spoor_runtime::Observation::Message {
+            desc_id,
+            name,
+            context_id,
+            text,
+            args,
+        } => {
+            encode_u8(bytes, 7);
+            encode_u64(bytes, desc_id.get());
+            encode_string(bytes, name)?;
+            encode_u64(bytes, context_id.get());
+            encode_string(bytes, text)?;
+            encode_borrowed_args(bytes, *args)?;
+        }
     }
     Ok(())
 }
@@ -1541,6 +1555,20 @@ fn encode_observation(bytes: &mut Vec<u8>, observation: &OwnedObservation) -> io
             encode_u8(bytes, encode_flow_phase(*phase));
             encode_u64(bytes, context_id.get());
         }
+        OwnedObservation::Message {
+            desc_id,
+            name,
+            context_id,
+            text,
+            args,
+        } => {
+            encode_u8(bytes, 7);
+            encode_u64(bytes, desc_id.get());
+            encode_string(bytes, name)?;
+            encode_u64(bytes, context_id.get());
+            encode_string(bytes, text)?;
+            encode_args(bytes, args)?;
+        }
     }
     Ok(())
 }
@@ -1586,6 +1614,13 @@ fn decode_observation(cursor: &mut Cursor<'_>) -> io::Result<OwnedObservation> {
             flow_id: FlowId::new(decode_u64(cursor)?),
             phase: decode_flow_phase(decode_u8(cursor)?)?,
             context_id: ContextId::new(decode_u64(cursor)?),
+        }),
+        7 => Ok(OwnedObservation::Message {
+            desc_id: EventDescId::new(decode_u64(cursor)?),
+            name: decode_string(cursor)?,
+            context_id: ContextId::new(decode_u64(cursor)?),
+            text: decode_string(cursor)?,
+            args: decode_args(cursor)?,
         }),
         tag => Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1937,8 +1972,8 @@ mod tests {
         encode_envelope, encode_header, encode_u8, encode_u32, encode_u64, map_finish_error,
     };
     use spoor_core::{
-        Context, ContextId, CounterDescId, FlowId, FlowPhase, LabelKey, MarkerKind, MarkerPhase,
-        ScopeToken,
+        Context, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, LabelKey, MarkerKind,
+        MarkerPhase, ScopeToken,
     };
     use spoor_runtime::{CounterKind, Snapshot, SnapshotMetadata};
     use spoor_session::{
@@ -2081,15 +2116,28 @@ mod tests {
                 },
                 updated_at_micros: 15,
             }],
-            events: vec![spoor_runtime::TimedObservation {
-                at_micros: 15,
-                thread_id: 2,
-                observation: spoor_runtime::Observation::Flow {
-                    flow_id: FlowId::new(8),
-                    phase: FlowPhase::Step,
-                    context_id: ContextId::new(0),
+            events: vec![
+                spoor_runtime::TimedObservation {
+                    at_micros: 15,
+                    thread_id: 2,
+                    observation: spoor_runtime::Observation::Flow {
+                        flow_id: FlowId::new(8),
+                        phase: FlowPhase::Step,
+                        context_id: ContextId::new(0),
+                    },
                 },
-            }],
+                spoor_runtime::TimedObservation {
+                    at_micros: 16,
+                    thread_id: 2,
+                    observation: spoor_runtime::Observation::Message {
+                        desc_id: EventDescId::new(9),
+                        name: "app_log",
+                        context_id: ContextId::new(0),
+                        text: String::from("cache warmed"),
+                        args: spoor_core::Args::none().with("level", "info"),
+                    },
+                },
+            ],
             dropped_contexts: 0,
             dropped_counters: 1,
             dropped_events: 2,

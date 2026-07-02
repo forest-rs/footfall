@@ -30,16 +30,19 @@ mod unit;
 
 pub use args::{ARGS_INLINE_CAPACITY, ArgEntry, Args, ArgsCapacityError};
 pub use context::{CONTEXT_INLINE_CAPACITY, Context, ContextCapacityError, ContextEntry};
-pub use descriptor::{CounterDesc, ResourceKindDesc, ScopeDesc, SourceLocation};
+pub use descriptor::{CounterDesc, EventDesc, ResourceKindDesc, ScopeDesc, SourceLocation};
 pub use emit::{
     Backend, FlowPhase, MarkerKind, MarkerPhase, ScopeGuard, ScopeToken, counter_add, flow_begin,
     flow_end, flow_step, frame_begin, frame_end, frame_marker, gauge_set, histogram_record,
-    pass_begin, pass_end, resource_create, resource_drop, resource_update, scope, scope_begin,
-    scope_begin_with, scope_end, scope_with, transaction_begin, transaction_end,
+    message, message_with, pass_begin, pass_end, resource_create, resource_drop, resource_update,
+    scope, scope_begin, scope_begin_with, scope_end, scope_with, transaction_begin,
+    transaction_end,
 };
 #[cfg(feature = "std")]
 pub use emit::{InstallBackendError, install_backend};
-pub use id::{ContextId, CounterDescId, FlowId, ResourceId, ResourceKindId, ScopeDescId};
+pub use id::{
+    ContextId, CounterDescId, EventDescId, FlowId, ResourceId, ResourceKindId, ScopeDescId,
+};
 pub use label::{LabelKey, LabelValue};
 pub use level::InstrumentationLevel;
 pub use unit::Unit;
@@ -126,6 +129,14 @@ macro_rules! counter_desc {
     };
     ($id:expr, $name:expr, $unit:expr $(,)?) => {
         $crate::CounterDesc::new($crate::CounterDescId::new($id), $name, $unit)
+    };
+}
+
+/// Builds an [`EventDesc`].
+#[macro_export]
+macro_rules! event_desc {
+    ($id:expr, $name:expr $(,)?) => {
+        $crate::EventDesc::new($crate::EventDescId::new($id), $name)
     };
 }
 

@@ -11,8 +11,8 @@
 //! forcing extra indirection into `spoor_core`.
 
 use spoor_core::{
-    Args, Backend, Context, CounterDesc, FlowId, FlowPhase, InstallBackendError, MarkerKind,
-    MarkerPhase, ResourceId, ResourceKindDesc, ScopeDesc, ScopeToken, install_backend,
+    Args, Backend, Context, CounterDesc, EventDesc, FlowId, FlowPhase, InstallBackendError,
+    MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ScopeDesc, ScopeToken, install_backend,
 };
 use std::{
     collections::HashMap,
@@ -103,6 +103,7 @@ const BACKEND: Backend = Backend {
     resource_drop: backend_resource_drop,
     frame_marker: backend_frame_marker,
     flow: backend_flow,
+    message: backend_message,
 };
 
 fn backend_counter_add(desc: &CounterDesc, context: Context, value: u64) {
@@ -169,6 +170,13 @@ fn backend_frame_marker(kind: MarkerKind, phase: MarkerPhase, context: Context) 
     let _ = with_fanout(|fanout| {
         (fanout.primary.frame_marker)(kind, phase, context);
         (fanout.secondary.frame_marker)(kind, phase, context);
+    });
+}
+
+fn backend_message(desc: &EventDesc, context: Context, text: &str, args: Args) {
+    let _ = with_fanout(|fanout| {
+        (fanout.primary.message)(desc, context, text, args);
+        (fanout.secondary.message)(desc, context, text, args);
     });
 }
 
@@ -250,6 +258,7 @@ mod tests {
             resource_drop: primary_resource_drop,
             frame_marker: primary_frame_marker,
             flow: primary_flow,
+            message: primary_message,
         }
     }
 
@@ -265,6 +274,7 @@ mod tests {
             resource_drop: secondary_resource_drop,
             frame_marker: secondary_frame_marker,
             flow: secondary_flow,
+            message: secondary_message,
         }
     }
 
@@ -330,6 +340,15 @@ mod tests {
         record("primary frame_marker");
     }
 
+    fn primary_message(
+        _desc: &spoor_core::EventDesc,
+        _context: Context,
+        _text: &str,
+        _args: spoor_core::Args,
+    ) {
+        record("primary message");
+    }
+
     fn primary_flow(
         _flow_id: spoor_core::FlowId,
         _phase: spoor_core::FlowPhase,
@@ -391,6 +410,15 @@ mod tests {
 
     fn secondary_frame_marker(_kind: MarkerKind, _phase: MarkerPhase, _context: Context) {
         record("secondary frame_marker");
+    }
+
+    fn secondary_message(
+        _desc: &spoor_core::EventDesc,
+        _context: Context,
+        _text: &str,
+        _args: spoor_core::Args,
+    ) {
+        record("secondary message");
     }
 
     fn secondary_flow(

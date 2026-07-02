@@ -26,6 +26,7 @@ static SCRATCH_CURRENT: CounterDesc = spoor::counter_desc!(bytes, 16, "scratch_c
 static SCRATCH_PEAK: CounterDesc = spoor::counter_desc!(bytes, 17, "scratch_peak_bytes");
 static TESSELLATE_MICROS: CounterDesc =
     spoor::counter_desc!(19, "tessellate_micros", spoor::Unit::Micros);
+static APP_LOG: spoor::EventDesc = spoor::event_desc!(20, "app_log");
 static SCRATCH_GROW: CounterDesc = spoor::counter_desc!(count, 18, "scratch_grow");
 
 static ATLAS: ResourceKindDesc = spoor::resource_kind_desc!(20, "atlas");
@@ -81,6 +82,12 @@ fn main() {
             for sample in [180_u64, 220, 210, 950] {
                 spoor::histogram_record(&TESSELLATE_MICROS, record_context, sample);
             }
+            spoor::message_with(
+                &APP_LOG,
+                record_context,
+                "tessellation finished",
+                spoor::args!("level" => "info"),
+            );
             flow_step(INVALIDATION_FLOW, record_context);
         }
 

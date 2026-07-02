@@ -6,8 +6,8 @@
 use alloc::{string::String, vec::Vec};
 
 use spoor_core::{
-    ContextId, CounterDescId, FlowId, FlowPhase, LabelKey, LabelValue, MarkerKind, MarkerPhase,
-    ResourceId, ResourceKindId, ScopeDescId, ScopeToken, Unit,
+    ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, LabelKey, LabelValue, MarkerKind,
+    MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, Unit,
 };
 use spoor_runtime::{
     ContextSnapshot, CounterKind, CounterSnapshot, HISTOGRAM_BUCKET_COUNT, HistogramSnapshot,
@@ -333,6 +333,19 @@ pub enum OwnedObservation {
         /// Canonical semantic context id.
         context_id: ContextId,
     },
+    /// Message event with bounded text.
+    Message {
+        /// Descriptor id for the message channel.
+        desc_id: EventDescId,
+        /// Stable descriptor name.
+        name: String,
+        /// Canonical semantic context id.
+        context_id: ContextId,
+        /// Message text.
+        text: String,
+        /// Per-instance arguments carried by this message.
+        args: Vec<OwnedArgEntry>,
+    },
 }
 
 /// Owned versioned session envelope suitable for transport and storage.
@@ -657,6 +670,19 @@ fn owned_observation(observation: &Observation) -> OwnedObservation {
             flow_id: *flow_id,
             phase: *phase,
             context_id: *context_id,
+        },
+        Observation::Message {
+            desc_id,
+            name,
+            context_id,
+            text,
+            args,
+        } => OwnedObservation::Message {
+            desc_id: *desc_id,
+            name: String::from(*name),
+            context_id: *context_id,
+            text: text.clone(),
+            args: owned_args(*args),
         },
     }
 }

@@ -170,7 +170,8 @@ pub(crate) fn summarize(envelopes: &[OwnedSessionEnvelope]) -> SessionSummary {
                         OwnedObservation::ScopeBegin { .. }
                         | OwnedObservation::ScopeEnd { .. }
                         | OwnedObservation::FrameMarker { .. }
-                        | OwnedObservation::Flow { .. } => {}
+                        | OwnedObservation::Flow { .. }
+                        | OwnedObservation::Message { .. } => {}
                     }
                 }
             }

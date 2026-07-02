@@ -20,9 +20,9 @@
 //! composed through an adapter such as `spoor_fanout`.
 
 use spoor_core::{
-    Args, Backend, Context, CounterDesc, CounterDescId, FlowId, FlowPhase, InstallBackendError,
-    LabelValue, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ScopeDesc, ScopeDescId,
-    ScopeToken, SourceLocation, Unit, install_backend,
+    Args, Backend, Context, CounterDesc, CounterDescId, EventDesc, FlowId, FlowPhase,
+    InstallBackendError, LabelValue, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc,
+    ScopeDesc, ScopeDescId, ScopeToken, SourceLocation, Unit, install_backend,
 };
 use std::{
     cell::RefCell,
@@ -306,6 +306,7 @@ const BACKEND: Backend = Backend {
     resource_drop: backend_resource_drop,
     frame_marker: backend_frame_marker,
     flow: backend_flow,
+    message: backend_message,
 };
 
 fn backend_counter_add(desc: &CounterDesc, _context: Context, value: u64) {
@@ -361,6 +362,13 @@ fn backend_frame_marker(kind: MarkerKind, phase: MarkerPhase, _context: Context)
     let _ = with_tracy(|tracy| tracy.handle_marker(kind, phase));
 }
 
+fn backend_message(desc: &EventDesc, context: Context, text: &str, args: Args) {
+    with_tracy(|tracy| {
+        let message = message_text(desc, context, text, args);
+        tracy.client.message(&message, tracy.callstack_depth);
+    });
+}
+
 fn backend_flow(_flow_id: FlowId, _phase: FlowPhase, _context: Context) {}
 
 fn with_tracy<T>(f: impl FnOnce(&Tracy) -> T) -> Option<T> {
@@ -412,6 +420,20 @@ fn resource_message(
     let context = context_text(context);
     if !context.is_empty() {
         let _ = write!(message, " [{context}]");
+    }
+    message
+}
+
+fn message_text(desc: &EventDesc, context: Context, text: &str, args: Args) -> String {
+    let mut message = String::new();
+    let _ = write!(message, "{}: {text}", desc.name());
+    let context_text = context_text(context);
+    if !context_text.is_empty() {
+        let _ = write!(message, " [{context_text}]");
+    }
+    let args_text = args_text(args);
+    if !args_text.is_empty() {
+        let _ = write!(message, " {{{args_text}}}");
     }
     message
 }
@@ -472,14 +494,15 @@ fn push_label_value(text: &mut String, value: LabelValue) {
 
 #[cfg(test)]
 mod tests {
-    use super::{context_text, plot_configuration, resource_message};
+    use super::{context_text, message_text, plot_configuration, resource_message};
     use spoor_core::{
-        Context, CounterDesc, CounterDescId, LabelKey, ResourceId, ResourceKindDesc,
-        ResourceKindId, Unit,
+        Args, Context, CounterDesc, CounterDescId, EventDesc, EventDescId, LabelKey, ResourceId,
+        ResourceKindDesc, ResourceKindId, Unit,
     };
 
     static BYTES: CounterDesc = CounterDesc::bytes(CounterDescId::new(1), "bytes");
     static ATLAS: ResourceKindDesc = ResourceKindDesc::new(ResourceKindId::new(2), "atlas");
+    static APP_LOG: EventDesc = EventDesc::new(EventDescId::new(3), "app_log");
 
     #[test]
     fn context_text_formats_compact_labels() {
@@ -509,5 +532,17 @@ mod tests {
         assert!(message.contains("resource create atlas#9"));
         assert!(message.contains("size=4096"));
         assert!(message.contains("cache=glyph_atlas"));
+    }
+
+    #[test]
+    fn messages_include_context_and_args() {
+        let context = Context::root().with(LabelKey::Frame, 7_u32);
+        let args = Args::none().with("bytes", 4096_u32).with("level", "info");
+        let message = message_text(&APP_LOG, context, "uploaded atlas", args);
+
+        assert!(message.contains("app_log: uploaded atlas"));
+        assert!(message.contains("frame=7"));
+        assert!(message.contains("bytes=4096"));
+        assert!(message.contains("level=info"));
     }
 }

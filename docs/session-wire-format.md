@@ -124,6 +124,12 @@ followed by `count`, `sum`, `min`, `max`, all
 `spoor_runtime::HISTOGRAM_BUCKET_COUNT` bucket values, and the last update
 time, each as `u64`.
 
+Event rows use a `u8` observation tag: `0` scope begin, `1` scope end, `2`
+resource create, `3` resource update, `4` resource drop, `5` frame marker,
+`6` flow, `7` message. Message rows carry descriptor id, name string, context
+id, text string (truncated by producers to
+`spoor_runtime::MESSAGE_TEXT_MAX_BYTES`), and a per-instance argument list.
+
 ## Payload Limits
 
 The codec enforces these bounds before allocating dynamic payload data:

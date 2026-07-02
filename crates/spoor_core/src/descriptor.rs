@@ -1,7 +1,7 @@
 // Copyright 2026 the Spoor Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use crate::{CounterDescId, ResourceKindId, ScopeDescId, Unit};
+use crate::{CounterDescId, EventDescId, ResourceKindId, ScopeDescId, Unit};
 
 /// Static source location associated with a descriptor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -90,6 +90,33 @@ impl ScopeDesc {
     #[must_use]
     pub const fn location(self) -> Option<SourceLocation> {
         self.location
+    }
+}
+
+/// Static metadata describing one point-event kind, such as a log channel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EventDesc {
+    id: EventDescId,
+    name: &'static str,
+}
+
+impl EventDesc {
+    /// Creates a new point-event descriptor.
+    #[must_use]
+    pub const fn new(id: EventDescId, name: &'static str) -> Self {
+        Self { id, name }
+    }
+
+    /// Returns the stable descriptor id.
+    #[must_use]
+    pub const fn id(self) -> EventDescId {
+        self.id
+    }
+
+    /// Returns the stable descriptor name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        self.name
     }
 }
 

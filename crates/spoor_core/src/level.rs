@@ -45,6 +45,12 @@ impl InstrumentationLevel {
     pub const fn captures_flows(self) -> bool {
         matches!(self, Self::Scoped | Self::Trace)
     }
+
+    /// Returns `true` when message events are enabled.
+    #[must_use]
+    pub const fn captures_messages(self) -> bool {
+        matches!(self, Self::Scoped | Self::Trace)
+    }
 }
 
 #[cfg(test)]
