@@ -1018,6 +1018,123 @@ mod tests {
     };
 
     #[test]
+    fn parallel_counter_writes_aggregate_without_loss() {
+        const THREADS: u64 = 8;
+        const UPDATES: u64 = 1000;
+
+        let runtime = Runtime::new(64, 64);
+        let counter = CounterDesc::count(CounterDescId::new(1), "ops");
+        std::thread::scope(|scope| {
+            for thread in 0..THREADS {
+                let runtime = &runtime;
+                let counter = &counter;
+                scope.spawn(move || {
+                    let shared = Context::root().with(spoor_core::LabelKey::Pass, 1_u32);
+                    let distinct = Context::root().with(
+                        spoor_core::LabelKey::Node,
+                        u32::try_from(thread).expect("thread index fits"),
+                    );
+                    for update in 0..UPDATES {
+                        runtime.counter_add_at(counter, shared, 1, update);
+                        runtime.counter_add_at(counter, distinct, 1, update);
+                    }
+                });
+            }
+        });
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.dropped_counters, 0);
+        assert_eq!(snapshot.dropped_contexts, 0);
+        let total: u64 = snapshot.counters.iter().map(|counter| counter.value).sum();
+        assert_eq!(total, THREADS * UPDATES * 2);
+        // One shared row plus one row per thread.
+        assert_eq!(snapshot.counters.len() as u64, THREADS + 1);
+    }
+
+    #[test]
+    fn parallel_event_writes_respect_capacity_and_account_drops() {
+        const THREADS: u64 = 8;
+        const EVENTS: u64 = 200;
+        const CAPACITY: usize = 128;
+
+        let runtime = Runtime::new(16, CAPACITY);
+        let context_id = runtime
+            .context_id(Context::root())
+            .expect("root context should exist");
+        std::thread::scope(|scope| {
+            for _ in 0..THREADS {
+                let runtime = &runtime;
+                scope.spawn(move || {
+                    for event in 0..EVENTS {
+                        runtime.push_event_at(
+                            Observation::FrameMarker {
+                                kind: MarkerKind::Frame,
+                                phase: MarkerPhase::Begin,
+                                context_id,
+                            },
+                            event,
+                        );
+                    }
+                });
+            }
+        });
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.events.len(), CAPACITY);
+        assert_eq!(
+            snapshot.events.len() as u64 + snapshot.dropped_events,
+            THREADS * EVENTS
+        );
+    }
+
+    #[test]
+    fn context_table_exhaustion_is_accounted() {
+        // Context capacity is counter_capacity + event_capacity + 1 = 5.
+        let runtime = Runtime::new(2, 2);
+        let counter = CounterDesc::count(CounterDescId::new(1), "ops");
+        for node in 0..32_u32 {
+            let context = Context::root().with(spoor_core::LabelKey::Node, node);
+            runtime.counter_add_at(&counter, context, 1, u64::from(node));
+        }
+
+        let snapshot = runtime.snapshot();
+        assert!(snapshot.dropped_contexts > 0);
+        assert!(snapshot.dropped_counters > 0);
+        assert_eq!(
+            snapshot.dropped_contexts + snapshot.contexts.len() as u64 - 1,
+            32,
+            "every distinct context should be interned or accounted as dropped"
+        );
+    }
+
+    #[test]
+    fn events_from_different_threads_carry_distinct_thread_ids() {
+        let runtime = Runtime::new(8, 8);
+        let context_id = runtime
+            .context_id(Context::root())
+            .expect("root context should exist");
+        std::thread::scope(|scope| {
+            for _ in 0..2 {
+                let runtime = &runtime;
+                scope.spawn(move || {
+                    runtime.push_event_at(
+                        Observation::FrameMarker {
+                            kind: MarkerKind::Frame,
+                            phase: MarkerPhase::Begin,
+                            context_id,
+                        },
+                        1,
+                    );
+                });
+            }
+        });
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.events.len(), 2);
+        assert_ne!(snapshot.events[0].thread_id, snapshot.events[1].thread_id);
+    }
+
+    #[test]
     fn runtime_collects_context_table_and_timestamped_records() {
         let runtime = Runtime::new(16, 16);
         let counter = CounterDesc::count(CounterDescId::new(1), "ops");
