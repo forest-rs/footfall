@@ -10,11 +10,12 @@ pub enum InstrumentationLevel {
     /// Instrumentation is disabled.
     #[default]
     Off,
-    /// Counters and gauges are collected.
+    /// Counters, gauges, and histograms are collected.
     Counters,
-    /// Counters and scopes are collected.
+    /// Adds scopes, frame, transaction, and pass markers, flows, and
+    /// messages.
     Scoped,
-    /// Full trace capture is enabled.
+    /// Adds resource lifecycle observations, so everything is collected.
     Trace,
 }
 
