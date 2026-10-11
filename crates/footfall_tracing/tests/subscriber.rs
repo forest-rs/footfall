@@ -6,6 +6,7 @@
 use footfall_core::{Context, ScopeDesc, scope};
 use footfall_runtime::{Observation, Runtime};
 use footfall_tracing::FootfallLayer;
+use tracing::Dispatch;
 use tracing_subscriber::layer::SubscriberExt as _;
 
 static APP_SCOPE: ScopeDesc = ScopeDesc::new("record_pass");
@@ -16,8 +17,8 @@ fn spans_and_events_reach_the_runtime() {
         .install_global()
         .expect("runtime should install once for this test binary");
 
-    let subscriber = tracing_subscriber::registry().with(FootfallLayer::default());
-    tracing::subscriber::with_default(subscriber, || {
+    let dispatch = Dispatch::new(tracing_subscriber::registry().with(FootfallLayer::default()));
+    tracing::dispatcher::with_default(&dispatch, || {
         let span = tracing::info_span!("record_pass", items = 3_u64);
         let _entered = span.enter();
         tracing::info!(bytes = 4096_u64, status = "warm", "uploaded atlas");
@@ -67,27 +68,32 @@ fn spans_and_events_reach_the_runtime() {
     assert_eq!(message.1.get("status"), None);
 
     // Bridge descriptors are distinct from application descriptors, even
-    // with the same name, and from those of another layer.
-    let second_layer = tracing_subscriber::registry().with(FootfallLayer::default());
-    tracing::subscriber::with_default(second_layer, || {
+    // with the same name, and from those of another layer. Snapshot ids are
+    // only comparable within one session, so record all three in the next.
+    let second_layer = Dispatch::new(tracing_subscriber::registry().with(FootfallLayer::default()));
+    {
         let _app = scope(&APP_SCOPE, Context::root());
-        let _entered = tracing::info_span!("record_pass").entered();
-    });
-    let snapshot_ids = snapshot.events.iter().filter_map(scope_begin_desc_id);
-    let mut ids: Vec<_> = snapshot_ids
-        .chain(
-            runtime
-                .snapshot()
-                .events
-                .iter()
-                .filter_map(scope_begin_desc_id),
-        )
+        tracing::dispatcher::with_default(&dispatch, || {
+            let _entered = tracing::info_span!("record_pass").entered();
+        });
+        tracing::dispatcher::with_default(&second_layer, || {
+            let _entered = tracing::info_span!("record_pass").entered();
+        });
+    }
+    let mut ids: Vec<_> = runtime
+        .snapshot()
+        .events
+        .iter()
+        .filter_map(scope_begin_desc_id)
         .collect();
     assert_eq!(ids.len(), 3, "two bridged spans and one application scope");
-    assert!(ids.contains(&APP_SCOPE.id()));
     ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), 3, "no two descriptors share an id");
+    assert!(
+        ids.iter().all(|id| (1..=3).contains(&id.get())),
+        "snapshot descriptor ids are dense, not addresses: {ids:?}"
+    );
 }
 
 fn scope_begin_desc_id(
