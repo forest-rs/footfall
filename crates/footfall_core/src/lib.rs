@@ -96,7 +96,7 @@ pub use id::{
     ContextId, CounterDescId, EventDescId, FlowId, ResourceId, ResourceKindId, ScopeDescId,
 };
 pub use label::{LabelKey, LabelValue};
-pub use level::InstrumentationLevel;
+pub use level::{InstrumentationLevel, max_level, set_max_level};
 pub use unit::Unit;
 
 /// Builds a [`Context`] from label-key assignments.

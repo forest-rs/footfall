@@ -1,6 +1,8 @@
 // Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+use core::sync::atomic::{AtomicU8, Ordering};
+
 /// Runtime instrumentation level.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub enum InstrumentationLevel {
@@ -51,6 +53,54 @@ impl InstrumentationLevel {
     pub const fn captures_messages(self) -> bool {
         matches!(self, Self::Scoped | Self::Trace)
     }
+
+    const fn to_u8(self) -> u8 {
+        match self {
+            Self::Off => 0,
+            Self::Counters => 1,
+            Self::Scoped => 2,
+            Self::Trace => 3,
+        }
+    }
+
+    const fn from_u8(raw: u8) -> Self {
+        match raw {
+            0 => Self::Off,
+            1 => Self::Counters,
+            2 => Self::Scoped,
+            _ => Self::Trace,
+        }
+    }
+}
+
+/// Process-wide ceiling checked by every emission before dispatch.
+static MAX_LEVEL: AtomicU8 = AtomicU8::new(InstrumentationLevel::Off.to_u8());
+
+/// Sets the process-wide maximum instrumentation level.
+///
+/// Every emission function checks this level first, with one relaxed load and
+/// a branch, and returns before reaching the backend when the level does not
+/// capture that kind of observation. It starts at
+/// [`InstrumentationLevel::Off`], so emissions before a backend is installed
+/// cost only that check; `install_backend` raises it to
+/// [`InstrumentationLevel::Trace`] so the installed backend sees everything
+/// until the level is lowered.
+///
+/// The level only gates emissions that start or stand alone: scope ends and
+/// `End` markers always reach the backend, so lowering the level while a
+/// scope or frame is open never leaves a backend with an unclosed one.
+/// Backends may still apply their own, finer filtering.
+pub fn set_max_level(level: InstrumentationLevel) {
+    MAX_LEVEL.store(level.to_u8(), Ordering::Relaxed);
+}
+
+/// Returns the process-wide maximum instrumentation level.
+///
+/// See [`set_max_level`].
+#[inline]
+#[must_use]
+pub fn max_level() -> InstrumentationLevel {
+    InstrumentationLevel::from_u8(MAX_LEVEL.load(Ordering::Relaxed))
 }
 
 #[cfg(test)]

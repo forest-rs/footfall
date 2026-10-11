@@ -7,6 +7,7 @@ use footfall_core::{
     Args, Backend, Context, ContextId, CounterDesc, CounterDescId, EventDesc, EventDescId, FlowId,
     FlowPhase, InstallBackendError, InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId,
     ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, ScopeToken, Unit, install_backend,
+    set_max_level,
 };
 use std::{
     boxed::Box,
@@ -14,7 +15,7 @@ use std::{
     string::String,
     sync::{
         Mutex,
-        atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -34,6 +35,9 @@ pub struct Runtime {
     wall_clock_anchor_micros: u64,
     process_name: String,
     level: AtomicU8,
+    /// Set once this runtime is the process-wide backend; its level then
+    /// also drives `footfall_core`'s maximum level.
+    drives_max_level: AtomicBool,
     counter_capacity: usize,
     event_capacity: usize,
     next_scope_token: AtomicU64,
@@ -97,6 +101,7 @@ impl Runtime {
             ),
             process_name: process_name.into(),
             level: AtomicU8::new(level_to_u8(level)),
+            drives_max_level: AtomicBool::new(false),
             counter_capacity,
             event_capacity,
             next_scope_token: AtomicU64::new(1),
@@ -128,9 +133,17 @@ impl Runtime {
     /// process. To compose the runtime with other backends instead, leak it yourself
     /// (for example with [`Box::leak`]) and pass the reference to an adapter such as
     /// `footfall_fanout`, or to [`footfall_core::install_backend`].
+    ///
+    /// Once installed this way, the runtime's capture level also sets
+    /// [`footfall_core::set_max_level`], now and on every
+    /// [`set_level`](Self::set_level), so emissions the level excludes return
+    /// before reaching the runtime at all. A runtime installed any other way
+    /// leaves the process maximum level to whoever installed it.
     pub fn install_global(self) -> Result<&'static Self, InstallBackendError> {
         let runtime: &'static Self = Box::leak(Box::new(self));
         install_backend(runtime)?;
+        runtime.drives_max_level.store(true, Ordering::Relaxed);
+        set_max_level(runtime.level());
         Ok(runtime)
     }
 
@@ -141,8 +154,14 @@ impl Runtime {
     }
 
     /// Sets the runtime capture level used by subsequent backend emissions.
+    ///
+    /// For a runtime installed with [`install_global`](Self::install_global)
+    /// this also sets the process-wide [`footfall_core::max_level`].
     pub fn set_level(&self, level: InstrumentationLevel) {
         self.level.store(level_to_u8(level), Ordering::Relaxed);
+        if self.drives_max_level.load(Ordering::Relaxed) {
+            set_max_level(level);
+        }
     }
 
     /// Sets an optional capture-session label for future snapshots.

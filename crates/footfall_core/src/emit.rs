@@ -1,31 +1,41 @@
 // Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+#[cfg(feature = "std")]
+use crate::InstrumentationLevel;
+#[cfg(not(footfall_compile_out))]
+use crate::max_level;
 use crate::{
     Args, Context, CounterDesc, EventDesc, FlowId, ResourceId, ResourceKindDesc, ScopeDesc,
 };
 #[cfg(feature = "std")]
 use std::sync::OnceLock;
 
-/// Forwards one emission to the installed backend.
+/// Forwards one emission to the installed backend when `$enabled` holds.
 ///
-/// With `--cfg footfall_compile_out` the call is replaced by evaluating the
-/// arguments and discarding them, so instrumented code compiles to nothing.
-/// The `else` form supplies the value returned in that case.
+/// `$enabled` is the cheap pre-dispatch check, normally against
+/// [`max_level`]; when it fails the call returns `$skipped` without loading
+/// the backend. With `--cfg footfall_compile_out` the whole call is replaced
+/// by evaluating the arguments and discarding them, so instrumented code
+/// compiles to nothing.
 macro_rules! dispatch {
-    ($method:ident($($arg:expr),* $(,)?) else $compiled_out:expr) => {{
+    (when $enabled:expr => $method:ident($($arg:expr),* $(,)?) else $skipped:expr) => {{
         #[cfg(not(footfall_compile_out))]
         {
-            backend().$method($($arg),*)
+            if $enabled {
+                backend().$method($($arg),*)
+            } else {
+                $skipped
+            }
         }
         #[cfg(footfall_compile_out)]
         {
             let _ = ($($arg,)*);
-            $compiled_out
+            $skipped
         }
     }};
-    ($method:ident($($arg:expr),* $(,)?)) => {
-        dispatch!($method($($arg),*) else ())
+    (when $enabled:expr => $method:ident($($arg:expr),* $(,)?)) => {
+        dispatch!(when $enabled => $method($($arg),*) else ())
     };
 }
 
@@ -79,12 +89,17 @@ pub struct ScopeGuard {
 impl ScopeGuard {
     /// Begins a new guarded scope.
     #[cfg_attr(footfall_compile_out, inline(always))]
+    #[cfg_attr(not(footfall_compile_out), inline)]
     pub fn new(desc: &'static ScopeDesc, context: &Context) -> Self {
-        Self::with_args(desc, context, &Args::none())
+        Self {
+            token: scope_begin(desc, context),
+            active: true,
+        }
     }
 
     /// Begins a new guarded scope carrying per-instance arguments.
     #[cfg_attr(footfall_compile_out, inline(always))]
+    #[cfg_attr(not(footfall_compile_out), inline)]
     pub fn with_args(desc: &'static ScopeDesc, context: &Context, args: &Args) -> Self {
         Self {
             token: scope_begin_with(desc, context, args),
@@ -100,11 +115,13 @@ impl ScopeGuard {
 
     /// Ends the guarded scope before the guard is dropped.
     #[cfg_attr(footfall_compile_out, inline(always))]
+    #[cfg_attr(not(footfall_compile_out), inline)]
     pub fn end(mut self) {
         self.end_if_active();
     }
 
     #[cfg_attr(footfall_compile_out, inline(always))]
+    #[cfg_attr(not(footfall_compile_out), inline)]
     fn end_if_active(&mut self) {
         if self.active {
             scope_end(self.token);
@@ -115,6 +132,7 @@ impl ScopeGuard {
 
 impl Drop for ScopeGuard {
     #[cfg_attr(footfall_compile_out, inline(always))]
+    #[cfg_attr(not(footfall_compile_out), inline)]
     fn drop(&mut self) {
         self.end_if_active();
     }
@@ -265,14 +283,16 @@ pub struct InstallBackendError;
 
 /// Adds to a counter descriptor under a semantic context.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn counter_add(desc: &'static CounterDesc, context: &Context, value: u64) {
-    dispatch!(counter_add(desc, context, value));
+    dispatch!(when max_level().captures_counters() => counter_add(desc, context, value));
 }
 
 /// Sets a gauge descriptor under a semantic context.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn gauge_set(desc: &'static CounterDesc, context: &Context, value: u64) {
-    dispatch!(gauge_set(desc, context, value));
+    dispatch!(when max_level().captures_counters() => gauge_set(desc, context, value));
 }
 
 /// Records one sample into a histogram descriptor under a semantic context.
@@ -280,132 +300,153 @@ pub fn gauge_set(desc: &'static CounterDesc, context: &Context, value: u64) {
 /// Histograms aggregate a value distribution per descriptor and context, so
 /// consumers can derive percentiles instead of only sums and last values.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn histogram_record(desc: &'static CounterDesc, context: &Context, value: u64) {
-    dispatch!(histogram_record(desc, context, value));
+    dispatch!(when max_level().captures_counters() => histogram_record(desc, context, value));
 }
 
 /// Begins a scope under a semantic context.
 #[must_use]
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn scope_begin(desc: &'static ScopeDesc, context: &Context) -> ScopeToken {
-    scope_begin_with(desc, context, &Args::none())
+    // Dispatch directly rather than through `scope_begin_with`, so the empty
+    // `Args` is only built once the level check has passed.
+    dispatch!(when max_level().captures_scopes() => scope_begin(desc, context, &Args::none()) else ScopeToken::INVALID)
 }
 
 /// Begins a scope carrying per-instance arguments.
 #[must_use]
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn scope_begin_with(desc: &'static ScopeDesc, context: &Context, args: &Args) -> ScopeToken {
-    dispatch!(scope_begin(desc, context, args) else ScopeToken::INVALID)
+    dispatch!(when max_level().captures_scopes() => scope_begin(desc, context, args) else ScopeToken::INVALID)
 }
 
 /// Ends a previously-begun scope.
 ///
 /// Ending [`ScopeToken::INVALID`] does nothing.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn scope_end(token: ScopeToken) {
     if token.is_valid() {
-        dispatch!(scope_end(token));
+        dispatch!(when true => scope_end(token));
     }
 }
 
 /// Begins a scope and returns a guard that ends it on drop.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn scope(desc: &'static ScopeDesc, context: &Context) -> ScopeGuard {
     ScopeGuard::new(desc, context)
 }
 
 /// Begins a guarded scope carrying per-instance arguments.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn scope_with(desc: &'static ScopeDesc, context: &Context, args: &Args) -> ScopeGuard {
     ScopeGuard::with_args(desc, context, args)
 }
 
 /// Emits a resource-creation observation.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn resource_create(
     desc: &'static ResourceKindDesc,
     resource_id: ResourceId,
     context: &Context,
     size: u64,
 ) {
-    dispatch!(resource_create(desc, resource_id, context, size));
+    dispatch!(when max_level().captures_resources() => resource_create(desc, resource_id, context, size));
 }
 
 /// Emits a resource-update observation.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn resource_update(
     desc: &'static ResourceKindDesc,
     resource_id: ResourceId,
     context: &Context,
     size: u64,
 ) {
-    dispatch!(resource_update(desc, resource_id, context, size));
+    dispatch!(when max_level().captures_resources() => resource_update(desc, resource_id, context, size));
 }
 
 /// Emits a resource-drop observation.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn resource_drop(desc: &'static ResourceKindDesc, resource_id: ResourceId, context: &Context) {
-    dispatch!(resource_drop(desc, resource_id, context));
+    dispatch!(when max_level().captures_resources() => resource_drop(desc, resource_id, context));
 }
 
 /// Emits a frame, transaction, or pass boundary marker.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn frame_marker(kind: MarkerKind, phase: MarkerPhase, context: &Context) {
-    dispatch!(frame_marker(kind, phase, context));
+    dispatch!(when matches!(phase, MarkerPhase::End) || max_level().captures_markers() => frame_marker(kind, phase, context));
 }
 
 /// Emits a frame begin marker.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn frame_begin(context: &Context) {
     frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
 }
 
 /// Emits a frame end marker.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn frame_end(context: &Context) {
     frame_marker(MarkerKind::Frame, MarkerPhase::End, context);
 }
 
 /// Emits a transaction begin marker.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn transaction_begin(context: &Context) {
     frame_marker(MarkerKind::Transaction, MarkerPhase::Begin, context);
 }
 
 /// Emits a transaction end marker.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn transaction_end(context: &Context) {
     frame_marker(MarkerKind::Transaction, MarkerPhase::End, context);
 }
 
 /// Emits a pass begin marker.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn pass_begin(context: &Context) {
     frame_marker(MarkerKind::Pass, MarkerPhase::Begin, context);
 }
 
 /// Emits a pass end marker.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn pass_end(context: &Context) {
     frame_marker(MarkerKind::Pass, MarkerPhase::End, context);
 }
 
 /// Starts a causal flow under a semantic context.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn flow_begin(flow_id: FlowId, context: &Context) {
-    dispatch!(flow(flow_id, FlowPhase::Begin, context));
+    dispatch!(when max_level().captures_flows() => flow(flow_id, FlowPhase::Begin, context));
 }
 
 /// Continues a causal flow under a semantic context.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn flow_step(flow_id: FlowId, context: &Context) {
-    dispatch!(flow(flow_id, FlowPhase::Step, context));
+    dispatch!(when max_level().captures_flows() => flow(flow_id, FlowPhase::Step, context));
 }
 
 /// Ends a causal flow under a semantic context.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn flow_end(flow_id: FlowId, context: &Context) {
-    dispatch!(flow(flow_id, FlowPhase::End, context));
+    dispatch!(when max_level().captures_flows() => flow(flow_id, FlowPhase::End, context));
 }
 
 /// Emits a message event under a semantic context.
@@ -416,14 +457,16 @@ pub fn flow_end(flow_id: FlowId, context: &Context) {
 /// prefer emitting through a facility that already formatted the text, such
 /// as a log or tracing bridge.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn message(desc: &'static EventDesc, context: &Context, text: &str) {
-    dispatch!(message(desc, context, text, &Args::none()));
+    dispatch!(when max_level().captures_messages() => message(desc, context, text, &Args::none()));
 }
 
 /// Emits a message event carrying per-instance arguments.
 #[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
 pub fn message_with(desc: &'static EventDesc, context: &Context, text: &str, args: &Args) {
-    dispatch!(message(desc, context, text, args));
+    dispatch!(when max_level().captures_messages() => message(desc, context, text, args));
 }
 
 /// Installs the process-wide backend.
@@ -431,9 +474,16 @@ pub fn message_with(desc: &'static EventDesc, context: &Context, text: &str, arg
 /// Only the first installation succeeds; the backend stays installed for the
 /// rest of the process. Emissions made before installation go to
 /// [`NoopBackend`].
+///
+/// A successful installation raises the process-wide maximum level to
+/// [`InstrumentationLevel::Trace`] so the backend sees every emission; lower
+/// it afterwards with [`set_max_level`](crate::set_max_level) to filter
+/// emissions before they reach the backend.
 #[cfg(feature = "std")]
 pub fn install_backend(backend: &'static dyn Backend) -> Result<(), InstallBackendError> {
-    BACKEND.set(backend).map_err(|_| InstallBackendError)
+    BACKEND.set(backend).map_err(|_| InstallBackendError)?;
+    crate::set_max_level(InstrumentationLevel::Trace);
+    Ok(())
 }
 
 #[cfg(not(footfall_compile_out))]

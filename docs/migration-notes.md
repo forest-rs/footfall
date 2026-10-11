@@ -185,3 +185,23 @@ let _scope = scope_with(&RECORD, &context, &args!("items" => 3_u32));
 
 Backends that retain a context or arguments copy them (`*context`,
 `*args`); both types are still `Copy`.
+
+## Process-Wide Maximum Level
+
+`footfall_core` now keeps a process-wide maximum level
+(`footfall_core::set_max_level` / `max_level`, re-exported by `footfall`).
+Every emission checks it with one relaxed load before reaching the backend,
+so disabled and level-excluded emissions return without dynamic dispatch.
+
+- The level starts at `InstrumentationLevel::Off`, so emissions before any
+  backend is installed stop at that check.
+- `install_backend` raises it to `InstrumentationLevel::Trace` on success.
+- `Runtime::install_global` then sets it to the runtime's level, and
+  `Runtime::set_level` keeps it in sync for that runtime. A runtime used
+  inside a fan-out leaves it alone; call `set_max_level` yourself if you
+  want early filtering there.
+- Scope ends and `End` markers are never filtered, so lowering the level
+  while a scope or frame is open still closes it in every backend.
+
+A backend installed directly with `install_backend` that relied on seeing
+emissions after something lowered the maximum level will now miss them.
