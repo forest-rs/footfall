@@ -43,7 +43,9 @@ A conforming consumer should:
 - check the protocol version
 - accept chunked publication
 - build a context table from `Contexts`
-- resolve counter and event `context_id`s through that table
+- resolve counter and event `context_id`s through that table by id, not by
+  position; ids are sparse producer handles, and a context can keep its id
+  across snapshots and sessions
 - treat `SnapshotEnd` dropped counts as real loss accounting, not noise
 
 It should not assume:

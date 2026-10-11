@@ -5,14 +5,17 @@
 //!
 //! This target installs the runtime as the process-wide backend, and the
 //! `footfall_tracing` layer as the global `tracing` subscriber, once per
-//! process. Each group sets the capture level it needs before its cases run.
+//! process. Each group sets the capture level it needs before its cases run,
+//! and registers its contexts after installation; registered contexts
+//! survive the runtime resets between chunks.
 //! Cases that buffer events time through `time_chunked`, which resets the
 //! runtime outside the timed region so no sample reaches the drop path.
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use footfall::{
-    Args, Context, InstrumentationLevel, counter_add, gauge_set, histogram_record, message,
-    message_with, resource_update, scope, scope_begin, scope_end,
+    Args, Context, InstrumentationLevel, RegisteredContext, counter_add, gauge_set,
+    histogram_record, message, message_with, register_context, release_context, resource_update,
+    scope, scope_begin, scope_end,
 };
 use footfall_benchmarks::{
     ATLAS, ATLAS_ID, CACHE, COUNTER_CAPACITY, EVENT_CAPACITY, FRAME, LATENCY, LOG, MEASUREMENT,
@@ -49,14 +52,15 @@ fn runtime() -> &'static Runtime {
 fn off(c: &mut Criterion) {
     let runtime = runtime();
     runtime.set_level(InstrumentationLevel::Off);
-    let context = sample_context();
+    let registered = RegisteredContext::new(&sample_context());
+    let context = registered.handle();
     let mut group = c.benchmark_group("runtime/off");
     group.bench_function("counter_add", |b| {
-        b.iter(|| counter_add(black_box(&OPS), black_box(&context), black_box(1)));
+        b.iter(|| counter_add(black_box(&OPS), black_box(context), black_box(1)));
     });
     group.bench_function("scope begin+end", |b| {
         b.iter(|| {
-            let token = scope_begin(black_box(&RECORD), black_box(&context));
+            let token = scope_begin(black_box(&RECORD), black_box(context));
             scope_end(black_box(token));
         });
     });
@@ -68,51 +72,66 @@ fn counters(c: &mut Criterion) {
     let runtime = runtime();
     runtime.set_level(InstrumentationLevel::Counters);
     let reset = || runtime.reset();
-    let context = sample_context();
+    let registered = RegisteredContext::new(&sample_context());
+    let context = registered.handle();
     let mut group = c.benchmark_group("runtime/counters");
     group.bench_function("counter_add", |b| {
         b.iter_custom(|iters| {
             time_chunked(iters, reset, || {
-                counter_add(black_box(&OPS), black_box(&context), black_box(1));
+                counter_add(black_box(&OPS), black_box(context), black_box(1));
             })
         });
     });
     group.bench_function("gauge_set", |b| {
         b.iter_custom(|iters| {
             time_chunked(iters, reset, || {
-                gauge_set(black_box(&QUEUE_DEPTH), black_box(&context), black_box(17));
+                gauge_set(black_box(&QUEUE_DEPTH), black_box(context), black_box(17));
             })
         });
     });
     group.bench_function("histogram_record", |b| {
         b.iter_custom(|iters| {
             time_chunked(iters, reset, || {
-                histogram_record(black_box(&LATENCY), black_box(&context), black_box(1_500));
+                histogram_record(black_box(&LATENCY), black_box(context), black_box(1_500));
             })
         });
     });
 
-    let rotating = rotating_contexts(context);
+    let rotating = rotating_contexts(sample_context());
     group.bench_function(
         format!("counter_add {} rotating contexts", rotating.len()),
         |b| {
             b.iter_custom(|iters| {
                 let mut next = 0_usize;
                 time_chunked(iters, reset, || {
-                    counter_add(black_box(&OPS), black_box(&rotating[next]), black_box(1));
+                    counter_add(
+                        black_box(&OPS),
+                        black_box(rotating[next].handle()),
+                        black_box(1),
+                    );
                     next = (next + 1) % rotating.len();
                 })
             });
         },
     );
-    group.bench_function("counter_add context built per call", |b| {
+    let built = sample_context();
+    group.bench_function("context register+release", |b| {
+        b.iter_custom(|iters| {
+            time_chunked(iters, reset, || {
+                release_context(black_box(register_context(black_box(&built))));
+            })
+        });
+    });
+    group.bench_function("counter_add with register+release per call", |b| {
         b.iter_custom(|iters| {
             time_chunked(iters, reset, || {
                 let context = Context::root()
                     .with(&FRAME, black_box(7_u32))
                     .with(&PASS, black_box(1_u32))
                     .with(&CACHE, "atlas");
-                counter_add(black_box(&OPS), black_box(&context), black_box(1));
+                let handle = register_context(&context);
+                counter_add(black_box(&OPS), black_box(handle), black_box(1));
+                release_context(handle);
             })
         });
     });
@@ -137,12 +156,13 @@ fn scoped(c: &mut Criterion) {
     let runtime = runtime();
     runtime.set_level(InstrumentationLevel::Scoped);
     let reset = || runtime.reset();
-    let context = sample_context();
+    let registered = RegisteredContext::new(&sample_context());
+    let context = registered.handle();
     let mut group = c.benchmark_group("runtime/scoped");
     group.bench_function("scope begin+end", |b| {
         b.iter_custom(|iters| {
             time_chunked(iters, reset, || {
-                let token = scope_begin(black_box(&RECORD), black_box(&context));
+                let token = scope_begin(black_box(&RECORD), black_box(context));
                 scope_end(black_box(token));
             })
         });
@@ -150,7 +170,7 @@ fn scoped(c: &mut Criterion) {
     group.bench_function("scope guard", |b| {
         b.iter_custom(|iters| {
             time_chunked(iters, reset, || {
-                drop(black_box(scope(black_box(&RECORD), black_box(&context))));
+                drop(black_box(scope(black_box(&RECORD), black_box(context))));
             })
         });
     });
@@ -159,7 +179,7 @@ fn scoped(c: &mut Criterion) {
             time_chunked(iters, reset, || {
                 message(
                     black_box(&LOG),
-                    black_box(&context),
+                    black_box(context),
                     black_box("uploaded atlas"),
                 );
             })
@@ -171,7 +191,7 @@ fn scoped(c: &mut Criterion) {
             time_chunked(iters, reset, || {
                 message_with(
                     black_box(&LOG),
-                    black_box(&context),
+                    black_box(context),
                     black_box("uploaded atlas"),
                     black_box(&args),
                 );
@@ -201,7 +221,8 @@ fn trace(c: &mut Criterion) {
     let runtime = runtime();
     runtime.set_level(InstrumentationLevel::Trace);
     let reset = || runtime.reset();
-    let context = sample_context();
+    let registered = RegisteredContext::new(&sample_context());
+    let context = registered.handle();
     let mut group = c.benchmark_group("runtime/trace");
     group.bench_function("resource_update", |b| {
         b.iter_custom(|iters| {
@@ -209,7 +230,7 @@ fn trace(c: &mut Criterion) {
                 resource_update(
                     black_box(&ATLAS),
                     black_box(ATLAS_ID),
-                    black_box(&context),
+                    black_box(context),
                     black_box(4096),
                 );
             })
@@ -223,7 +244,7 @@ fn capture(c: &mut Criterion) {
     let runtime = runtime();
     runtime.set_level(InstrumentationLevel::Trace);
     runtime.reset();
-    seed_snapshot(sample_context());
+    let frames = seed_snapshot(sample_context());
     let snapshot = runtime.snapshot();
 
     let mut group = c.benchmark_group("runtime/capture");
@@ -235,6 +256,7 @@ fn capture(c: &mut Criterion) {
         b.iter(|| black_box(to_chrome_trace_json(black_box(&snapshot))));
     });
     group.finish();
+    drop(frames);
 }
 
 criterion_group! {

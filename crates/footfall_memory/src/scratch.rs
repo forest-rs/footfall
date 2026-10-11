@@ -3,7 +3,7 @@
 
 use alloc::vec::Vec;
 use core::mem::size_of;
-use footfall_core::{Context, CounterDesc, counter_add, gauge_set};
+use footfall_core::{ContextHandle, CounterDesc, counter_add, gauge_set};
 
 /// Standard counter descriptors for scratch-buffer observation.
 #[derive(Clone, Copy, Debug)]
@@ -21,14 +21,14 @@ pub struct ScratchMetrics {
 pub struct TrackedScratchVec<T> {
     inner: Vec<T>,
     metrics: ScratchMetrics,
-    context: Context,
+    context: ContextHandle,
     peak_bytes: u64,
 }
 
 impl<T> TrackedScratchVec<T> {
-    /// Creates an empty tracked scratch vector.
+    /// Creates an empty tracked scratch vector attributed to `context`.
     #[must_use]
-    pub fn new(metrics: ScratchMetrics, context: Context) -> Self {
+    pub fn new(metrics: ScratchMetrics, context: ContextHandle) -> Self {
         let mut scratch = Self {
             inner: Vec::new(),
             metrics,
@@ -85,17 +85,17 @@ impl<T> TrackedScratchVec<T> {
 
     fn observe_growth(&mut self, previous_capacity: usize) {
         if self.inner.capacity() != previous_capacity {
-            counter_add(self.metrics.grow_count, &self.context, 1);
+            counter_add(self.metrics.grow_count, self.context, 1);
         }
         self.report_capacity();
     }
 
     fn report_capacity(&mut self) {
         let current_bytes = self.reserved_bytes();
-        gauge_set(self.metrics.current_bytes, &self.context, current_bytes);
+        gauge_set(self.metrics.current_bytes, self.context, current_bytes);
         if current_bytes > self.peak_bytes {
             self.peak_bytes = current_bytes;
-            gauge_set(self.metrics.peak_bytes, &self.context, self.peak_bytes);
+            gauge_set(self.metrics.peak_bytes, self.context, self.peak_bytes);
         }
     }
 }
@@ -108,7 +108,7 @@ fn bytes_for_capacity<T>(capacity: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{ScratchMetrics, TrackedScratchVec};
-    use footfall_core::{Context, CounterDesc};
+    use footfall_core::{ContextHandle, CounterDesc};
 
     static CURRENT: CounterDesc = CounterDesc::bytes("scratch_current");
     static PEAK: CounterDesc = CounterDesc::bytes("scratch_peak");
@@ -121,7 +121,7 @@ mod tests {
             peak_bytes: &PEAK,
             grow_count: &GROW,
         };
-        let mut scratch = TrackedScratchVec::<u32>::new(metrics, Context::root());
+        let mut scratch = TrackedScratchVec::<u32>::new(metrics, ContextHandle::ROOT);
         assert_eq!(scratch.len(), 0);
         scratch.push(1);
         scratch.reserve(16);

@@ -16,9 +16,9 @@
 //! Run them with `cargo bench -p footfall_benchmarks`.
 
 use footfall::{
-    Context, CounterDesc, EventDesc, LabelKey, MarkerKind, MarkerPhase, ResourceId,
-    ResourceKindDesc, ScopeDesc, counter_add, frame_marker, resource_update, scope_begin,
-    scope_end,
+    Context, CounterDesc, EventDesc, LabelKey, MarkerKind, MarkerPhase, RegisteredContext,
+    ResourceId, ResourceKindDesc, ScopeDesc, counter_add, frame_marker, resource_update,
+    scope_begin, scope_end,
 };
 use std::{
     hint::black_box,
@@ -114,25 +114,39 @@ pub fn build_context(labels: usize) -> Context {
     context
 }
 
-/// Returns [`ROTATING_CONTEXTS`] distinct contexts derived from `base`.
+/// Registers [`ROTATING_CONTEXTS`] distinct contexts derived from `base`.
+///
+/// Register after installing the backend, and keep the registrations alive
+/// while their handles are in use.
 #[must_use]
-pub fn rotating_contexts(base: Context) -> Vec<Context> {
+pub fn rotating_contexts(base: Context) -> Vec<RegisteredContext> {
     (0..ROTATING_CONTEXTS)
-        .map(|index| base.with(&NODE, u64::try_from(index).unwrap_or(u64::MAX)))
+        .map(|index| {
+            RegisteredContext::new(&base.with(&NODE, u64::try_from(index).unwrap_or(u64::MAX)))
+        })
         .collect()
 }
 
-/// Emits a fixed [`SEEDED_FRAMES`]-frame capture through the installed backend.
-pub fn seed_snapshot(context: Context) {
-    for frame in 0..SEEDED_FRAMES {
-        let frame_context = context.with(&FRAME, frame);
-        frame_marker(MarkerKind::Frame, MarkerPhase::Begin, &frame_context);
-        counter_add(&OPS, &frame_context, u64::from(frame));
-        let token = scope_begin(&RECORD, &frame_context);
-        resource_update(&ATLAS, ATLAS_ID, &frame_context, 4096 + u64::from(frame));
-        scope_end(token);
-        frame_marker(MarkerKind::Frame, MarkerPhase::End, &frame_context);
-    }
+/// Emits a fixed [`SEEDED_FRAMES`]-frame capture through the installed
+/// backend, each frame under its own registered context.
+///
+/// Returns the registrations so the contexts stay resolvable while the
+/// capture is snapshot.
+#[must_use]
+pub fn seed_snapshot(base: Context) -> Vec<RegisteredContext> {
+    (0..SEEDED_FRAMES)
+        .map(|frame| {
+            let registered = RegisteredContext::new(&base.with(&FRAME, frame));
+            let context = registered.handle();
+            frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
+            counter_add(&OPS, context, u64::from(frame));
+            let token = scope_begin(&RECORD, context);
+            resource_update(&ATLAS, ATLAS_ID, context, 4096 + u64::from(frame));
+            scope_end(token);
+            frame_marker(MarkerKind::Frame, MarkerPhase::End, context);
+            registered
+        })
+        .collect()
 }
 
 /// Times `iters` calls of `op`, calling `reset` outside the timed region
@@ -157,9 +171,9 @@ pub fn time_chunked(iters: u64, mut reset: impl FnMut(), mut op: impl FnMut()) -
 }
 
 /// Times `threads` threads that each emit `iters` counter updates under
-/// their own context.
+/// their own registered context.
 ///
-/// Threads are spawned and build their contexts before the clock starts, are
+/// Threads are spawned and register their contexts before the clock starts, are
 /// released together through a barrier, and the clock stops when the last
 /// one finishes. The returned duration is the wall time divided by the
 /// thread count, so Criterion's per-iteration figure is wall time per
@@ -174,12 +188,15 @@ pub fn time_parallel_counter_add(threads: usize, iters: u64) -> Duration {
             let start_line = &start_line;
             let finish_line = &finish_line;
             scope.spawn(move || {
-                let context = Context::root()
-                    .with(&FRAME, u64::try_from(thread_index).unwrap_or(u64::MAX))
-                    .with(&PASS, 1_u32);
+                let registered = RegisteredContext::new(
+                    &Context::root()
+                        .with(&FRAME, u64::try_from(thread_index).unwrap_or(u64::MAX))
+                        .with(&PASS, 1_u32),
+                );
+                let context = registered.handle();
                 start_line.wait();
                 for _ in 0..iters {
-                    counter_add(black_box(&OPS), black_box(&context), black_box(1));
+                    counter_add(black_box(&OPS), black_box(context), black_box(1));
                 }
                 finish_line.wait();
             });

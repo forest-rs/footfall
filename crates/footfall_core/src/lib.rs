@@ -10,7 +10,7 @@
 //! - integer-backed ids
 //! - static descriptors, identified by address
 //! - the [`Backend`] trait and the process-wide emission seam
-//! - explicit semantic context composition
+//! - semantic contexts, registered once and emitted by handle
 //! - instrumentation levels
 //!
 //! It does not yet own runtime buffering or export logic.
@@ -25,10 +25,10 @@
 //! reaching a descriptor through a `const` are compile errors:
 //!
 //! ```compile_fail,E0716
-//! use footfall_core::{Context, ScopeDesc, scope};
+//! use footfall_core::{ContextHandle, ScopeDesc, scope};
 //!
 //! const RECORD: ScopeDesc = ScopeDesc::new("record");
-//! let _guard = scope(&RECORD, &Context::root());
+//! let _guard = scope(&RECORD, ContextHandle::ROOT);
 //! ```
 //!
 //! ```compile_fail,E0492
@@ -38,15 +38,48 @@
 //! ```
 //!
 //! ```
-//! use footfall_core::{Context, ScopeDesc, scope};
+//! use footfall_core::{ContextHandle, ScopeDesc, scope};
 //!
 //! static RECORD: ScopeDesc = ScopeDesc::new("record");
-//! let _guard = scope(&RECORD, &Context::root());
+//! let _guard = scope(&RECORD, ContextHandle::ROOT);
 //! ```
 //!
 //! Descriptors created at runtime, for example by a bridge from another
 //! instrumentation framework, can be leaked with `Box::leak` to obtain a
 //! `&'static` descriptor with its own identity.
+//!
+//! # Contexts
+//!
+//! A [`Context`] names the semantic owner an observation belongs to, such as
+//! a pass, a layer, or a cache, as a small set of labels. Contexts are
+//! registered once and emitted by [`ContextHandle`]: the backend learns the
+//! labels at registration, and each emission carries only an integer, so
+//! attribution costs the same however many labels a context has.
+//!
+//! - [`RegisteredContext`] registers a context for an owner and releases it
+//!   when dropped.
+//! - [`LazyContext`] holds a context in a `static` item and registers it on
+//!   first use after a backend is installed.
+//! - [`register_context`] and [`release_context`] are the underlying calls.
+//! - [`ContextHandle::ROOT`] is the empty root context and needs no
+//!   registration.
+//!
+//! ```
+//! use footfall_core::{
+//!     CounterDesc, LabelKey, RegisteredContext, ScopeDesc, context, counter_add, scope,
+//! };
+//!
+//! static PASS: LabelKey = LabelKey::new("pass");
+//! static RECORD: ScopeDesc = ScopeDesc::new("record");
+//! static DRAWS: CounterDesc = CounterDesc::count("draws");
+//!
+//! let opaque = RegisteredContext::new(&context!(PASS = "opaque"));
+//! let _guard = scope(&RECORD, opaque.handle());
+//! counter_add(&DRAWS, opaque.handle(), 12);
+//! ```
+//!
+//! Register once per owner and reuse the handle. Equal contexts registered
+//! separately get distinct handles and are not merged.
 //!
 //! # Compiling instrumentation out
 //!
@@ -75,6 +108,7 @@ mod args;
 mod context;
 mod descriptor;
 mod emit;
+mod handle;
 mod id;
 mod label;
 mod level;
@@ -92,6 +126,9 @@ pub use emit::{
 };
 #[cfg(feature = "std")]
 pub use emit::{InstallBackendError, install_backend};
+#[cfg(feature = "std")]
+pub use handle::LazyContext;
+pub use handle::{ContextHandle, RegisteredContext, register_context, release_context};
 pub use id::{
     ContextId, CounterDescId, EventDescId, FlowId, ResourceId, ResourceKindId, ScopeDescId,
 };

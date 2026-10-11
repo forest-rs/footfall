@@ -1,7 +1,7 @@
 // Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use footfall_core::{Context, CounterDesc, counter_add, gauge_set};
+use footfall_core::{ContextHandle, CounterDesc, counter_add, gauge_set};
 
 /// Standard counter descriptors for cache observation.
 #[derive(Clone, Copy, Debug)]
@@ -20,14 +20,14 @@ pub struct CacheMetrics {
 #[derive(Clone, Copy, Debug)]
 pub struct CacheStats {
     metrics: CacheMetrics,
-    context: Context,
+    context: ContextHandle,
     current_bytes: u64,
 }
 
 impl CacheStats {
-    /// Creates a new cache statistics helper.
+    /// Creates a new cache statistics helper attributed to `context`.
     #[must_use]
-    pub const fn new(metrics: CacheMetrics, context: Context) -> Self {
+    pub const fn new(metrics: CacheMetrics, context: ContextHandle) -> Self {
         Self {
             metrics,
             context,
@@ -43,31 +43,31 @@ impl CacheStats {
 
     /// Records a cache hit.
     pub fn record_hit(&self) {
-        counter_add(self.metrics.hit_count, &self.context, 1);
+        counter_add(self.metrics.hit_count, self.context, 1);
     }
 
     /// Records a cache miss.
     pub fn record_miss(&self) {
-        counter_add(self.metrics.miss_count, &self.context, 1);
+        counter_add(self.metrics.miss_count, self.context, 1);
     }
 
     /// Records a cache eviction and updates resident bytes.
     pub fn record_eviction(&mut self, resident_bytes: u64) {
-        counter_add(self.metrics.eviction_count, &self.context, 1);
+        counter_add(self.metrics.eviction_count, self.context, 1);
         self.observe_resident_bytes(resident_bytes);
     }
 
     /// Updates the observed resident bytes.
     pub fn observe_resident_bytes(&mut self, resident_bytes: u64) {
         self.current_bytes = resident_bytes;
-        gauge_set(self.metrics.current_bytes, &self.context, resident_bytes);
+        gauge_set(self.metrics.current_bytes, self.context, resident_bytes);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{CacheMetrics, CacheStats};
-    use footfall_core::{Context, CounterDesc};
+    use footfall_core::{ContextHandle, CounterDesc};
 
     static CURRENT: CounterDesc = CounterDesc::bytes("cache_current");
     static HITS: CounterDesc = CounterDesc::count("cache_hits");
@@ -82,7 +82,7 @@ mod tests {
             miss_count: &MISSES,
             eviction_count: &EVICTIONS,
         };
-        let mut cache = CacheStats::new(metrics, Context::root());
+        let mut cache = CacheStats::new(metrics, ContextHandle::ROOT);
 
         assert_eq!(cache.current_bytes(), 0);
         cache.record_hit();

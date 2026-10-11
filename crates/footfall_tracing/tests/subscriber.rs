@@ -3,7 +3,7 @@
 
 //! End-to-end coverage: tracing spans and events land in a Footfall snapshot.
 
-use footfall_core::{Context, ScopeDesc, scope};
+use footfall_core::{ContextHandle, ContextId, ScopeDesc, scope};
 use footfall_runtime::{Observation, Runtime};
 use footfall_tracing::FootfallLayer;
 use tracing::Dispatch;
@@ -25,11 +25,16 @@ fn spans_and_events_reach_the_runtime() {
     });
 
     let snapshot = runtime.drain_snapshot();
-    let begin = snapshot
+    let (begin, span_context) = snapshot
         .events
         .iter()
         .find_map(|event| match &event.observation {
-            Observation::ScopeBegin { name, args, .. } if *name == "record_pass" => Some(args),
+            Observation::ScopeBegin {
+                name,
+                args,
+                context_id,
+                ..
+            } if *name == "record_pass" => Some((args, *context_id)),
             _ => None,
         })
         .expect("span should record a scope begin");
@@ -37,6 +42,18 @@ fn spans_and_events_reach_the_runtime() {
         begin.get("items").and_then(|value| value.as_unsigned()),
         Some(3)
     );
+    assert_ne!(
+        span_context,
+        ContextId::new(0),
+        "the span registers a context"
+    );
+    let labels = snapshot
+        .context(span_context)
+        .expect("the span context should resolve")
+        .context;
+    assert_eq!(labels.len(), 1);
+    assert_eq!(labels.as_slice()[0].key().name(), "items");
+    assert_eq!(snapshot.dropped_contexts, 0);
     assert!(
         snapshot
             .events
@@ -49,10 +66,19 @@ fn spans_and_events_reach_the_runtime() {
         .events
         .iter()
         .find_map(|event| match &event.observation {
-            Observation::Message { text, args, .. } => Some((text, args)),
+            Observation::Message {
+                text,
+                args,
+                context_id,
+                ..
+            } => Some((text, args, *context_id)),
             _ => None,
         })
         .expect("event should record a message");
+    assert_eq!(
+        message.2, span_context,
+        "events inside a span are attributed to its context"
+    );
     assert_eq!(message.0, "uploaded atlas");
     assert_eq!(
         message.1.get("bytes").and_then(|value| value.as_unsigned()),
@@ -67,12 +93,17 @@ fn spans_and_events_reach_the_runtime() {
     );
     assert_eq!(message.1.get("status"), None);
 
+    assert!(
+        runtime.snapshot().context(span_context).is_none(),
+        "closing the span releases its context, purged once the session ends"
+    );
+
     // Bridge descriptors are distinct from application descriptors, even
     // with the same name, and from those of another layer. Snapshot ids are
     // only comparable within one session, so record all three in the next.
     let second_layer = Dispatch::new(tracing_subscriber::registry().with(FootfallLayer::default()));
     {
-        let _app = scope(&APP_SCOPE, &Context::root());
+        let _app = scope(&APP_SCOPE, ContextHandle::ROOT);
         tracing::dispatcher::with_default(&dispatch, || {
             let _entered = tracing::info_span!("record_pass").entered();
         });

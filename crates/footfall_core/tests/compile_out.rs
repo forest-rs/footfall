@@ -10,8 +10,8 @@
 #![cfg(all(footfall_compile_out, feature = "std"))]
 
 use footfall_core::{
-    Args, Backend, Context, CounterDesc, EventDesc, FlowId, FlowPhase, MarkerKind, MarkerPhase,
-    ResourceId, ResourceKindDesc, ScopeDesc, ScopeToken, install_backend,
+    Args, Backend, ContextHandle, CounterDesc, EventDesc, FlowId, FlowPhase, MarkerKind,
+    MarkerPhase, ResourceId, ResourceKindDesc, ScopeDesc, ScopeToken, install_backend,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -33,38 +33,50 @@ impl Counting {
 }
 
 impl Backend for Counting {
-    fn counter_add(&self, _: &'static CounterDesc, _: &Context, _: u64) {
+    fn counter_add(&self, _: &'static CounterDesc, _: ContextHandle, _: u64) {
         self.hit();
     }
-    fn gauge_set(&self, _: &'static CounterDesc, _: &Context, _: u64) {
+    fn gauge_set(&self, _: &'static CounterDesc, _: ContextHandle, _: u64) {
         self.hit();
     }
-    fn histogram_record(&self, _: &'static CounterDesc, _: &Context, _: u64) {
+    fn histogram_record(&self, _: &'static CounterDesc, _: ContextHandle, _: u64) {
         self.hit();
     }
-    fn scope_begin(&self, _: &'static ScopeDesc, _: &Context, _: &Args) -> ScopeToken {
+    fn scope_begin(&self, _: &'static ScopeDesc, _: ContextHandle, _: &Args) -> ScopeToken {
         self.hit();
         ScopeToken::new(1)
     }
     fn scope_end(&self, _: ScopeToken) {
         self.hit();
     }
-    fn resource_create(&self, _: &'static ResourceKindDesc, _: ResourceId, _: &Context, _: u64) {
+    fn resource_create(
+        &self,
+        _: &'static ResourceKindDesc,
+        _: ResourceId,
+        _: ContextHandle,
+        _: u64,
+    ) {
         self.hit();
     }
-    fn resource_update(&self, _: &'static ResourceKindDesc, _: ResourceId, _: &Context, _: u64) {
+    fn resource_update(
+        &self,
+        _: &'static ResourceKindDesc,
+        _: ResourceId,
+        _: ContextHandle,
+        _: u64,
+    ) {
         self.hit();
     }
-    fn resource_drop(&self, _: &'static ResourceKindDesc, _: ResourceId, _: &Context) {
+    fn resource_drop(&self, _: &'static ResourceKindDesc, _: ResourceId, _: ContextHandle) {
         self.hit();
     }
-    fn frame_marker(&self, _: MarkerKind, _: MarkerPhase, _: &Context) {
+    fn frame_marker(&self, _: MarkerKind, _: MarkerPhase, _: ContextHandle) {
         self.hit();
     }
-    fn flow(&self, _: FlowId, _: FlowPhase, _: &Context) {
+    fn flow(&self, _: FlowId, _: FlowPhase, _: ContextHandle) {
         self.hit();
     }
-    fn message(&self, _: &'static EventDesc, _: &Context, _: &str, _: &Args) {
+    fn message(&self, _: &'static EventDesc, _: ContextHandle, _: &str, _: &Args) {
         self.hit();
     }
 }
@@ -76,23 +88,23 @@ static BACKEND: Counting = Counting {
 #[test]
 fn compiled_out_emissions_never_reach_the_backend() {
     install_backend(&BACKEND).expect("backend should install once");
-    let context = Context::root();
+    let context = ContextHandle::ROOT;
     let args = Args::none();
 
-    footfall_core::counter_add(&COUNTER, &context, 1);
-    footfall_core::gauge_set(&COUNTER, &context, 1);
-    footfall_core::histogram_record(&COUNTER, &context, 1);
-    let token = footfall_core::scope_begin_with(&SCOPE, &context, &args);
+    footfall_core::counter_add(&COUNTER, context, 1);
+    footfall_core::gauge_set(&COUNTER, context, 1);
+    footfall_core::histogram_record(&COUNTER, context, 1);
+    let token = footfall_core::scope_begin_with(&SCOPE, context, &args);
     assert_eq!(token, ScopeToken::INVALID, "no scope is recorded");
     footfall_core::scope_end(ScopeToken::new(7));
-    drop(footfall_core::scope(&SCOPE, &context));
-    footfall_core::resource_create(&RESOURCE, ResourceId::new(1), &context, 1);
-    footfall_core::resource_update(&RESOURCE, ResourceId::new(1), &context, 2);
-    footfall_core::resource_drop(&RESOURCE, ResourceId::new(1), &context);
-    footfall_core::frame_begin(&context);
-    footfall_core::pass_end(&context);
-    footfall_core::flow_step(FlowId::new(3), &context);
-    footfall_core::message_with(&EVENT, &context, "hello", &args);
+    drop(footfall_core::scope(&SCOPE, context));
+    footfall_core::resource_create(&RESOURCE, ResourceId::new(1), context, 1);
+    footfall_core::resource_update(&RESOURCE, ResourceId::new(1), context, 2);
+    footfall_core::resource_drop(&RESOURCE, ResourceId::new(1), context);
+    footfall_core::frame_begin(context);
+    footfall_core::pass_end(context);
+    footfall_core::flow_step(FlowId::new(3), context);
+    footfall_core::message_with(&EVENT, context, "hello", &args);
 
     assert_eq!(BACKEND.calls.load(Ordering::Relaxed), 0);
 }

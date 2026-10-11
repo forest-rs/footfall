@@ -7,8 +7,8 @@
 #![cfg(all(feature = "std", not(footfall_compile_out)))]
 
 use footfall_core::{
-    Args, Backend, Context, CounterDesc, InstrumentationLevel, MarkerKind, MarkerPhase, ScopeDesc,
-    ScopeToken, install_backend, max_level, set_max_level,
+    Args, Backend, ContextHandle, CounterDesc, InstrumentationLevel, MarkerKind, MarkerPhase,
+    ScopeDesc, ScopeToken, install_backend, max_level, set_max_level,
 };
 use std::sync::Mutex;
 
@@ -32,17 +32,17 @@ impl Recording {
 }
 
 impl Backend for Recording {
-    fn counter_add(&self, _: &'static CounterDesc, _: &Context, _: u64) {
+    fn counter_add(&self, _: &'static CounterDesc, _: ContextHandle, _: u64) {
         self.hit("counter_add");
     }
-    fn scope_begin(&self, _: &'static ScopeDesc, _: &Context, _: &Args) -> ScopeToken {
+    fn scope_begin(&self, _: &'static ScopeDesc, _: ContextHandle, _: &Args) -> ScopeToken {
         self.hit("scope_begin");
         ScopeToken::new(1)
     }
     fn scope_end(&self, _: ScopeToken) {
         self.hit("scope_end");
     }
-    fn frame_marker(&self, _: MarkerKind, phase: MarkerPhase, _: &Context) {
+    fn frame_marker(&self, _: MarkerKind, phase: MarkerPhase, _: ContextHandle) {
         self.hit(match phase {
             MarkerPhase::Begin => "frame_begin",
             MarkerPhase::End => "frame_end",
@@ -56,7 +56,7 @@ static BACKEND: Recording = Recording {
 
 #[test]
 fn max_level_gates_emissions_before_dispatch() {
-    let context = Context::root();
+    let context = ContextHandle::ROOT;
     assert_eq!(
         max_level(),
         InstrumentationLevel::Off,
@@ -70,22 +70,22 @@ fn max_level_gates_emissions_before_dispatch() {
         "install raises it"
     );
 
-    let token = footfall_core::scope_begin(&SCOPE, &context);
-    footfall_core::frame_begin(&context);
+    let token = footfall_core::scope_begin(&SCOPE, context);
+    footfall_core::frame_begin(context);
     assert_eq!(BACKEND.take(), ["scope_begin", "frame_begin"]);
 
     // Lowering the level mid-scope filters new work but still closes what
     // was already begun.
     set_max_level(InstrumentationLevel::Counters);
-    footfall_core::counter_add(&COUNTER, &context, 1);
-    let skipped = footfall_core::scope_begin(&SCOPE, &context);
+    footfall_core::counter_add(&COUNTER, context, 1);
+    let skipped = footfall_core::scope_begin(&SCOPE, context);
     assert_eq!(skipped, ScopeToken::INVALID);
-    footfall_core::frame_begin(&context);
-    footfall_core::frame_end(&context);
+    footfall_core::frame_begin(context);
+    footfall_core::frame_end(context);
     footfall_core::scope_end(token);
     assert_eq!(BACKEND.take(), ["counter_add", "frame_end", "scope_end"]);
 
     set_max_level(InstrumentationLevel::Off);
-    footfall_core::counter_add(&COUNTER, &context, 1);
+    footfall_core::counter_add(&COUNTER, context, 1);
     assert!(BACKEND.take().is_empty());
 }

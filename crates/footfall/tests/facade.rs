@@ -29,14 +29,15 @@ fn facade_exposes_call_site_macros() {
 
 #[test]
 fn facade_exposes_emission_surface() {
-    let context = footfall::context!(FRAME = 1_u32);
+    let registered = footfall::RegisteredContext::new(&footfall::context!(FRAME = 1_u32));
+    let context = registered.handle();
 
     // Without an installed backend these lower to the no-op path; the test
     // guards that the facade exposes the whole call-site vocabulary.
-    footfall::counter_add(&COUNTER, &context, 16);
-    footfall::gauge_set(&COUNTER, &context, 32);
-    let token = footfall::scope_begin(&SCOPE, &context);
+    footfall::counter_add(&COUNTER, context, 16);
+    footfall::gauge_set(&COUNTER, context, 32);
+    let token = footfall::scope_begin(&SCOPE, context);
     footfall::scope_end(token);
-    let guard = footfall::scope(&SCOPE, &context);
+    let guard = footfall::scope(&SCOPE, context);
     drop(guard);
 }

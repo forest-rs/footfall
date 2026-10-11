@@ -20,9 +20,9 @@
 //! `footfall_fanout`.
 
 use footfall_core::{
-    Args, Backend, Context, CounterDesc, CounterDescId, EventDesc, InstallBackendError, LabelValue,
-    MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ScopeDesc, ScopeDescId, ScopeToken,
-    SourceLocation, Unit, install_backend,
+    Args, Backend, Context, ContextHandle, CounterDesc, CounterDescId, EventDesc,
+    InstallBackendError, LabelValue, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc,
+    ScopeDesc, ScopeDescId, ScopeToken, SourceLocation, Unit, install_backend,
 };
 use std::{
     cell::RefCell,
@@ -46,6 +46,9 @@ pub struct TracyBackend {
     next_scope_token: AtomicU64,
     counters: Mutex<CounterState>,
     locations: Mutex<HashMap<ScopeDescId, &'static SpanLocation>>,
+    /// Rendered text of each registered context, attached to zones and
+    /// messages.
+    contexts: Mutex<HashMap<ContextHandle, String>>,
 }
 
 impl TracyBackend {
@@ -65,6 +68,7 @@ impl TracyBackend {
             next_scope_token: AtomicU64::new(1),
             counters: Mutex::new(CounterState::default()),
             locations: Mutex::new(HashMap::new()),
+            contexts: Mutex::new(HashMap::new()),
         }
     }
 
@@ -139,7 +143,26 @@ impl TracyBackend {
         ScopeToken::new(raw)
     }
 
-    fn begin_scope(&self, desc: &'static ScopeDesc, context: &Context, args: &Args) -> ScopeToken {
+    /// Returns the rendered text of a registered context, or an empty string
+    /// for the root context and handles this backend does not know.
+    fn context_text(&self, context: ContextHandle) -> String {
+        if context.is_root() {
+            return String::new();
+        }
+        self.contexts
+            .lock()
+            .expect("tracy context mutex should not be poisoned")
+            .get(&context)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn begin_scope(
+        &self,
+        desc: &'static ScopeDesc,
+        context: ContextHandle,
+        args: &Args,
+    ) -> ScopeToken {
         let token = self.next_scope_token();
         let span = if let Some(location) = desc.location() {
             let location = self.cached_span_location(desc, location);
@@ -156,7 +179,7 @@ impl TracyBackend {
             )
         };
 
-        let context_text = context_text(context);
+        let context_text = self.context_text(context);
         if !context_text.is_empty() {
             span.emit_text(&context_text);
         }
@@ -238,10 +261,10 @@ impl TracyBackend {
         verb: &str,
         desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
-        context: &Context,
+        context: ContextHandle,
         size: Option<u64>,
     ) {
-        let message = resource_message(verb, desc, resource_id, context, size);
+        let message = resource_message(verb, desc, resource_id, &self.context_text(context), size);
         self.client.message(&message, self.callstack_depth);
     }
 }
@@ -292,24 +315,43 @@ thread_local! {
 }
 
 impl Backend for TracyBackend {
-    fn counter_add(&self, desc: &'static CounterDesc, _context: &Context, value: u64) {
+    fn context_registered(&self, handle: ContextHandle, context: &Context) {
+        self.contexts
+            .lock()
+            .expect("tracy context mutex should not be poisoned")
+            .insert(handle, context_text(context));
+    }
+
+    fn context_released(&self, handle: ContextHandle) {
+        self.contexts
+            .lock()
+            .expect("tracy context mutex should not be poisoned")
+            .remove(&handle);
+    }
+
+    fn counter_add(&self, desc: &'static CounterDesc, _context: ContextHandle, value: u64) {
         self.register_current_thread();
         self.observe_counter(desc, value, CounterUpdate::Add);
     }
 
-    fn gauge_set(&self, desc: &'static CounterDesc, _context: &Context, value: u64) {
+    fn gauge_set(&self, desc: &'static CounterDesc, _context: ContextHandle, value: u64) {
         self.register_current_thread();
         self.observe_counter(desc, value, CounterUpdate::Set);
     }
 
-    fn histogram_record(&self, desc: &'static CounterDesc, _context: &Context, value: u64) {
+    fn histogram_record(&self, desc: &'static CounterDesc, _context: ContextHandle, value: u64) {
         // Tracy has no histogram primitive; plot each sample so the distribution
         // is at least visible as a time series.
         self.register_current_thread();
         self.observe_counter(desc, value, CounterUpdate::Set);
     }
 
-    fn scope_begin(&self, desc: &'static ScopeDesc, context: &Context, args: &Args) -> ScopeToken {
+    fn scope_begin(
+        &self,
+        desc: &'static ScopeDesc,
+        context: ContextHandle,
+        args: &Args,
+    ) -> ScopeToken {
         self.register_current_thread();
         self.begin_scope(desc, context, args)
     }
@@ -322,7 +364,7 @@ impl Backend for TracyBackend {
         &self,
         desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
-        context: &Context,
+        context: ContextHandle,
         size: u64,
     ) {
         self.register_current_thread();
@@ -333,7 +375,7 @@ impl Backend for TracyBackend {
         &self,
         desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
-        context: &Context,
+        context: ContextHandle,
         size: u64,
     ) {
         self.register_current_thread();
@@ -344,22 +386,22 @@ impl Backend for TracyBackend {
         &self,
         desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
-        context: &Context,
+        context: ContextHandle,
     ) {
         self.register_current_thread();
         self.emit_resource_message("drop", desc, resource_id, context, None);
     }
 
-    fn frame_marker(&self, kind: MarkerKind, phase: MarkerPhase, _context: &Context) {
+    fn frame_marker(&self, kind: MarkerKind, phase: MarkerPhase, _context: ContextHandle) {
         self.register_current_thread();
         self.handle_marker(kind, phase);
     }
 
     // Flows are ignored: Tracy has no native causal-link primitive.
 
-    fn message(&self, desc: &'static EventDesc, context: &Context, text: &str, args: &Args) {
+    fn message(&self, desc: &'static EventDesc, context: ContextHandle, text: &str, args: &Args) {
         self.register_current_thread();
-        let message = message_text(desc, context, text, args);
+        let message = message_text(desc, &self.context_text(context), text, args);
         self.client.message(&message, self.callstack_depth);
     }
 }
@@ -390,7 +432,7 @@ fn resource_message(
     verb: &str,
     desc: &'static ResourceKindDesc,
     resource_id: ResourceId,
-    context: &Context,
+    context: &str,
     size: Option<u64>,
 ) -> String {
     let mut message = String::new();
@@ -403,17 +445,15 @@ fn resource_message(
     if let Some(size) = size {
         let _ = write!(message, " size={size}");
     }
-    let context = context_text(context);
     if !context.is_empty() {
         let _ = write!(message, " [{context}]");
     }
     message
 }
 
-fn message_text(desc: &'static EventDesc, context: &Context, text: &str, args: &Args) -> String {
+fn message_text(desc: &'static EventDesc, context_text: &str, text: &str, args: &Args) -> String {
     let mut message = String::new();
     let _ = write!(message, "{}: {text}", desc.name());
-    let context_text = context_text(context);
     if !context_text.is_empty() {
         let _ = write!(message, " [{context_text}]");
     }
@@ -484,8 +524,8 @@ mod tests {
         OPEN_SPANS, TracyBackend, context_text, message_text, plot_configuration, resource_message,
     };
     use footfall_core::{
-        Args, Backend, Context, CounterDesc, EventDesc, LabelKey, ResourceId, ResourceKindDesc,
-        ScopeDesc, Unit,
+        Args, Backend, Context, ContextHandle, CounterDesc, EventDesc, LabelKey, ResourceId,
+        ResourceKindDesc, ScopeDesc, Unit,
     };
 
     static FRAME: LabelKey = LabelKey::new("frame");
@@ -501,7 +541,7 @@ mod tests {
     #[test]
     fn scope_begun_before_a_move_ends_after_it() {
         let backend = TracyBackend::new();
-        let token = backend.scope_begin(&RECORD, &Context::root(), &Args::none());
+        let token = backend.scope_begin(&RECORD, ContextHandle::ROOT, &Args::none());
         assert_eq!(OPEN_SPANS.with(|spans| spans.borrow().len()), 1);
 
         let moved = Box::new(backend);
@@ -510,6 +550,22 @@ mod tests {
             OPEN_SPANS.with(|spans| spans.borrow().len()),
             0,
             "the span opened before the move should close after it"
+        );
+    }
+
+    #[test]
+    fn registered_contexts_render_until_released() {
+        let backend = TracyBackend::new();
+        let handle = ContextHandle::new(41);
+        backend.context_registered(handle, &Context::root().with(&FRAME, 7_u32));
+        assert_eq!(backend.context_text(handle), "frame=7");
+        assert_eq!(backend.context_text(ContextHandle::ROOT), "");
+
+        backend.context_released(handle);
+        assert_eq!(
+            backend.context_text(handle),
+            "",
+            "released handles render as root"
         );
     }
 
@@ -537,7 +593,13 @@ mod tests {
     #[test]
     fn resource_messages_include_context_and_size() {
         let context = Context::root().with(&CACHE, "glyph_atlas");
-        let message = resource_message("create", &ATLAS, ResourceId::new(9), &context, Some(4096));
+        let message = resource_message(
+            "create",
+            &ATLAS,
+            ResourceId::new(9),
+            &context_text(&context),
+            Some(4096),
+        );
         assert!(message.contains("resource create atlas#9"));
         assert!(message.contains("size=4096"));
         assert!(message.contains("cache=glyph_atlas"));
@@ -547,7 +609,7 @@ mod tests {
     fn messages_include_context_and_args() {
         let context = Context::root().with(&FRAME, 7_u32);
         let args = Args::none().with("bytes", 4096_u32).with("level", "info");
-        let message = message_text(&APP_LOG, &context, "uploaded atlas", &args);
+        let message = message_text(&APP_LOG, &context_text(&context), "uploaded atlas", &args);
 
         assert!(message.contains("app_log: uploaded atlas"));
         assert!(message.contains("frame=7"));

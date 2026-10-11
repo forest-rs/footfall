@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use footfall::{
-    Context, CounterDesc, EventDesc, FlowId, LabelKey, ResourceId, ResourceKindDesc, ScopeDesc,
-    counter_add, flow_begin, flow_end, flow_step, frame_begin, frame_end, histogram_record,
-    message_with, pass_begin, pass_end, resource_create, resource_drop, resource_update, scope,
-    scope_with,
+    Context, CounterDesc, EventDesc, FlowId, LabelKey, RegisteredContext, ResourceId,
+    ResourceKindDesc, ScopeDesc, counter_add, flow_begin, flow_end, flow_step, frame_begin,
+    frame_end, histogram_record, message_with, pass_begin, pass_end, resource_create,
+    resource_drop, resource_update, scope, scope_with,
 };
 use footfall_memory::{CacheMetrics, CacheStats, ScratchMetrics, TrackedScratchVec};
 use footfall_runtime::{Runtime, Snapshot};
@@ -65,14 +65,25 @@ impl DemoCapture {
     }
 
     fn capture_frame_with_tracing(&self, frame: u32) -> Snapshot {
-        let frame_context = Context::root()
+        // Register this frame's contexts; they are released when this
+        // function returns, after the drain below has resolved them.
+        let frame_labels = Context::root()
             .with(&FRAME, frame)
             .with(&TRANSACTION, 1_u32 + frame / 8);
-        let record_context = frame_context
+        let record_labels = frame_labels
             .with(&PASS, 1_u32)
             .with(&NODE, 77_u32 + (frame % 5));
-        let cache_context = frame_context.with(&PASS, 1_u32).with(&CACHE, "glyph_atlas");
-        let atlas_context = cache_context.with(&RESOURCE, ATLAS_ID);
+        let cache_labels = frame_labels.with(&PASS, 1_u32).with(&CACHE, "glyph_atlas");
+        let frame_registration = RegisteredContext::new(&frame_labels);
+        let record_registration = RegisteredContext::new(&record_labels);
+        let cache_registration = RegisteredContext::new(&cache_labels);
+        let atlas_registration = RegisteredContext::new(&cache_labels.with(&RESOURCE, ATLAS_ID));
+        let invalidate_registration =
+            RegisteredContext::new(&frame_labels.with(&REASON, "layout_invalidation"));
+        let frame_context = frame_registration.handle();
+        let record_context = record_registration.handle();
+        let cache_context = cache_registration.handle();
+        let atlas_context = atlas_registration.handle();
 
         let scratch_metrics = ScratchMetrics {
             current_bytes: &SCRATCH_CURRENT,
@@ -86,14 +97,11 @@ impl DemoCapture {
             eviction_count: &CACHE_EVICTIONS,
         };
 
-        frame_begin(&frame_context);
-        pass_begin(&record_context);
-        flow_begin(
-            INVALIDATION_FLOW,
-            &frame_context.with(&REASON, "layout_invalidation"),
-        );
+        frame_begin(frame_context);
+        pass_begin(record_context);
+        flow_begin(INVALIDATION_FLOW, invalidate_registration.handle());
         {
-            let _frame_scope = scope(&RECORD_FRAME, &frame_context);
+            let _frame_scope = scope(&RECORD_FRAME, frame_context);
             let tracing_frame = tracing::info_span!(
                 "session_frame",
                 frame = u64::from(frame),
@@ -105,7 +113,7 @@ impl DemoCapture {
                 let scratch_items = 16_u32 + (frame % 20);
                 let _tessellate_scope = scope_with(
                     &TESSELLATE_NODE,
-                    &record_context,
+                    record_context,
                     &footfall::args!("scratch_items" => scratch_items),
                 );
                 let tracing_tessellate =
@@ -117,13 +125,13 @@ impl DemoCapture {
                 for index in 0..scratch_items {
                     scratch.push(index);
                 }
-                counter_add(&DRAW_OPS, &record_context, u64::from(scratch_items));
+                counter_add(&DRAW_OPS, record_context, u64::from(scratch_items));
                 for sample in tessellate_samples(frame) {
-                    histogram_record(&TESSELLATE_MICROS, &record_context, sample);
+                    histogram_record(&TESSELLATE_MICROS, record_context, sample);
                 }
                 message_with(
                     &APP_LOG,
-                    &record_context,
+                    record_context,
                     "tessellation finished",
                     &footfall::args!("items" => scratch_items, "level" => "info"),
                 );
@@ -132,7 +140,7 @@ impl DemoCapture {
                     bytes = u64::from(scratch_items) * 4,
                     "scratch populated"
                 );
-                flow_step(INVALIDATION_FLOW, &record_context);
+                flow_step(INVALIDATION_FLOW, record_context);
             }
 
             let mut cache = CacheStats::new(cache_metrics, cache_context);
@@ -148,25 +156,25 @@ impl DemoCapture {
                 cache.observe_resident_bytes(resident_bytes);
             }
 
-            resource_create(&ATLAS, ATLAS_ID, &atlas_context, resident_bytes);
+            resource_create(&ATLAS, ATLAS_ID, atlas_context, resident_bytes);
             {
-                let _upload_scope = scope(&UPLOAD_ATLAS, &atlas_context);
+                let _upload_scope = scope(&UPLOAD_ATLAS, atlas_context);
                 let upload_bytes = 1_024_u64 * u64::from(1 + (frame % 4));
-                counter_add(&UPLOAD_BYTES, &atlas_context, upload_bytes);
+                counter_add(&UPLOAD_BYTES, atlas_context, upload_bytes);
                 resource_update(
                     &ATLAS,
                     ATLAS_ID,
-                    &atlas_context,
+                    atlas_context,
                     resident_bytes + upload_bytes,
                 );
                 tracing::info!(upload_bytes, "atlas uploaded");
-                flow_step(INVALIDATION_FLOW, &atlas_context);
+                flow_step(INVALIDATION_FLOW, atlas_context);
             }
-            resource_drop(&ATLAS, ATLAS_ID, &atlas_context);
-            flow_end(INVALIDATION_FLOW, &atlas_context);
+            resource_drop(&ATLAS, ATLAS_ID, atlas_context);
+            flow_end(INVALIDATION_FLOW, atlas_context);
         }
-        pass_end(&record_context);
-        frame_end(&frame_context);
+        pass_end(record_context);
+        frame_end(frame_context);
 
         self.runtime.drain_snapshot()
     }

@@ -24,14 +24,15 @@ For the current happy path, use:
 
 1. Define static descriptors close to the subsystem being instrumented.
 2. Install one `footfall_runtime::Runtime` once at process startup.
-3. Emit observations from hot code using explicit `Context` values.
+3. Register a `Context` once per semantic owner and emit with its handle.
 4. Keep transport and UI concerns out of the hot path.
 
 Example shape:
 
 ```rust
 use footfall::{
-    CounterDesc, InstrumentationLevel, LabelKey, ScopeDesc, counter_add, scope,
+    CounterDesc, InstrumentationLevel, LabelKey, LazyContext, RegisteredContext, ScopeDesc,
+    counter_add, scope,
 };
 use footfall_runtime::Runtime;
 
@@ -39,8 +40,11 @@ static RECORD_SCOPE: ScopeDesc = footfall::scope_desc!("record_frame");
 static DRAW_OPS: CounterDesc = footfall::counter_desc!(count, "draw_ops");
 
 // Footfall ships no label vocabulary; declare the keys your app attributes by.
-static FRAME: LabelKey = LabelKey::new("frame");
+static SUBSYSTEM: LabelKey = LabelKey::new("subsystem");
 static PASS: LabelKey = LabelKey::new("pass");
+
+// A context for the whole subsystem, registered on first use after install.
+static RENDERER: LazyContext = LazyContext::new(|| footfall::context!(SUBSYSTEM = "renderer"));
 
 fn install_footfall() -> &'static Runtime {
     Runtime::named_with_level("my_app", 512, 4096, InstrumentationLevel::Scoped)
@@ -48,10 +52,23 @@ fn install_footfall() -> &'static Runtime {
         .expect("runtime should install once")
 }
 
-fn record_frame(frame: u32) {
-    let context = footfall::context!(FRAME = frame, PASS = 1_u32);
-    let _scope = scope(&RECORD_SCOPE, &context);
-    counter_add(&DRAW_OPS, &context, 42);
+/// One semantic owner: the opaque pass, with its context registered once.
+struct OpaquePass {
+    context: RegisteredContext,
+}
+
+impl OpaquePass {
+    fn new() -> Self {
+        Self {
+            context: RegisteredContext::new(&footfall::context!(PASS = "opaque")),
+        }
+    }
+
+    fn record(&self) {
+        let _scope = scope(&RECORD_SCOPE, self.context.handle());
+        counter_add(&DRAW_OPS, self.context.handle(), 42);
+        counter_add(&DRAW_OPS, RENDERER.handle(), 42);
+    }
 }
 ```
 
@@ -67,9 +84,18 @@ library should prefix its keys with its own name.
 
 The architectural rule is simple:
 
-- pass `Context` explicitly
-- extend it where ownership changes
+- build a `Context` where an owner is created, extending its parent's labels
+- register it once and pass the `ContextHandle` explicitly; never register on
+  every emission
+- release it when the owner goes away, usually by dropping a
+  `RegisteredContext`
+- register after installing the runtime, or use `LazyContext` for contexts in
+  `static` items; a backend never learns about contexts registered before it
+  was installed, and attributes their observations to the root context
 - keep values compact and aggregatable
+
+Equal contexts registered separately get distinct handles and are not merged,
+so share the handle rather than re-registering the same labels.
 
 Good labels:
 

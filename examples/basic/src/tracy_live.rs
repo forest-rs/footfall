@@ -4,9 +4,9 @@
 //! Live Tracy example for Footfall.
 
 use footfall::{
-    Context, CounterDesc, LabelKey, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc,
-    ScopeDesc, SourceLocation, counter_add, frame_marker, resource_create, resource_drop,
-    resource_update, scope_begin, scope_end,
+    Context, CounterDesc, LabelKey, MarkerKind, MarkerPhase, RegisteredContext, ResourceId,
+    ResourceKindDesc, ScopeDesc, SourceLocation, counter_add, frame_marker, resource_create,
+    resource_drop, resource_update, scope_begin, scope_end,
 };
 use footfall_fanout::Fanout;
 use footfall_memory::{CacheMetrics, CacheStats, ScratchMetrics, TrackedScratchVec};
@@ -24,15 +24,15 @@ static CACHE: LabelKey = LabelKey::new("cache");
 
 static RECORD_FRAME: ScopeDesc = ScopeDesc::with_location(
     "record_frame",
-    SourceLocation::new("tracy_live::run_frame", file!(), 95),
+    SourceLocation::new("tracy_live::run_frame", file!(), 119),
 );
 static TESSELLATE_NODE: ScopeDesc = ScopeDesc::with_location(
     "tessellate_node",
-    SourceLocation::new("tracy_live::run_frame", file!(), 96),
+    SourceLocation::new("tracy_live::run_frame", file!(), 120),
 );
 static UPLOAD_ATLAS: ScopeDesc = ScopeDesc::with_location(
     "upload_atlas",
-    SourceLocation::new("tracy_live::run_frame", file!(), 121),
+    SourceLocation::new("tracy_live::run_frame", file!(), 145),
 );
 
 static DRAW_OPS: CounterDesc = CounterDesc::count("draw_ops");
@@ -77,15 +77,14 @@ fn main() {
         run_frame(frame, scratch_metrics, cache_metrics);
     }
 
-    resource_drop(
-        &ATLAS,
-        ATLAS_ID,
+    let final_atlas = RegisteredContext::new(
         &Context::root()
             .with(&FRAME, FRAME_COUNT)
             .with(&PASS, 1_u32)
             .with(&CACHE, "glyph_atlas")
             .with(&RESOURCE, ATLAS_ID),
     );
+    resource_drop(&ATLAS, ATLAS_ID, final_atlas.handle());
 
     let snapshot = runtime.drain_snapshot();
     let mut consumer = SummaryConsumer::default();
@@ -98,26 +97,34 @@ fn main() {
 }
 
 fn run_frame(frame: u32, scratch_metrics: ScratchMetrics, cache_metrics: CacheMetrics) {
-    let frame_context = Context::root()
+    let frame_labels = Context::root()
         .with(&FRAME, frame)
         .with(&TRANSACTION, frame / 30);
-    let record_context = frame_context
-        .with(&PASS, 1_u32)
-        .with(&NODE, 42_u32 + (frame % 6));
-    let cache_context = frame_context.with(&PASS, 1_u32).with(&CACHE, "glyph_atlas");
-    let atlas_context = cache_context.with(&RESOURCE, ATLAS_ID);
+    let cache_labels = frame_labels.with(&PASS, 1_u32).with(&CACHE, "glyph_atlas");
+    let frame_registration = RegisteredContext::new(&frame_labels);
+    let record_registration = RegisteredContext::new(
+        &frame_labels
+            .with(&PASS, 1_u32)
+            .with(&NODE, 42_u32 + (frame % 6)),
+    );
+    let cache_registration = RegisteredContext::new(&cache_labels);
+    let atlas_registration = RegisteredContext::new(&cache_labels.with(&RESOURCE, ATLAS_ID));
+    let frame_context = frame_registration.handle();
+    let record_context = record_registration.handle();
+    let cache_context = cache_registration.handle();
+    let atlas_context = atlas_registration.handle();
 
-    frame_marker(MarkerKind::Frame, MarkerPhase::Begin, &frame_context);
+    frame_marker(MarkerKind::Frame, MarkerPhase::Begin, frame_context);
 
-    let frame_scope = scope_begin(&RECORD_FRAME, &frame_context);
-    let tessellate_scope = scope_begin(&TESSELLATE_NODE, &record_context);
+    let frame_scope = scope_begin(&RECORD_FRAME, frame_context);
+    let tessellate_scope = scope_begin(&TESSELLATE_NODE, record_context);
     let mut scratch = TrackedScratchVec::<u32>::new(scratch_metrics, record_context);
     let scratch_items = 12_u32 + (frame % 36);
     scratch.reserve(scratch_items as usize);
     for index in 0..scratch_items {
         scratch.push(index);
     }
-    counter_add(&DRAW_OPS, &record_context, u64::from(scratch_items));
+    counter_add(&DRAW_OPS, record_context, u64::from(scratch_items));
     sleep(Duration::from_millis(u64::from(2 + (frame % 3))));
     scope_end(tessellate_scope);
 
@@ -126,7 +133,7 @@ fn run_frame(frame: u32, scratch_metrics: ScratchMetrics, cache_metrics: CacheMe
     if frame == 0 {
         cache.record_miss();
         cache.observe_resident_bytes(resident_bytes);
-        resource_create(&ATLAS, ATLAS_ID, &atlas_context, resident_bytes);
+        resource_create(&ATLAS, ATLAS_ID, atlas_context, resident_bytes);
     } else if frame.is_multiple_of(11) {
         cache.record_miss();
         cache.record_eviction(resident_bytes.saturating_sub(2_048));
@@ -135,20 +142,20 @@ fn run_frame(frame: u32, scratch_metrics: ScratchMetrics, cache_metrics: CacheMe
         cache.observe_resident_bytes(resident_bytes);
     }
 
-    let upload_scope = scope_begin(&UPLOAD_ATLAS, &atlas_context);
+    let upload_scope = scope_begin(&UPLOAD_ATLAS, atlas_context);
     let upload_bytes = 1_024_u64 * u64::from(1 + (frame % 6));
-    counter_add(&UPLOAD_BYTES, &atlas_context, upload_bytes);
+    counter_add(&UPLOAD_BYTES, atlas_context, upload_bytes);
     resource_update(
         &ATLAS,
         ATLAS_ID,
-        &atlas_context,
+        atlas_context,
         resident_bytes + upload_bytes,
     );
     sleep(Duration::from_millis(u64::from(3 + (frame % 5))));
     scope_end(upload_scope);
 
     scope_end(frame_scope);
-    frame_marker(MarkerKind::Frame, MarkerPhase::End, &frame_context);
+    frame_marker(MarkerKind::Frame, MarkerPhase::End, frame_context);
     sleep(Duration::from_millis(8));
 }
 

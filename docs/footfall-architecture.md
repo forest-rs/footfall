@@ -24,8 +24,8 @@ Footfall explicitly does not own OS-wide tracing, full heap profiling on day 1, 
 
 `footfall` owns the recommended user-facing surface and re-exports; it explicitly does not add a second architecture beside the core.
 
-`footfall_runtime` owns bounded in-process collection, timestamping, context
-interning, and snapshot extraction; it explicitly does not own descriptor
+`footfall_runtime` owns bounded in-process collection, timestamping, the
+registered-context table, and snapshot extraction; it explicitly does not own descriptor
 semantics, transport protocols, exporters, allocator interception, or UI policy.
 
 Downstream crates own memory helpers, export, live backends, and transport as
@@ -256,6 +256,7 @@ Owns:
 
 Start with a deliberately small vocabulary:
 
+- context handles: `ContextHandle`, emitted with every observation
 - ids: `ContextId`, `ScopeDescId`, `CounterDescId`, `ResourceId`, `ResourceKindId`, `EventDescId`
 - descriptors: `ScopeDesc`, `CounterDesc`, `ResourceKindDesc`, `EventDesc`
 
@@ -287,20 +288,32 @@ names or typed values first, not as a rapidly growing set of keys.
 
 ### Context Model
 
-Callers should work with an explicit `Context` value, not hidden thread-local state.
+Attribution is explicit, not hidden thread-local state, and it is registered
+once rather than paid for on every emission.
 
-- `Context` is a small owned caller-facing semantic token that is copied and passed explicitly
-- `ContextId` is the canonical integer handle used inside runtime storage, snapshots, and exports
-- a context is formed by extending a parent context with one typed label
-- labels are key/value pairs where keys are static `LabelKey` items declared by the instrumented code and values are compact typed ids or integers
+- `Context` is a small, copyable builder: a set of labels, formed by extending
+  a parent context with typed labels
+- labels are key/value pairs where keys are static `LabelKey` items declared by
+  the instrumented code and values are compact typed ids or integers
+- a context is registered once per semantic owner (a pass, a layer, a cache),
+  which returns a `ContextHandle`
+- every emission carries the handle, a `u64`, never the labels
+- `ContextId` is the same value as it appears in snapshots and exports; `0` is
+  the empty root context
 
-This implies a logical shape like:
+Handle values come from one process-wide counter in `footfall_core`, so every
+backend, including each child of a fan-out, sees the same handle for the same
+context. `register_context` tells the installed backend about the labels once,
+through `Backend::context_registered`; `release_context` tells it the owner is
+gone. `RegisteredContext` pairs the two with a value's lifetime, and
+`LazyContext` holds a context in a `static` item and registers it on first use
+after a backend is installed.
 
-- parent context
-- label key
-- label value
-
-The runtime may canonicalize a `Context` into a `ContextId` through interning, indexing, or another bounded mechanism. The important boundary is that callers do not pay for heap allocation or string assembly when constructing semantic context in hot code.
+The design keeps the hot path flat: attribution costs one integer whatever the
+context holds, and the runtime never hashes or looks up a context while
+recording. Registration is the slow path and may lock. Equal contexts
+registered separately get distinct handles; registering once per owner and
+reusing the handle is the intended discipline.
 
 Scoped helpers are still useful, but they are secondary:
 
@@ -361,13 +374,15 @@ The runtime cut stays modest:
 - frame or transaction flush boundaries
 - snapshot extraction for export
 
-The current threading model is "shared context interning, sharded writes, merge
+The current threading model is "registered contexts, per-thread writes, merge
 on snapshot":
 
-- contexts are canonicalized through one small interner
-- counters and events are written into independent shards
-- snapshots merge shards at a safe boundary
-- future work can replace shards with per-thread buffers if benchmarks show it
+- contexts live in a handle-keyed table touched only by registration,
+  release, and snapshots
+- each recording thread writes counters and events into its own shard
+- snapshots merge shards and resolve handles at a safe boundary
+- released contexts stay resolvable until their session ends; live ones
+  survive session resets
 
 ### Memory Model
 
@@ -425,14 +440,17 @@ static FRAME: LabelKey = LabelKey::new("frame");
 static PASS: LabelKey = LabelKey::new("pass");
 static NODE: LabelKey = LabelKey::new("node");
 
-let ctx = Context::root()
-    .with(&FRAME, frame_id)
-    .with(&PASS, pass_id)
-    .with(&NODE, node_id);
+// Once per owner, outside the hot loop.
+let node = RegisteredContext::new(
+    &Context::root()
+        .with(&PASS, pass_id)
+        .with(&NODE, node_id),
+);
+let ctx = node.handle();
 
-let scope = footfall::scope_begin(&RECORD_PASS, &ctx);
-footfall::counter_add(&UPLOAD_BYTES, &ctx, upload_len as u64);
-footfall::resource_update(&ATLAS, atlas_id, &ctx, atlas_bytes as u64);
+let scope = footfall::scope_begin(&RECORD_PASS, ctx);
+footfall::counter_add(&UPLOAD_BYTES, ctx, upload_len as u64);
+footfall::resource_update(&ATLAS, atlas_id, ctx, atlas_bytes as u64);
 footfall::scope_end(scope);
 ```
 
@@ -442,7 +460,8 @@ Macros can later compress that to a nicer surface, but this should remain close 
 
 - Descriptor: Static metadata that defines the meaning of a scope, counter, or resource kind.
 - Context: A compact caller-facing semantic attribution value built from parent plus typed label.
-- ContextId: A canonical runtime handle for a context used in storage, snapshots, and export.
+- ContextHandle: The integer a registered context is emitted with.
+- ContextId: The same integer as it appears in snapshots and exports.
 - Observation: A recorded counter change, scope boundary, resource lifecycle step, or frame marker.
 - Sink: The runtime destination for emitted observations, such as a no-op sink, counter bank, or event buffer.
 - Projection: Lowering captured Footfall data into an external trace or timeline model.
@@ -563,15 +582,19 @@ phase list below records what is done and what remains prototype-grade.
 - Started: `footfall_benchmarks` measures disabled calls, counter updates, scope
   pairs, context construction, trace append, snapshots, and export.
 - Started: measurements now include a parallel counter write case.
-- Still needed: use results to refine context interning and snapshot merge costs.
+- Done: context handles replaced per-call interning, and per-thread shards
+  removed contention between threads recording counters.
+- Still needed: use results to refine snapshot merge and export costs.
 
 ## Prototype Boundaries
 
 The crate family is usable for experiments and early external integration, but
 these areas are still prototype-grade:
 
-- Runtime write costs: counter and event writes are sharded, but context
-  interning and snapshot merge/export remain the measured hotspots.
+- Runtime write costs: counter and event writes go to per-thread shards with no
+  context lookup, but the event path still shares one capacity counter and one
+  sequence counter across threads, and snapshot merge/export remain the
+  measured hotspots.
 - Protocol surface: the WebTransport wire format is bounded and documented, but
   external-consumer compatibility fixtures and discovery policy still need work.
 - Measurement: the benchmark crate exists, but results still need to drive the
@@ -581,7 +604,7 @@ these areas are still prototype-grade:
 
 ## Next Steps Checklist
 
-- Use benchmark results to reduce context interning and snapshot merge/export
-  costs.
+- Use benchmark results to reduce snapshot merge/export costs and the shared
+  counters left on the event path.
 - Add external-consumer compatibility fixtures for the session wire format.
 - Instrument one real Forest subsystem before broadening the crate family again.
