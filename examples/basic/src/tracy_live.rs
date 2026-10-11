@@ -52,7 +52,12 @@ const FRAME_COUNT: u32 = 300;
 
 fn main() {
     let runtime = Box::leak(Box::new(
-        Runtime::named("tracy_live", 512, 2048).with_session_name("tracy_live"),
+        Runtime::builder()
+            .process_name("tracy_live")
+            .session_name("tracy_live")
+            .counter_capacity(512)
+            .event_capacity(2048)
+            .build(),
     ));
     let tracy: &'static TracyBackend = Box::leak(Box::new(TracyBackend::new()));
     Fanout::new(runtime, tracy)

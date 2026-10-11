@@ -1001,9 +1001,12 @@ pub fn publish_snapshot<C: Consumer>(
     consumer.consume(Envelope {
         header: envelope_header(snapshot, chunk_index),
         payload: Payload::SnapshotEnd(DroppedSummary {
-            contexts: snapshot.dropped_contexts(),
-            counters: snapshot.dropped_counters(),
-            events: snapshot.dropped_events(),
+            contexts: snapshot
+                .drops()
+                .refused_contexts()
+                .saturating_add(snapshot.drops().unattributed()),
+            counters: snapshot.drops().counter_updates(),
+            events: snapshot.drops().events(),
         }),
     })
 }
@@ -1318,7 +1321,12 @@ mod tests {
                     token: footfall_core::ScopeToken::new(2),
                 },
             ))
-            .dropped(1, 2, 3)
+            .drops(
+                footfall_runtime::Drops::new()
+                    .with_refused_contexts(1)
+                    .with_counter_updates(2)
+                    .with_events(3),
+            )
             .build();
 
         let mut consumer = RecordingConsumer::default();

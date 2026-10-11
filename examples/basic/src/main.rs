@@ -42,8 +42,11 @@ static ATLAS_ID: ResourceId = ResourceId::new(9);
 static INVALIDATION_FLOW: FlowId = FlowId::new(1);
 
 fn main() {
-    let runtime = Runtime::named("basic", 128, 256)
-        .with_session_name("recording_demo")
+    let runtime = Runtime::builder()
+        .process_name("basic")
+        .session_name("recording_demo")
+        .counter_capacity(128)
+        .event_capacity(256)
         .install_global()
         .expect("global runtime should install once");
 

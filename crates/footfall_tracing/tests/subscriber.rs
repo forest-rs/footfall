@@ -13,7 +13,10 @@ static APP_SCOPE: ScopeDesc = ScopeDesc::new("record_pass");
 
 #[test]
 fn spans_and_events_reach_the_runtime() {
-    let runtime = Runtime::named("footfall_tracing_test", 64, 64)
+    let runtime = Runtime::builder()
+        .process_name("footfall_tracing_test")
+        .counter_capacity(64)
+        .event_capacity(64)
         .install_global()
         .expect("runtime should install once for this test binary");
 
@@ -53,7 +56,7 @@ fn spans_and_events_reach_the_runtime() {
         .context();
     assert_eq!(labels.len(), 1);
     assert_eq!(labels.as_slice()[0].key().name(), "items");
-    assert_eq!(snapshot.dropped_contexts(), 0);
+    assert!(snapshot.drops().is_empty(), "{:?}", snapshot.drops());
     assert!(
         snapshot
             .events()

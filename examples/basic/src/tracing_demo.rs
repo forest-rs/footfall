@@ -11,8 +11,11 @@ use footfall_tracing::FootfallLayer;
 use tracing_subscriber::layer::SubscriberExt as _;
 
 fn main() {
-    let runtime = Runtime::named("tracing_demo", 128, 256)
-        .with_session_name("tracing_demo")
+    let runtime = Runtime::builder()
+        .process_name("tracing_demo")
+        .session_name("tracing_demo")
+        .counter_capacity(128)
+        .event_capacity(256)
         .install_global()
         .expect("global runtime should install once");
 

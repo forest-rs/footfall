@@ -23,7 +23,9 @@ fn contexts_register_through_the_installed_backend() {
         "a lazy context touched before installation stays unregistered"
     );
 
-    let runtime = Runtime::new(16, 16)
+    let runtime = Runtime::builder()
+        .counter_capacity(16)
+        .event_capacity(16)
         .install_global()
         .expect("runtime should install once");
 
@@ -39,7 +41,7 @@ fn contexts_register_through_the_installed_backend() {
     counter_add(&OPS, transparent.handle(), 2);
 
     let snapshot = runtime.snapshot();
-    assert_eq!(snapshot.dropped_contexts(), 0);
+    assert!(snapshot.drops().is_empty(), "{:?}", snapshot.drops());
     for counter in snapshot.counters() {
         let context = snapshot
             .context(counter.context_id())

@@ -23,12 +23,14 @@ use std::{hint::black_box, sync::OnceLock};
 fn runtime() -> &'static Runtime {
     static RUNTIME: OnceLock<&'static Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
-        let runtime: &'static Runtime = Box::leak(Box::new(Runtime::named_with_level(
-            "footfall_benchmarks",
-            COUNTER_CAPACITY,
-            EVENT_CAPACITY,
-            InstrumentationLevel::Off,
-        )));
+        let runtime: &'static Runtime = Box::leak(Box::new(
+            Runtime::builder()
+                .process_name("footfall_benchmarks")
+                .level(InstrumentationLevel::Off)
+                .counter_capacity(COUNTER_CAPACITY)
+                .event_capacity(EVENT_CAPACITY)
+                .build(),
+        ));
         Fanout::new(runtime, &NoopBackend)
             .install_global()
             .expect("benchmark fanout should install once per process");

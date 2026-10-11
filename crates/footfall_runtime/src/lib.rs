@@ -11,7 +11,7 @@ use footfall_core::{
 };
 use std::{
     boxed::Box,
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     string::String,
     sync::{
         Mutex,
@@ -30,13 +30,37 @@ pub const MESSAGE_TEXT_MAX_BYTES: usize = 256;
 
 /// In-process bounded collector for counters and timestamped observation records.
 ///
+/// Build one with [`Runtime::builder`], which documents every setting and
+/// its default.
+///
+/// # Capacity
+///
+/// Every buffer has a fixed capacity, and nothing the runtime keeps grows
+/// past it. What does not fit is dropped and counted, and every snapshot
+/// reports the totals in [`Snapshot::drops`]:
+///
+/// - **Counter keys.** A key is one counter, gauge, or histogram descriptor
+///   under one context. Updates to a key admitted earlier always land; the
+///   first update to a new key once
+///   [`counter_capacity`](RuntimeBuilder::counter_capacity) keys exist is
+///   dropped, as is every later update to that key. Keys are admitted once
+///   for the whole runtime, whichever threads record them.
+/// - **Events.** Once [`event_capacity`](RuntimeBuilder::event_capacity)
+///   events are retained, new events are dropped. Scope ends and frame
+///   markers are dropped like any other event, so a capture cut off by
+///   capacity can contain scopes that begin but never end.
+/// - **Contexts.** Once
+///   [`context_capacity`](RuntimeBuilder::context_capacity) contexts are
+///   registered, further registrations are refused. Observations emitted
+///   with a refused handle, or with any handle the runtime does not know,
+///   are kept and attributed to the root context instead.
+///
 /// # Contexts
 ///
 /// The runtime keeps the contexts registered through
 /// [`footfall_core::register_context`] in a table keyed by handle. Emissions
 /// carry only the handle and never touch the table, so attribution adds no
 /// locking or hashing to the hot path; snapshots resolve handles to contexts.
-/// The table holds `counter_capacity + event_capacity + 1` contexts.
 /// Released contexts stay resolvable until the session ends and are purged
 /// when the next one starts; live contexts survive session resets.
 ///
@@ -44,8 +68,7 @@ pub const MESSAGE_TEXT_MAX_BYTES: usize = 256;
 ///
 /// Each recording thread writes its own shard of counters and events, so
 /// threads updating the same counter do not contend, and snapshots merge the
-/// shards. A counter key recorded from several threads takes one slot of
-/// `counter_capacity` per shard it lands in.
+/// shards.
 #[derive(Debug)]
 pub struct Runtime {
     created_at: Instant,
@@ -59,7 +82,11 @@ pub struct Runtime {
     event_capacity: usize,
     next_scope_token: AtomicU64,
     next_event_sequence: AtomicU64,
-    counter_count: AtomicUsize,
+    /// Counter and histogram keys admitted against `counter_capacity`.
+    ///
+    /// Shards consult it only the first time they see a key, so steady-state
+    /// updates never touch it.
+    admitted_keys: Mutex<HashSet<AdmittedKey>>,
     event_count: AtomicUsize,
     dropped_counters: AtomicU64,
     dropped_events: AtomicU64,
@@ -69,46 +96,40 @@ pub struct Runtime {
     event_shards: Vec<Mutex<EventShard>>,
 }
 
+impl Default for Runtime {
+    /// Builds a runtime with every [`RuntimeBuilder`] default.
+    fn default() -> Self {
+        Self::builder().build()
+    }
+}
+
 impl Runtime {
-    /// Creates a runtime with explicit counter-key and event capacities.
-    #[must_use]
-    pub fn new(counter_capacity: usize, event_capacity: usize) -> Self {
-        Self::named("footfall", counter_capacity, event_capacity)
+    /// Starts configuring a runtime.
+    ///
+    /// ```
+    /// use footfall_core::InstrumentationLevel;
+    /// use footfall_runtime::Runtime;
+    ///
+    /// let runtime = Runtime::builder()
+    ///     .process_name("my_app")
+    ///     .level(InstrumentationLevel::Scoped)
+    ///     .event_capacity(16 * 1024)
+    ///     .build();
+    /// assert_eq!(runtime.level(), InstrumentationLevel::Scoped);
+    /// ```
+    pub fn builder() -> RuntimeBuilder {
+        RuntimeBuilder::default()
     }
 
-    /// Creates a runtime with explicit capacities and capture level.
-    #[must_use]
-    pub fn with_level(
-        counter_capacity: usize,
-        event_capacity: usize,
-        level: InstrumentationLevel,
-    ) -> Self {
-        Self::named_with_level("footfall", counter_capacity, event_capacity, level)
-    }
-
-    /// Creates a runtime with an explicit process name.
-    #[must_use]
-    pub fn named(
-        process_name: impl Into<String>,
-        counter_capacity: usize,
-        event_capacity: usize,
-    ) -> Self {
-        Self::named_with_level(
+    fn from_builder(builder: RuntimeBuilder) -> Self {
+        let RuntimeBuilder {
             process_name,
+            session_name,
+            level,
             counter_capacity,
             event_capacity,
-            InstrumentationLevel::Trace,
-        )
-    }
-
-    /// Creates a runtime with explicit process name, capacities, and capture level.
-    #[must_use]
-    pub fn named_with_level(
-        process_name: impl Into<String>,
-        counter_capacity: usize,
-        event_capacity: usize,
-        level: InstrumentationLevel,
-    ) -> Self {
+            context_capacity,
+        } = builder;
         Self {
             created_at: Instant::now(),
             wall_clock_anchor_micros: duration_to_micros(
@@ -116,32 +137,25 @@ impl Runtime {
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or(Duration::ZERO),
             ),
-            process_name: process_name.into(),
+            process_name: process_name.unwrap_or_else(default_process_name),
             level: AtomicU8::new(level_to_u8(level)),
             drives_max_level: AtomicBool::new(false),
             counter_capacity,
             event_capacity,
             next_scope_token: AtomicU64::new(1),
             next_event_sequence: AtomicU64::new(0),
-            counter_count: AtomicUsize::new(0),
+            admitted_keys: Mutex::new(HashSet::new()),
             event_count: AtomicUsize::new(0),
             dropped_counters: AtomicU64::new(0),
             dropped_events: AtomicU64::new(0),
-            session: Mutex::new(SessionState::default()),
-            contexts: Mutex::new(ContextTable::new(context_capacity(
-                counter_capacity,
-                event_capacity,
-            ))),
+            session: Mutex::new(SessionState {
+                session_name,
+                ..SessionState::default()
+            }),
+            contexts: Mutex::new(ContextTable::new(context_capacity)),
             counter_shards: build_counter_shards(DEFAULT_SHARD_COUNT),
             event_shards: build_event_shards(DEFAULT_SHARD_COUNT),
         }
-    }
-
-    /// Adds a capture-session label and returns the runtime.
-    #[must_use]
-    pub fn with_session_name(self, session_name: impl Into<String>) -> Self {
-        self.set_session_name(session_name);
-        self
     }
 
     /// Installs this runtime as the process-wide backend and keeps it alive for the process.
@@ -323,9 +337,12 @@ impl Runtime {
             counters,
             histograms,
             events,
-            dropped_contexts: contexts.refused.saturating_add(unresolved_contexts),
-            dropped_counters: self.dropped_counters.load(Ordering::Relaxed),
-            dropped_events: self.dropped_events.load(Ordering::Relaxed),
+            drops: Drops {
+                refused_contexts: contexts.refused,
+                unattributed: unresolved_contexts,
+                counter_updates: self.dropped_counters.load(Ordering::Relaxed),
+                events: self.dropped_events.load(Ordering::Relaxed),
+            },
         }
     }
 
@@ -340,7 +357,10 @@ impl Runtime {
 
         // Scope tokens stay monotonic across session resets so a scope that
         // straddles a drain cannot collide with tokens issued afterwards.
-        self.counter_count.store(0, Ordering::Relaxed);
+        self.admitted_keys
+            .lock()
+            .expect("runtime admitted-key mutex should not be poisoned")
+            .clear();
         self.event_count.store(0, Ordering::Relaxed);
         self.dropped_counters.store(0, Ordering::Relaxed);
         self.dropped_events.store(0, Ordering::Relaxed);
@@ -405,7 +425,7 @@ impl Runtime {
             return;
         }
 
-        if !self.reserve_counter_slot() {
+        if !self.admit_key(AdmittedKey::Histogram(key)) {
             self.dropped_counters.fetch_add(1, Ordering::Relaxed);
             return;
         }
@@ -437,7 +457,7 @@ impl Runtime {
             return;
         }
 
-        if !self.reserve_counter_slot() {
+        if !self.admit_key(AdmittedKey::Counter(key)) {
             self.dropped_counters.fetch_add(1, Ordering::Relaxed);
             return;
         }
@@ -483,8 +503,24 @@ impl Runtime {
             });
     }
 
-    fn reserve_counter_slot(&self) -> bool {
-        reserve_slot(&self.counter_count, self.counter_capacity)
+    /// Admits a key the calling thread's shard has not seen yet.
+    ///
+    /// A key another thread already admitted is admitted again for free, so
+    /// a key costs one slot of `counter_capacity` however many threads
+    /// record it.
+    fn admit_key(&self, key: AdmittedKey) -> bool {
+        let mut admitted = self
+            .admitted_keys
+            .lock()
+            .expect("runtime admitted-key mutex should not be poisoned");
+        if admitted.contains(&key) {
+            return true;
+        }
+        if admitted.len() >= self.counter_capacity {
+            return false;
+        }
+        admitted.insert(key);
+        true
     }
 
     fn reserve_event_slot(&self) -> bool {
@@ -502,6 +538,105 @@ impl Runtime {
             .min(self.event_shards.len())
             .max(1);
         usize::try_from(current_thread_id()).unwrap_or(0) % shards
+    }
+}
+
+/// Configures a [`Runtime`]; see [`Runtime::builder`].
+///
+/// Capacities bound memory: see [`Runtime`] for what happens when each one
+/// is reached.
+#[derive(Clone, Debug)]
+#[must_use = "a runtime builder does nothing until `build` is called"]
+pub struct RuntimeBuilder {
+    process_name: Option<String>,
+    session_name: Option<String>,
+    level: InstrumentationLevel,
+    counter_capacity: usize,
+    event_capacity: usize,
+    context_capacity: usize,
+}
+
+impl Default for RuntimeBuilder {
+    fn default() -> Self {
+        Self {
+            process_name: None,
+            session_name: None,
+            level: InstrumentationLevel::Trace,
+            counter_capacity: Self::DEFAULT_COUNTER_CAPACITY,
+            event_capacity: Self::DEFAULT_EVENT_CAPACITY,
+            context_capacity: Self::DEFAULT_CONTEXT_CAPACITY,
+        }
+    }
+}
+
+impl RuntimeBuilder {
+    /// Default number of counter, gauge, and histogram keys.
+    pub const DEFAULT_COUNTER_CAPACITY: usize = 1024;
+    /// Default number of retained events.
+    pub const DEFAULT_EVENT_CAPACITY: usize = 65_536;
+    /// Default number of registered contexts.
+    pub const DEFAULT_CONTEXT_CAPACITY: usize = 4096;
+
+    /// Sets the process name reported in snapshots and exports.
+    ///
+    /// Defaults to the file stem of the running executable.
+    pub fn process_name(mut self, process_name: impl Into<String>) -> Self {
+        self.process_name = Some(process_name.into());
+        self
+    }
+
+    /// Sets the capture-session label reported in snapshots; see
+    /// [`Runtime::set_session_name`]. Defaults to none.
+    pub fn session_name(mut self, session_name: impl Into<String>) -> Self {
+        self.session_name = Some(session_name.into());
+        self
+    }
+
+    /// Sets the capture level; see [`Runtime::set_level`]. Defaults to
+    /// [`InstrumentationLevel::Trace`], which captures everything.
+    pub const fn level(mut self, level: InstrumentationLevel) -> Self {
+        self.level = level;
+        self
+    }
+
+    /// Sets how many counter keys the runtime keeps, where a key is one
+    /// counter, gauge, or histogram descriptor under one context. Defaults to
+    /// [`DEFAULT_COUNTER_CAPACITY`](Self::DEFAULT_COUNTER_CAPACITY).
+    ///
+    /// Size it for descriptors times the contexts they are recorded under.
+    pub const fn counter_capacity(mut self, capacity: usize) -> Self {
+        self.counter_capacity = capacity;
+        self
+    }
+
+    /// Sets how many events the runtime retains. Defaults to
+    /// [`DEFAULT_EVENT_CAPACITY`](Self::DEFAULT_EVENT_CAPACITY).
+    ///
+    /// Each scope takes two events, a begin and an end, and each marker,
+    /// flow step, message, and resource change takes one.
+    pub const fn event_capacity(mut self, capacity: usize) -> Self {
+        self.event_capacity = capacity;
+        self
+    }
+
+    /// Sets how many registered contexts the runtime keeps, live and
+    /// released. Defaults to
+    /// [`DEFAULT_CONTEXT_CAPACITY`](Self::DEFAULT_CONTEXT_CAPACITY).
+    pub const fn context_capacity(mut self, capacity: usize) -> Self {
+        self.context_capacity = capacity;
+        self
+    }
+
+    /// Builds the runtime.
+    #[must_use]
+    pub fn build(self) -> Runtime {
+        Runtime::from_builder(self)
+    }
+
+    /// Builds the runtime and installs it as the process-wide backend; see
+    /// [`Runtime::install_global`].
+    pub fn install_global(self) -> Result<&'static Runtime, InstallBackendError> {
+        self.build().install_global()
     }
 }
 
@@ -536,15 +671,8 @@ pub struct Snapshot {
     /// Bounded sequence of timestamped observation records, ordered by
     /// timestamp and then by recording sequence.
     events: Vec<TimedObservation>,
-    /// Count of context failures in the session: registrations refused
-    /// because the context table was full, plus counter rows and events whose
-    /// context handle the runtime does not know. Those rows and events are
-    /// kept and attributed to the root context instead.
-    dropped_contexts: u64,
-    /// Count of counter updates dropped due to counter-key capacity pressure.
-    dropped_counters: u64,
-    /// Count of events dropped due to event-capacity pressure.
-    dropped_events: u64,
+    /// What the runtime could not keep or attribute during the session.
+    drops: Drops,
 }
 
 impl Snapshot {
@@ -608,28 +736,14 @@ impl Snapshot {
         &self.events
     }
 
-    /// Returns the count of context failures in the session.
+    /// Returns what the runtime could not keep or attribute during the
+    /// session.
     ///
-    /// This counts registrations refused because the context table was full,
-    /// plus counter rows and events whose context handle the runtime does not
-    /// know. Those rows and events are kept and attributed to the root
-    /// context instead.
+    /// Check it before trusting totals: a snapshot with drops is missing
+    /// data, and the kinds of drop say which capacity to raise.
     #[must_use]
-    pub const fn dropped_contexts(&self) -> u64 {
-        self.dropped_contexts
-    }
-
-    /// Returns the count of counter updates dropped due to counter-key
-    /// capacity pressure.
-    #[must_use]
-    pub const fn dropped_counters(&self) -> u64 {
-        self.dropped_counters
-    }
-
-    /// Returns the count of events dropped due to event-capacity pressure.
-    #[must_use]
-    pub const fn dropped_events(&self) -> u64 {
-        self.dropped_events
+    pub const fn drops(&self) -> Drops {
+        self.drops
     }
 
     /// Resolves one canonical context by id.
@@ -682,11 +796,9 @@ impl SnapshotBuilder {
         self
     }
 
-    /// Sets the drop counters reported by the snapshot.
-    pub const fn dropped(mut self, contexts: u64, counters: u64, events: u64) -> Self {
-        self.snapshot.dropped_contexts = contexts;
-        self.snapshot.dropped_counters = counters;
-        self.snapshot.dropped_events = events;
+    /// Sets the drop totals reported by the snapshot.
+    pub const fn drops(mut self, drops: Drops) -> Self {
+        self.snapshot.drops = drops;
         self
     }
 
@@ -696,6 +808,104 @@ impl SnapshotBuilder {
         self.snapshot.contexts.sort_by_key(|context| context.id);
         self.snapshot.events.sort_by_key(event_sort_key);
         self.snapshot
+    }
+}
+
+/// What a [`Runtime`] could not keep or attribute during a capture session.
+///
+/// Each count names the capacity to raise; see [`Runtime`] for the overflow
+/// rules.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Drops {
+    refused_contexts: u64,
+    unattributed: u64,
+    counter_updates: u64,
+    events: u64,
+}
+
+impl Drops {
+    /// Returns totals with nothing dropped.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            refused_contexts: 0,
+            unattributed: 0,
+            counter_updates: 0,
+            events: 0,
+        }
+    }
+
+    /// Sets the number of refused context registrations.
+    #[must_use]
+    pub const fn with_refused_contexts(mut self, count: u64) -> Self {
+        self.refused_contexts = count;
+        self
+    }
+
+    /// Sets the number of unattributed counter rows and events.
+    #[must_use]
+    pub const fn with_unattributed(mut self, count: u64) -> Self {
+        self.unattributed = count;
+        self
+    }
+
+    /// Sets the number of dropped counter, gauge, and histogram updates.
+    #[must_use]
+    pub const fn with_counter_updates(mut self, count: u64) -> Self {
+        self.counter_updates = count;
+        self
+    }
+
+    /// Sets the number of dropped events.
+    #[must_use]
+    pub const fn with_events(mut self, count: u64) -> Self {
+        self.events = count;
+        self
+    }
+
+    /// Returns the number of context registrations refused because the
+    /// context table was full. Raise
+    /// [`context_capacity`](RuntimeBuilder::context_capacity).
+    #[must_use]
+    pub const fn refused_contexts(&self) -> u64 {
+        self.refused_contexts
+    }
+
+    /// Returns the number of counter rows and events attributed to the root
+    /// context because the runtime did not know their context handle.
+    ///
+    /// The handle was refused (see
+    /// [`refused_contexts`](Self::refused_contexts)), released and purged by
+    /// a session reset, registered before this runtime was installed, or
+    /// never registered at all. The rows and events themselves are kept.
+    #[must_use]
+    pub const fn unattributed(&self) -> u64 {
+        self.unattributed
+    }
+
+    /// Returns the number of counter, gauge, and histogram updates dropped
+    /// because their key did not fit. Raise
+    /// [`counter_capacity`](RuntimeBuilder::counter_capacity).
+    #[must_use]
+    pub const fn counter_updates(&self) -> u64 {
+        self.counter_updates
+    }
+
+    /// Returns the number of events dropped because the event buffer was
+    /// full. Raise [`event_capacity`](RuntimeBuilder::event_capacity), or
+    /// lower the capture level.
+    #[must_use]
+    pub const fn events(&self) -> u64 {
+        self.events
+    }
+
+    /// Returns `true` when nothing was dropped or misattributed.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.refused_contexts == 0
+            && self.unattributed == 0
+            && self.counter_updates == 0
+            && self.events == 0
     }
 }
 
@@ -1430,6 +1640,13 @@ struct EventShard {
     events: VecDeque<TimedObservation>,
 }
 
+/// A counter or histogram key, as admitted against the counter capacity.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum AdmittedKey {
+    Counter(CounterKey),
+    Histogram(HistogramKey),
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct CounterKey {
     desc_id: CounterDescId,
@@ -1681,10 +1898,17 @@ fn build_event_shards(count: usize) -> Vec<Mutex<EventShard>> {
         .collect()
 }
 
-const fn context_capacity(counter_capacity: usize, event_capacity: usize) -> usize {
-    counter_capacity
-        .saturating_add(event_capacity)
-        .saturating_add(1)
+/// Names the process after the running executable, falling back to
+/// `"footfall"` when the executable path is unavailable.
+fn default_process_name() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(String::from)
+        })
+        .unwrap_or_else(|| String::from("footfall"))
 }
 
 fn reserve_slot(count: &AtomicUsize, capacity: usize) -> bool {
@@ -1746,6 +1970,13 @@ mod tests {
 
     /// Registers `context` with `runtime` alone, as the process backend
     /// would on `register_context`.
+    fn test_runtime(counter_capacity: usize, event_capacity: usize) -> Runtime {
+        Runtime::builder()
+            .counter_capacity(counter_capacity)
+            .event_capacity(event_capacity)
+            .build()
+    }
+
     fn register(runtime: &Runtime, context: &Context) -> ContextHandle {
         let handle = footfall_core::register_context(context);
         runtime.context_registered(handle, context);
@@ -1755,7 +1986,7 @@ mod tests {
 
     #[test]
     fn messages_are_captured_with_truncated_text() {
-        let runtime = Runtime::new(8, 8);
+        let runtime = test_runtime(8, 8);
         static CHANNEL: footfall_core::EventDesc = footfall_core::EventDesc::new("app_log");
         let context_id = ContextId::new(0);
 
@@ -1794,7 +2025,7 @@ mod tests {
 
     #[test]
     fn histograms_aggregate_bucketed_distributions() {
-        let runtime = Runtime::new(8, 8);
+        let runtime = test_runtime(8, 8);
         static LATENCY: CounterDesc = CounterDesc::new("frame_micros", Unit::Micros);
         let context = register(&runtime, &Context::root().with(&PASS, 1_u32));
 
@@ -1840,7 +2071,7 @@ mod tests {
         const THREADS: u64 = 8;
         const UPDATES: u64 = 1000;
 
-        let runtime = Runtime::new(64, 64);
+        let runtime = test_runtime(64, 64);
         static OPS: CounterDesc = CounterDesc::count("ops");
         let shared = register(&runtime, &Context::root().with(&PASS, 1_u32));
         std::thread::scope(|scope| {
@@ -1862,8 +2093,8 @@ mod tests {
         });
 
         let snapshot = runtime.snapshot();
-        assert_eq!(snapshot.dropped_counters, 0);
-        assert_eq!(snapshot.dropped_contexts, 0);
+        assert_eq!(snapshot.drops.counter_updates(), 0);
+        assert_eq!(snapshot.drops.unattributed(), 0);
         let total: u64 = snapshot.counters.iter().map(|counter| counter.value).sum();
         assert_eq!(total, THREADS * UPDATES * 2);
         // One shared row plus one row per thread.
@@ -1877,7 +2108,7 @@ mod tests {
         const EVENTS: u64 = 200;
         const CAPACITY: usize = 128;
 
-        let runtime = Runtime::new(16, CAPACITY);
+        let runtime = test_runtime(16, CAPACITY);
         let context_id = ContextId::new(0);
         std::thread::scope(|scope| {
             for _ in 0..THREADS {
@@ -1900,15 +2131,14 @@ mod tests {
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.events.len(), CAPACITY);
         assert_eq!(
-            snapshot.events.len() as u64 + snapshot.dropped_events,
+            snapshot.events.len() as u64 + snapshot.drops.events(),
             THREADS * EVENTS
         );
     }
 
     #[test]
     fn context_table_exhaustion_is_accounted() {
-        // Context capacity is counter_capacity + event_capacity + 1 = 5.
-        let runtime = Runtime::new(2, 2);
+        let runtime = Runtime::builder().context_capacity(5).build();
         static OPS: CounterDesc = CounterDesc::count("ops");
         let handles: Vec<_> = (0..32_u32)
             .map(|node| register(&runtime, &Context::root().with(&NODE, node)))
@@ -1916,7 +2146,8 @@ mod tests {
 
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.contexts.len(), 1 + 5, "root plus a full table");
-        assert_eq!(snapshot.dropped_contexts, 27, "refused registrations");
+        assert_eq!(snapshot.drops.refused_contexts(), 27);
+        assert_eq!(snapshot.drops.unattributed(), 0);
 
         // Emitting with a refused handle attributes the update to the root
         // context and counts it.
@@ -1924,12 +2155,13 @@ mod tests {
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.counters.len(), 1);
         assert_eq!(snapshot.counters[0].context_id, ContextId::new(0));
-        assert_eq!(snapshot.dropped_contexts, 28);
+        assert_eq!(snapshot.drops.refused_contexts(), 27);
+        assert_eq!(snapshot.drops.unattributed(), 1);
     }
 
     #[test]
     fn released_contexts_resolve_until_the_session_ends() {
-        let runtime = Runtime::new(8, 8);
+        let runtime = test_runtime(8, 8);
         static OPS: CounterDesc = CounterDesc::count("ops");
         let live = register(&runtime, &Context::root().with(&PASS, 1_u32));
         let released = register(&runtime, &Context::root().with(&PASS, 2_u32));
@@ -1937,7 +2169,7 @@ mod tests {
         runtime.counter_add_at(&OPS, released, 1, 1);
         runtime.context_released(released);
         let drained = runtime.drain_snapshot();
-        assert_eq!(drained.dropped_contexts, 0);
+        assert_eq!(drained.drops.unattributed(), 0);
         assert!(
             drained.context(released.id()).is_some(),
             "observations recorded before release still resolve"
@@ -1960,7 +2192,7 @@ mod tests {
     #[test]
     #[cfg_attr(target_os = "wasi", ignore = "wasm32-wasip1 cannot spawn threads")]
     fn counters_from_several_threads_merge_into_one_row() {
-        let runtime = Runtime::new(8, 8);
+        let runtime = test_runtime(8, 8);
         static OPS: CounterDesc = CounterDesc::count("ops");
         static LEVEL: CounterDesc = CounterDesc::count("level");
         static LATENCY: CounterDesc = CounterDesc::new("latency", Unit::Nanos);
@@ -1997,7 +2229,7 @@ mod tests {
     #[test]
     #[cfg_attr(target_os = "wasi", ignore = "wasm32-wasip1 cannot spawn threads")]
     fn events_from_different_threads_carry_distinct_thread_ids() {
-        let runtime = Runtime::new(8, 8);
+        let runtime = test_runtime(8, 8);
         let context_id = ContextId::new(0);
         std::thread::scope(|scope| {
             for _ in 0..2 {
@@ -2022,7 +2254,7 @@ mod tests {
 
     #[test]
     fn runtime_collects_context_table_and_timestamped_records() {
-        let runtime = Runtime::new(16, 16);
+        let runtime = test_runtime(16, 16);
         static OPS: CounterDesc = CounterDesc::count("ops");
         static ATLAS: ResourceKindDesc = ResourceKindDesc::new("atlas");
         static RECORD: ScopeDesc = ScopeDesc::new("record");
@@ -2072,7 +2304,11 @@ mod tests {
         );
 
         let snapshot = runtime.snapshot();
-        assert_eq!(snapshot.metadata.process_name, "footfall");
+        assert_eq!(
+            snapshot.metadata.process_name,
+            super::default_process_name(),
+            "the process is named after the executable where there is one"
+        );
         assert_eq!(snapshot.metadata.session_sequence, 0);
         assert!(
             snapshot.metadata.wall_clock_anchor_micros > 0,
@@ -2099,7 +2335,7 @@ mod tests {
 
     #[test]
     fn sequential_scopes_in_one_microsecond_keep_program_order() {
-        let runtime = Runtime::new(8, 8);
+        let runtime = test_runtime(8, 8);
         static FIRST: ScopeDesc = ScopeDesc::new("first");
         static SECOND: ScopeDesc = ScopeDesc::new("second");
         let context_id = register(&runtime, &Context::root().with(&PASS, 1_u32)).id();
@@ -2152,7 +2388,11 @@ mod tests {
 
     #[test]
     fn drain_snapshot_clears_state_and_advances_session_sequence() {
-        let runtime = Runtime::named("demo", 8, 8);
+        let runtime = Runtime::builder()
+            .process_name("demo")
+            .counter_capacity(8)
+            .event_capacity(8)
+            .build();
         runtime.set_session_name("recording");
 
         let context_id = register(&runtime, &Context::root().with(&FRAME, 1_u32)).id();
@@ -2183,7 +2423,7 @@ mod tests {
 
     #[test]
     fn scope_tokens_stay_unique_across_session_resets() {
-        let runtime = Runtime::new(8, 8);
+        let runtime = test_runtime(8, 8);
         let before_reset = runtime.next_scope_token();
         let _ = runtime.drain_snapshot();
         let after_reset = runtime.next_scope_token();
@@ -2196,7 +2436,12 @@ mod tests {
 
     #[test]
     fn session_name_changes_through_shared_reference() {
-        let runtime = Runtime::named("demo", 8, 8).with_session_name("first");
+        let runtime = Runtime::builder()
+            .process_name("demo")
+            .counter_capacity(8)
+            .event_capacity(8)
+            .session_name("first")
+            .build();
         let shared: &Runtime = &runtime;
 
         assert_eq!(
@@ -2219,7 +2464,7 @@ mod tests {
 
     #[test]
     fn runtime_enforces_event_capacity() {
-        let runtime = Runtime::new(4, 1);
+        let runtime = test_runtime(4, 1);
         let context_id = ContextId::new(0);
         runtime.push_event_at(
             Observation::FrameMarker {
@@ -2240,12 +2485,29 @@ mod tests {
 
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.events.len(), 1);
-        assert_eq!(snapshot.dropped_events, 1);
+        assert_eq!(snapshot.drops.events(), 1);
+    }
+
+    #[test]
+    fn a_key_recorded_from_many_threads_takes_one_slot() {
+        const THREADS: u64 = 12;
+        let runtime = test_runtime(1, 4);
+        static OPS: CounterDesc = CounterDesc::count("ops");
+        std::thread::scope(|scope| {
+            for _ in 0..THREADS {
+                scope.spawn(|| runtime.counter_add_at(&OPS, ContextHandle::ROOT, 1, 1));
+            }
+        });
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.counters.len(), 1);
+        assert_eq!(snapshot.counters[0].value, THREADS);
+        assert!(snapshot.drops.is_empty());
     }
 
     #[test]
     fn runtime_enforces_counter_capacity_across_shards() {
-        let runtime = Runtime::new(1, 4);
+        let runtime = test_runtime(1, 4);
         let context = register(&runtime, &Context::root().with(&FRAME, 1_u32));
         static FIRST: CounterDesc = CounterDesc::count("first");
         static SECOND: CounterDesc = CounterDesc::count("second");
@@ -2255,7 +2517,7 @@ mod tests {
 
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.counters.len(), 1);
-        assert_eq!(snapshot.dropped_counters, 1);
+        assert_eq!(snapshot.drops.counter_updates(), 1);
     }
 
     #[test]
@@ -2264,7 +2526,11 @@ mod tests {
         static SCOPE: ScopeDesc = ScopeDesc::new("record");
         static RESOURCE: ResourceKindDesc = ResourceKindDesc::new("atlas");
 
-        let runtime = Runtime::with_level(16, 16, InstrumentationLevel::Counters);
+        let runtime = Runtime::builder()
+            .counter_capacity(16)
+            .event_capacity(16)
+            .level(InstrumentationLevel::Counters)
+            .build();
 
         let context = register(&runtime, &Context::root().with(&FRAME, 3_u32));
         runtime.counter_add(&COUNTER, context, 1);
@@ -2307,7 +2573,11 @@ mod tests {
         static ATLAS: ResourceKindDesc = ResourceKindDesc::new("atlas");
         static LOG: footfall_core::EventDesc = footfall_core::EventDesc::new("log");
 
-        let runtime = Runtime::with_level(16, 16, InstrumentationLevel::Trace);
+        let runtime = Runtime::builder()
+            .counter_capacity(16)
+            .event_capacity(16)
+            .level(InstrumentationLevel::Trace)
+            .build();
         let context = register(&runtime, &Context::root().with(&FRAME, 1_u32));
         for _ in 0..2 {
             let token = runtime.scope_begin(&RECORD, context, &Args::none());

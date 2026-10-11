@@ -52,7 +52,9 @@ static PASS: LabelKey = LabelKey::new("pass");
 static RENDERER: LazyContext = LazyContext::new(|| footfall::context!(SUBSYSTEM = "renderer"));
 
 fn install_footfall() -> &'static Runtime {
-    Runtime::named_with_level("my_app", 512, 4096, InstrumentationLevel::Scoped)
+    Runtime::builder()
+        .process_name("my_app")
+        .level(InstrumentationLevel::Scoped)
         .install_global()
         .expect("runtime should install once")
 }
@@ -133,6 +135,22 @@ fn write_trace(runtime: &Runtime) -> std::io::Result<()> {
 Open `trace.json` in [Perfetto](https://ui.perfetto.dev) or
 `chrome://tracing`. Scopes appear as slices on one track per thread, counters
 as counter tracks, and contexts and arguments as slice arguments.
+
+## Sizing Capacity
+
+A runtime never grows past the capacities it was built with; what does not
+fit is dropped and counted. Check `Snapshot::drops` before trusting totals,
+and size each capacity for what the app emits:
+
+- `counter_capacity`: counter, gauge, and histogram descriptors times the
+  contexts each is recorded under. Recording a counter under a context per
+  frame or per item multiplies the keys it needs.
+- `event_capacity`: two events per scope plus one per marker, flow step,
+  message, or resource change, over the span you want to keep.
+- `context_capacity`: registered contexts, live and released, within one
+  session.
+
+Each `Drops` count names the capacity to raise.
 
 ## What Lives Where
 
