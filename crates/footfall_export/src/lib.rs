@@ -10,13 +10,23 @@ use footfall_runtime::{
     CounterKind, CounterSnapshot, HistogramSnapshot, Observation, Snapshot, TimedObservation,
 };
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     fmt::{self, Write},
     fs,
     path::Path,
 };
 
 /// Converts a snapshot into Chrome Trace Event JSON suitable for inspection in Perfetto.
+///
+/// Timed observations are placed on one track per recording thread, using the
+/// runtime-assigned thread id as `tid`, and keep the snapshot's event order.
+/// A scope end is placed on the track of its matching begin; an end whose
+/// begin is not in the snapshot is skipped and counted in the
+/// `footfall_unmatched_scope_ends` internal counter. Aggregates (counters,
+/// gauges, histograms, capture metadata) live on track `0`. Each counter or
+/// gauge becomes one Chrome counter track per descriptor and context, named
+/// after the descriptor and the context labels, with a single numeric series
+/// named after the descriptor unit.
 #[must_use]
 pub fn to_chrome_trace_json(snapshot: &Snapshot) -> String {
     let mut output = String::new();
@@ -45,14 +55,28 @@ pub fn write_chrome_trace_json(snapshot: &Snapshot, writer: &mut impl Write) -> 
             session_name,
         ));
     }
-    events.push(build_capture_window_event(snapshot));
-
-    for context in &snapshot.contexts {
-        events.push(build_thread_name_event(
-            context.id,
-            track_name(context.context),
+    events.push(build_metadata_event(
+        "thread_name",
+        1,
+        AGGREGATE_TID,
+        "name",
+        "footfall",
+    ));
+    let threads: BTreeSet<u64> = snapshot
+        .events
+        .iter()
+        .map(|event| event.thread_id)
+        .collect();
+    for thread_id in threads {
+        events.push(build_metadata_event(
+            "thread_name",
+            1,
+            thread_id,
+            "name",
+            &format!("thread {thread_id}"),
         ));
     }
+    events.push(build_capture_window_event(snapshot));
 
     for counter in &snapshot.counters {
         events.push(build_counter_event(snapshot, counter)?);
@@ -62,9 +86,21 @@ pub fn write_chrome_trace_json(snapshot: &Snapshot, writer: &mut impl Write) -> 
         events.push(build_histogram_event(snapshot, histogram)?);
     }
 
-    let mut scope_tracks = HashMap::<ScopeToken, ContextId>::new();
+    let mut scope_tracks = HashMap::<ScopeToken, u64>::new();
+    let mut unmatched_scope_ends = 0_u64;
     for event in &snapshot.events {
-        events.push(build_timed_observation(snapshot, event, &mut scope_tracks)?);
+        match build_timed_observation(snapshot, event, &mut scope_tracks)? {
+            Some(json) => events.push(json),
+            None => unmatched_scope_ends += 1,
+        }
+    }
+
+    if unmatched_scope_ends > 0 {
+        events.push(build_internal_counter_event(
+            snapshot.captured_at_micros,
+            "footfall_unmatched_scope_ends",
+            unmatched_scope_ends,
+        ));
     }
 
     if snapshot.dropped_contexts > 0 {
@@ -91,8 +127,9 @@ pub fn write_chrome_trace_json(snapshot: &Snapshot, writer: &mut impl Write) -> 
         ));
     }
 
-    events.sort_by_key(|event| (event.ts_micros, event.order));
-
+    // Events stay in construction order. Timed observations follow the
+    // snapshot order, which keeps same-timestamp begins and ends on one
+    // thread in program order; re-sorting by timestamp would break that.
     writer.write_str("{\"displayTimeUnit\":\"ms\",\"traceEvents\":[")?;
     let mut first = true;
     for event in events {
@@ -100,7 +137,7 @@ pub fn write_chrome_trace_json(snapshot: &Snapshot, writer: &mut impl Write) -> 
             writer.write_char(',')?;
         }
         first = false;
-        writer.write_str(&event.json)?;
+        writer.write_str(&event)?;
     }
     writer.write_str("]}")?;
     Ok(())
@@ -111,20 +148,13 @@ pub fn write_chrome_trace_file(snapshot: &Snapshot, path: impl AsRef<Path>) -> s
     fs::write(path, to_chrome_trace_json(snapshot))
 }
 
-#[derive(Debug)]
-struct ExportEvent {
-    ts_micros: u64,
-    order: u8,
-    json: String,
-}
+/// Track id used for aggregates and capture metadata.
+///
+/// Runtime-assigned thread ids start at `1`, so `0` never collides with a
+/// recording thread.
+const AGGREGATE_TID: u64 = 0;
 
-fn build_metadata_event(
-    name: &str,
-    pid: u64,
-    tid: u64,
-    arg_key: &str,
-    arg_value: &str,
-) -> ExportEvent {
+fn build_metadata_event(name: &str, pid: u64, tid: u64, arg_key: &str, arg_value: &str) -> String {
     let mut json = String::new();
     json.push('{');
     write_json_field_str(&mut json, "name", name).expect("string write should succeed");
@@ -139,18 +169,10 @@ fn build_metadata_event(
     json.push_str(",\"args\":{");
     write_json_field_str(&mut json, arg_key, arg_value).expect("string write should succeed");
     json.push_str("}}");
-    ExportEvent {
-        ts_micros: 0,
-        order: 0,
-        json,
-    }
+    json
 }
 
-fn build_thread_name_event(context_id: ContextId, name: String) -> ExportEvent {
-    build_metadata_event("thread_name", 1, context_id.get(), "name", &name)
-}
-
-fn build_capture_window_event(snapshot: &Snapshot) -> ExportEvent {
+fn build_capture_window_event(snapshot: &Snapshot) -> String {
     let mut json = String::new();
     json.push('{');
     write_json_field_str(&mut json, "name", "footfall_capture")
@@ -165,7 +187,7 @@ fn build_capture_window_event(snapshot: &Snapshot) -> ExportEvent {
     json.push(',');
     write_json_field_u64(&mut json, "pid", 1).expect("string write should succeed");
     json.push(',');
-    write_json_field_u64(&mut json, "tid", 0).expect("string write should succeed");
+    write_json_field_u64(&mut json, "tid", AGGREGATE_TID).expect("string write should succeed");
     json.push_str(",\"args\":{");
     write_json_field_u64(
         &mut json,
@@ -191,27 +213,36 @@ fn build_capture_window_event(snapshot: &Snapshot) -> ExportEvent {
     )
     .expect("string write should succeed");
     json.push_str("}}");
-    ExportEvent {
-        ts_micros: snapshot.captured_at_micros,
-        order: 4,
-        json,
-    }
+    json
 }
 
 fn build_counter_event(
     snapshot: &Snapshot,
     counter: &CounterSnapshot,
-) -> Result<ExportEvent, fmt::Error> {
+) -> Result<String, fmt::Error> {
     let mut json = String::new();
     let context = snapshot
         .context(counter.context_id)
         .map(|context| context.context)
         .unwrap_or_else(Context::root);
 
+    // Chrome keys counter tracks by name within a process, so the context is
+    // part of the name to keep one track per descriptor and context.
     json.push('{');
-    write_json_field_str(&mut json, "name", counter.name)?;
+    write_json_field_str(
+        &mut json,
+        "name",
+        &counter_track_name(counter.name, context),
+    )?;
     json.push(',');
-    write_json_field_str(&mut json, "cat", "counter")?;
+    write_json_field_str(
+        &mut json,
+        "cat",
+        match counter.kind {
+            CounterKind::Counter => "counter",
+            CounterKind::Gauge => "gauge",
+        },
+    )?;
     json.push(',');
     write_json_field_str(&mut json, "ph", "C")?;
     json.push(',');
@@ -219,34 +250,26 @@ fn build_counter_event(
     json.push(',');
     write_json_field_u64(&mut json, "pid", 1)?;
     json.push(',');
-    write_json_field_u64(&mut json, "tid", counter.context_id.get())?;
+    write_json_field_u64(&mut json, "tid", AGGREGATE_TID)?;
+    // Counter args become plotted series, so they carry only the value.
     json.push_str(",\"args\":{");
-    write_json_field_u64(&mut json, "value", counter.value)?;
-    json.push_str(",\"kind\":");
-    write_json_string(
-        &mut json,
-        match counter.kind {
-            CounterKind::Counter => "counter",
-            CounterKind::Gauge => "gauge",
-        },
-    )?;
-    json.push_str(",\"unit\":");
-    write_json_string(&mut json, counter.unit.as_str())?;
-    json.push_str(",\"context\":");
-    write_context(&mut json, context)?;
+    write_json_field_u64(&mut json, counter.unit.as_str(), counter.value)?;
     json.push_str("}}");
 
-    Ok(ExportEvent {
-        ts_micros: counter.updated_at_micros,
-        order: 1,
-        json,
-    })
+    Ok(json)
+}
+
+fn counter_track_name(name: &str, context: Context) -> String {
+    if context.is_empty() {
+        return String::from(name);
+    }
+    format!("{name} [{}]", track_name(context))
 }
 
 fn build_histogram_event(
     snapshot: &Snapshot,
     histogram: &HistogramSnapshot,
-) -> Result<ExportEvent, fmt::Error> {
+) -> Result<String, fmt::Error> {
     let context = snapshot
         .context(histogram.context_id)
         .map(|context| context.context)
@@ -263,7 +286,7 @@ fn build_histogram_event(
     json.push(',');
     write_json_field_u64(&mut json, "pid", 1)?;
     json.push(',');
-    write_json_field_u64(&mut json, "tid", histogram.context_id.get())?;
+    write_json_field_u64(&mut json, "tid", AGGREGATE_TID)?;
     json.push_str(",\"args\":{");
     write_json_field_u64(&mut json, "count", histogram.count)?;
     json.push(',');
@@ -291,11 +314,7 @@ fn build_histogram_event(
     json.push_str(",\"context\":");
     write_context(&mut json, context)?;
     json.push_str("}}");
-    Ok(ExportEvent {
-        ts_micros: histogram.updated_at_micros,
-        order: 1,
-        json,
-    })
+    Ok(json)
 }
 
 /// Estimates a percentile from power-of-two buckets.
@@ -328,7 +347,7 @@ fn histogram_percentile(histogram: &HistogramSnapshot, quantile: f64) -> u64 {
     histogram.max
 }
 
-fn build_internal_counter_event(at_micros: u64, name: &str, value: u64) -> ExportEvent {
+fn build_internal_counter_event(at_micros: u64, name: &str, value: u64) -> String {
     let mut json = String::new();
     json.push('{');
     write_json_field_str(&mut json, "name", name).expect("string write should succeed");
@@ -341,23 +360,21 @@ fn build_internal_counter_event(at_micros: u64, name: &str, value: u64) -> Expor
     json.push(',');
     write_json_field_u64(&mut json, "pid", 1).expect("string write should succeed");
     json.push(',');
-    write_json_field_u64(&mut json, "tid", 0).expect("string write should succeed");
+    write_json_field_u64(&mut json, "tid", AGGREGATE_TID).expect("string write should succeed");
     json.push_str(",\"args\":{\"value\":");
     json.write_fmt(format_args!("{value}"))
         .expect("string write should succeed");
     json.push_str("}}");
-    ExportEvent {
-        ts_micros: at_micros,
-        order: 3,
-        json,
-    }
+    json
 }
 
+/// Builds one timed observation, or returns `None` for a scope end whose
+/// begin is not in the snapshot.
 fn build_timed_observation(
     snapshot: &Snapshot,
     event: &TimedObservation,
-    scope_tracks: &mut HashMap<ScopeToken, ContextId>,
-) -> Result<ExportEvent, fmt::Error> {
+    scope_tracks: &mut HashMap<ScopeToken, u64>,
+) -> Result<Option<String>, fmt::Error> {
     match &event.observation {
         Observation::ScopeBegin {
             name,
@@ -366,7 +383,7 @@ fn build_timed_observation(
             args,
             ..
         } => {
-            scope_tracks.insert(*token, *context_id);
+            scope_tracks.insert(*token, event.thread_id);
             let context = snapshot
                 .context(*context_id)
                 .map(|context| context.context)
@@ -383,9 +400,9 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_u64(&mut json, "pid", 1)?;
             json.push(',');
-            write_json_field_u64(&mut json, "tid", context_id.get())?;
+            write_json_field_u64(&mut json, "tid", event.thread_id)?;
             json.push_str(",\"args\":{");
-            write_json_field_u64(&mut json, "thread", event.thread_id)?;
+            write_json_field_u64(&mut json, "context_id", context_id.get())?;
             if !args.is_empty() {
                 json.push_str(",\"values\":");
                 write_args(&mut json, *args)?;
@@ -393,17 +410,15 @@ fn build_timed_observation(
             json.push_str(",\"context\":");
             write_context(&mut json, context)?;
             json.push_str("}}");
-            Ok(ExportEvent {
-                ts_micros: event.at_micros,
-                order: 1,
-                json,
-            })
+            Ok(Some(json))
         }
         Observation::ScopeEnd { token } => {
-            let tid = scope_tracks
-                .remove(token)
-                .unwrap_or(ContextId::new(0))
-                .get();
+            // Close the slice on its begin's track so B/E pairs stay matched
+            // even when a scope ends on another thread. An end without a
+            // begin in this snapshot would close an unrelated slice.
+            let Some(tid) = scope_tracks.remove(token) else {
+                return Ok(None);
+            };
             let mut json = String::new();
             json.push('{');
             write_json_field_str(&mut json, "ph", "E")?;
@@ -414,11 +429,7 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_u64(&mut json, "tid", tid)?;
             json.push('}');
-            Ok(ExportEvent {
-                ts_micros: event.at_micros,
-                order: 2,
-                json,
-            })
+            Ok(Some(json))
         }
         Observation::ResourceCreate {
             kind_name,
@@ -435,7 +446,8 @@ fn build_timed_observation(
             *resource_id,
             *context_id,
             Some(*size),
-        ),
+        )
+        .map(Some),
         Observation::ResourceUpdate {
             kind_name,
             resource_id,
@@ -451,7 +463,8 @@ fn build_timed_observation(
             *resource_id,
             *context_id,
             Some(*size),
-        ),
+        )
+        .map(Some),
         Observation::ResourceDrop {
             kind_name,
             resource_id,
@@ -466,7 +479,8 @@ fn build_timed_observation(
             *resource_id,
             *context_id,
             None,
-        ),
+        )
+        .map(Some),
         Observation::FrameMarker {
             kind,
             phase,
@@ -488,17 +502,13 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_u64(&mut json, "pid", 1)?;
             json.push(',');
-            write_json_field_u64(&mut json, "tid", context_id.get())?;
+            write_json_field_u64(&mut json, "tid", event.thread_id)?;
             json.push_str(",\"args\":{");
-            write_json_field_u64(&mut json, "thread", event.thread_id)?;
+            write_json_field_u64(&mut json, "context_id", context_id.get())?;
             json.push_str(",\"context\":");
             write_context(&mut json, context)?;
             json.push_str("}}");
-            Ok(ExportEvent {
-                ts_micros: event.at_micros,
-                order: 1,
-                json,
-            })
+            Ok(Some(json))
         }
         Observation::Flow {
             flow_id,
@@ -521,19 +531,15 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_u64(&mut json, "pid", 1)?;
             json.push(',');
-            write_json_field_u64(&mut json, "tid", context_id.get())?;
+            write_json_field_u64(&mut json, "tid", event.thread_id)?;
             json.push(',');
             write_json_field_u64(&mut json, "id", flow_id.get())?;
             json.push_str(",\"args\":{");
-            write_json_field_u64(&mut json, "thread", event.thread_id)?;
+            write_json_field_u64(&mut json, "context_id", context_id.get())?;
             json.push_str(",\"context\":");
             write_context(&mut json, context)?;
             json.push_str("}}");
-            Ok(ExportEvent {
-                ts_micros: event.at_micros,
-                order: 1,
-                json,
-            })
+            Ok(Some(json))
         }
         Observation::Message {
             name,
@@ -558,9 +564,9 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_u64(&mut json, "pid", 1)?;
             json.push(',');
-            write_json_field_u64(&mut json, "tid", context_id.get())?;
+            write_json_field_u64(&mut json, "tid", event.thread_id)?;
             json.push_str(",\"args\":{");
-            write_json_field_u64(&mut json, "thread", event.thread_id)?;
+            write_json_field_u64(&mut json, "context_id", context_id.get())?;
             json.push(',');
             write_json_field_str(&mut json, "text", text)?;
             if !args.is_empty() {
@@ -570,11 +576,7 @@ fn build_timed_observation(
             json.push_str(",\"context\":");
             write_context(&mut json, context)?;
             json.push_str("}}");
-            Ok(ExportEvent {
-                ts_micros: event.at_micros,
-                order: 1,
-                json,
-            })
+            Ok(Some(json))
         }
     }
 }
@@ -588,7 +590,7 @@ fn build_resource_event(
     resource_id: ResourceId,
     context_id: ContextId,
     size: Option<u64>,
-) -> Result<ExportEvent, fmt::Error> {
+) -> Result<String, fmt::Error> {
     let context = snapshot
         .context(context_id)
         .map(|context| context.context)
@@ -605,9 +607,9 @@ fn build_resource_event(
     json.push(',');
     write_json_field_u64(&mut json, "pid", 1)?;
     json.push(',');
-    write_json_field_u64(&mut json, "tid", context_id.get())?;
+    write_json_field_u64(&mut json, "tid", thread_id)?;
     json.push_str(",\"args\":{");
-    write_json_field_u64(&mut json, "thread", thread_id)?;
+    write_json_field_u64(&mut json, "context_id", context_id.get())?;
     json.push(',');
     write_json_field_str(&mut json, "kind", kind_name)?;
     json.push(',');
@@ -619,11 +621,7 @@ fn build_resource_event(
     json.push_str(",\"context\":");
     write_context(&mut json, context)?;
     json.push_str("}}");
-    Ok(ExportEvent {
-        ts_micros: at_micros,
-        order: 1,
-        json,
-    })
+    Ok(json)
 }
 
 fn write_args(writer: &mut impl Write, args: footfall_core::Args) -> fmt::Result {
@@ -851,13 +849,155 @@ mod tests {
         assert!(json.contains("\"thread_name\""));
         assert!(json.contains("\"process_labels\""));
         assert!(json.contains("frame=7 / pass=1"));
-        assert!(json.contains("\"tid\":1"));
+        assert!(json.contains("\"tid\":3"));
+        assert!(json.contains("\"name\":\"thread 3\""));
+        assert!(json.contains("\"upload_bytes [frame=7 / pass=1]\""));
         assert!(json.contains("\"ph\":\"B\""));
         assert!(json.contains("\"values\":{\"items\":3}"));
         assert!(json.contains("\"ph\":\"E\""));
         assert!(json.contains("\"ph\":\"s\""));
         assert!(json.contains("\"footfall_capture\""));
         assert!(json.contains("\"footfall_dropped_contexts\""));
+    }
+
+    fn snapshot_with(counters: Vec<CounterSnapshot>, events: Vec<TimedObservation>) -> Snapshot {
+        Snapshot {
+            contexts: vec![
+                ContextSnapshot {
+                    id: ContextId::new(0),
+                    context: Context::root(),
+                },
+                ContextSnapshot {
+                    id: ContextId::new(1),
+                    context: Context::root().with(LabelKey::Frame, 7_u32),
+                },
+            ],
+            counters,
+            events,
+            ..Snapshot::default()
+        }
+    }
+
+    fn timed(
+        sequence: u64,
+        at_micros: u64,
+        thread_id: u64,
+        observation: Observation,
+    ) -> TimedObservation {
+        TimedObservation {
+            at_micros,
+            sequence,
+            thread_id,
+            observation,
+        }
+    }
+
+    fn begin(name: &'static str, token: u64) -> Observation {
+        Observation::ScopeBegin {
+            desc_id: footfall_core::ScopeDescId::new(1),
+            name,
+            context_id: ContextId::new(1),
+            token: ScopeToken::new(token),
+            args: Args::none(),
+        }
+    }
+
+    fn end(token: u64) -> Observation {
+        Observation::ScopeEnd {
+            token: ScopeToken::new(token),
+        }
+    }
+
+    #[test]
+    fn scopes_use_recording_thread_tracks() {
+        // Two threads share one context; each scope must stay on its own
+        // thread's track, and an end recorded on another thread must close
+        // the slice on the track where it began.
+        let snapshot = snapshot_with(
+            vec![],
+            vec![
+                timed(0, 10, 1, begin("left", 1)),
+                timed(1, 11, 2, begin("right", 2)),
+                timed(2, 12, 1, end(1)),
+                timed(3, 13, 2, end(2)),
+                timed(4, 14, 1, begin("hop", 3)),
+                timed(5, 15, 2, end(3)),
+            ],
+        );
+
+        let json = to_chrome_trace_json(&snapshot);
+        assert!(json.contains("\"name\":\"thread 1\""));
+        assert!(json.contains("\"name\":\"thread 2\""));
+        assert!(json.contains(
+            "\"name\":\"left\",\"cat\":\"scope\",\"ph\":\"B\",\"ts\":10,\"pid\":1,\"tid\":1"
+        ));
+        assert!(json.contains(
+            "\"name\":\"right\",\"cat\":\"scope\",\"ph\":\"B\",\"ts\":11,\"pid\":1,\"tid\":2"
+        ));
+        assert!(json.contains("{\"ph\":\"E\",\"ts\":12,\"pid\":1,\"tid\":1}"));
+        assert!(json.contains("{\"ph\":\"E\",\"ts\":13,\"pid\":1,\"tid\":2}"));
+        assert!(
+            json.contains("{\"ph\":\"E\",\"ts\":15,\"pid\":1,\"tid\":1}"),
+            "a scope ended on another thread should close on its begin track"
+        );
+        assert!(json.contains("\"context_id\":1"));
+    }
+
+    #[test]
+    fn same_timestamp_events_keep_snapshot_order() {
+        let snapshot = snapshot_with(
+            vec![],
+            vec![
+                timed(0, 5, 1, begin("first", 1)),
+                timed(1, 5, 1, end(1)),
+                timed(2, 5, 1, begin("second", 2)),
+                timed(3, 5, 1, end(2)),
+            ],
+        );
+
+        let json = to_chrome_trace_json(&snapshot);
+        let first_end = json
+            .find("\"ph\":\"E\"")
+            .expect("first end should be exported");
+        let second_begin = json
+            .find("\"name\":\"second\"")
+            .expect("second begin should be exported");
+        assert!(
+            first_end < second_begin,
+            "the first scope must end before the second begins"
+        );
+    }
+
+    #[test]
+    fn unmatched_scope_end_is_skipped_and_counted() {
+        let snapshot = snapshot_with(vec![], vec![timed(0, 5, 1, end(42))]);
+
+        let json = to_chrome_trace_json(&snapshot);
+        assert!(!json.contains("\"ph\":\"E\""));
+        assert!(json.contains("\"name\":\"footfall_unmatched_scope_ends\""));
+        assert!(json.contains("\"args\":{\"value\":1}"));
+    }
+
+    #[test]
+    fn counters_are_keyed_per_descriptor_and_context() {
+        let counter = |context_id: u64, value: u64| CounterSnapshot {
+            desc_id: CounterDescId::new(1),
+            name: "ops",
+            unit: Unit::Count,
+            context_id: ContextId::new(context_id),
+            kind: CounterKind::Counter,
+            value,
+            updated_at_micros: 10,
+        };
+        let snapshot = snapshot_with(vec![counter(0, 5), counter(1, 9)], vec![]);
+
+        let json = to_chrome_trace_json(&snapshot);
+        assert!(json.contains("\"name\":\"ops\",\"cat\":\"counter\",\"ph\":\"C\""));
+        assert!(json.contains("\"name\":\"ops [frame=7]\",\"cat\":\"counter\",\"ph\":\"C\""));
+        assert!(
+            json.contains("\"args\":{\"count\":5}") && json.contains("\"args\":{\"count\":9}"),
+            "counter args should carry only the numeric value"
+        );
     }
 
     #[test]
