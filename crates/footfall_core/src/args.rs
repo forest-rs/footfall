@@ -14,7 +14,7 @@ pub const ARGS_INLINE_CAPACITY: usize = 4;
 /// specific observation instance, such as how many items one particular scope
 /// processed. Keys are static strings so the hot path stays free of dynamic
 /// string assembly.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub struct Args {
     entries: [ArgEntry; ARGS_INLINE_CAPACITY],
     len: u8,
@@ -49,6 +49,7 @@ impl Args {
     /// Panics when the inline capacity is exhausted. Hot paths that cannot
     /// tolerate panics should use [`Args::try_with`] instead.
     #[must_use]
+    #[track_caller]
     pub fn with<V>(self, key: &'static str, value: V) -> Self
     where
         V: Into<LabelValue>,
@@ -102,6 +103,15 @@ impl Args {
             .iter()
             .find(|entry| entry.key == key)
             .map(|entry| entry.value)
+    }
+}
+
+impl fmt::Debug for Args {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("Args")
+            .field(&self.as_slice())
+            .finish()
     }
 }
 
@@ -185,6 +195,16 @@ mod tests {
             Some(3)
         );
         assert_eq!(args.get("missing"), None);
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn debug_shows_only_entries_in_use() {
+        assert_eq!(alloc::format!("{:?}", Args::none()), "Args([])");
+        assert_eq!(
+            alloc::format!("{:?}", Args::none().with("items", 3_u32)),
+            "Args([ArgEntry { key: \"items\", value: Unsigned(3) }])"
+        );
     }
 
     #[test]

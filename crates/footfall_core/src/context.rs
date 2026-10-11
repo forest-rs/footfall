@@ -12,7 +12,7 @@ pub const CONTEXT_INLINE_CAPACITY: usize = 8;
 /// A context is a small, copyable set of labels keyed by static [`LabelKey`]s.
 /// Labels keep their append order; setting an existing key replaces its value
 /// in place.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub struct Context {
     entries: [ContextEntry; CONTEXT_INLINE_CAPACITY],
     len: u8,
@@ -47,6 +47,7 @@ impl Context {
     /// Panics when the inline capacity is exhausted. Hot paths that cannot
     /// tolerate panics should use [`Context::try_with`] instead.
     #[must_use]
+    #[track_caller]
     pub fn with<V>(self, key: &'static LabelKey, value: V) -> Self
     where
         V: Into<LabelValue>,
@@ -110,6 +111,15 @@ impl Context {
             .iter()
             .find(|entry| entry.key() == key)
             .map(|entry| entry.value)
+    }
+}
+
+impl fmt::Debug for Context {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("Context")
+            .field(&self.as_slice())
+            .finish()
     }
 }
 
