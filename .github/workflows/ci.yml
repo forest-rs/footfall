@@ -162,6 +162,9 @@ jobs:
       - name: cargo clippy (auxiliary)
         run: cargo hack clippy ${{ env.RUST_STD_ONLY_PKGS }} --workspace --locked --optional-deps --each-feature --ignore-unknown-features --features std --tests --benches --examples -- -D warnings
 
+      - name: cargo clippy (benchmarks)
+        run: cargo clippy -p footfall_benchmarks --locked --all-targets -- -D warnings
+
   clippy-stable-wasm:
     name: cargo clippy (wasm32)
     runs-on: ubuntu-latest

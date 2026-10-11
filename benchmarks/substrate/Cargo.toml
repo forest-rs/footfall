@@ -8,16 +8,37 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 publish = false
-description = "Top-level benchmark wind tunnel for Footfall substrate overhead."
+description = "Criterion benchmarks for Footfall substrate overhead."
 
 [dependencies]
 footfall = { features = ["std"], workspace = true }
-footfall_export.workspace = true
-footfall_runtime.workspace = true
 
-[[bin]]
-name = "substrate"
-path = "src/main.rs"
+[dev-dependencies]
+criterion = { default-features = false, features = ["cargo_bench_support"], version = "0.8.2" }
+footfall_export.workspace = true
+footfall_fanout.workspace = true
+footfall_runtime.workspace = true
+footfall_tracing.workspace = true
+tracing = "0.1.41"
+tracing-subscriber = { default-features = false, features = ["registry", "std"], version = "0.3.20" }
+
+[lib]
+path = "src/lib.rs"
+# The library only holds shared fixtures; keeping it out of `cargo bench`
+# stops libtest from rejecting Criterion flags such as `--save-baseline`.
+bench = false
+
+[[bench]]
+name = "none"
+harness = false
+
+[[bench]]
+name = "runtime"
+harness = false
+
+[[bench]]
+name = "fanout"
+harness = false
 
 [lints]
 workspace = true
