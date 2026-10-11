@@ -236,12 +236,12 @@ Does not own:
 
 Owns:
 
-- pairwise backend composition for runtime plus one live sink
+- pairwise backend composition, nestable for more than two sinks
 
 Does not own:
 
 - a general plugin bus
-- arbitrary sink registration
+- dynamic sink registration after installation
 - extra indirection in `footfall_core`
 
 #### `footfall_macros` later
@@ -340,9 +340,10 @@ The preferred mental model is tracepoints plus counters, not builder-style struc
 
 The boundary between `footfall_core` and `footfall_runtime` should be explicit and tiny.
 
-- `footfall_core` defines a backend ABI as a fixed function table or equivalent static call surface
-- the default backend is a built-in no-op implementation
-- `footfall_runtime` installs a concrete backend during initialization
+- `footfall_core` defines the `Backend` trait, with a no-op default for every primitive so new primitives do not break existing backends
+- backends carry their own state; the process-wide backend is one `&'static dyn Backend`
+- the default backend is the built-in `NoopBackend`
+- `footfall_runtime` installs a concrete backend during initialization, or hands a `&'static Runtime` to a composing backend such as `footfall_fanout`
 - hot-path emission performs at most one backend indirection after the instrumentation-level gate
 
 This keeps runtime policy out of the call site while still allowing a bounded, replaceable collection layer.
@@ -510,7 +511,7 @@ phase list below records what is done and what remains prototype-grade.
 
 - Done: design note landed.
 - Done: naming for ids, descriptors, and labels is settled enough for first users.
-- Done: the core/runtime backend ABI is a fixed function table.
+- Done: the core/runtime backend seam is the `Backend` trait, installed once as `&'static dyn Backend`.
 - Done: Chrome Trace Event JSON is the first export target.
 
 ### Phase 1

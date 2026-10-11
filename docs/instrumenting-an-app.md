@@ -39,13 +39,9 @@ static RECORD_SCOPE: ScopeDesc = footfall::scope_desc!(1, "record_frame");
 static DRAW_OPS: CounterDesc = footfall::counter_desc!(count, 2, "draw_ops");
 
 fn install_footfall() -> &'static Runtime {
-    Runtime::install_global_named_with_level(
-        "my_app",
-        512,
-        4096,
-        InstrumentationLevel::Scoped,
-    )
-    .expect("runtime should install once")
+    Runtime::named_with_level("my_app", 512, 4096, InstrumentationLevel::Scoped)
+        .install_global()
+        .expect("runtime should install once")
 }
 
 fn record_frame(frame: u32) {

@@ -51,8 +51,8 @@ The low-level emission API remains available, but common call sites can now use:
 - marker helpers such as `frame_begin`, `frame_end`, `pass_begin`, and `pass_end`.
 - `context!`, `scope_desc!`, `counter_desc!`, and `resource_kind_desc!` macros
   for compact static descriptors and contexts.
-- `Runtime::install_global_*` helpers and `Runtime::with_session_name` to avoid
-  spelling `Box::leak` in application setup.
+- `Runtime::install_global` and `Runtime::with_session_name` to avoid spelling
+  `Box::leak` in application setup.
 
 ## Chrome Trace Export Tracks
 
@@ -81,3 +81,37 @@ the runtime, Tracy, and fan-out backends ignore it too. Backends issue tokens
 starting at `1`. Previously the no-op paths returned the descriptor id, so a
 guard started before backend installation could end an unrelated scope that
 happened to receive the same token.
+
+## Backend Trait
+
+`footfall_core::Backend` is now a trait instead of a struct of function
+pointers. Every method has a no-op default, so a backend overrides only the
+primitives it handles, and adding a primitive is no longer a breaking change.
+Backends carry their own state, so the per-crate `OnceLock` registrations are
+gone:
+
+- `install_backend` takes `&'static dyn Backend`. `Backend::NOOP` is replaced
+  by the `NoopBackend` type.
+- `Runtime` implements `Backend`. `Runtime::install_global(self)` is the single
+  install entry point and returns `Result<&'static Runtime, InstallBackendError>`.
+  The free functions `footfall_runtime::install_global`, `register_global`, and
+  `backend`, the `Runtime::install_global_with_capacity`,
+  `install_global_named`, and `install_global_named_with_level` helpers, and
+  `footfall_runtime::InstallError` are removed. Build the runtime with its
+  constructors and call `install_global`.
+- `footfall_tracy::Tracy` is renamed to `TracyBackend` and implements
+  `Backend`, with `TracyBackend::install_global`. The free `install_global`,
+  `register_global`, and `backend` functions and `footfall_tracy::InstallError`
+  are removed.
+- `Fanout::new` takes two `&'static dyn Backend` values and `Fanout` implements
+  `Backend`, so fan-outs nest. `Fanout::install_global(self)` replaces the free
+  `footfall_fanout::install_global`, and `footfall_fanout::InstallError` is
+  removed.
+
+To compose backends, leak the children and install the fan-out:
+
+```rust
+let runtime: &'static Runtime = Box::leak(Box::new(Runtime::new(512, 4096)));
+let tracy: &'static TracyBackend = Box::leak(Box::new(TracyBackend::new()));
+Fanout::new(runtime, tracy).install_global()?;
+```

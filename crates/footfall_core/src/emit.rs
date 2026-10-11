@@ -124,49 +124,107 @@ pub enum FlowPhase {
     End,
 }
 
-/// Function table implemented by a concrete runtime backend.
-#[derive(Clone, Copy, Debug)]
-pub struct Backend {
-    /// Counter delta emission.
-    pub counter_add: fn(&CounterDesc, Context, u64),
-    /// Gauge update emission.
-    pub gauge_set: fn(&CounterDesc, Context, u64),
-    /// Histogram sample emission.
-    pub histogram_record: fn(&CounterDesc, Context, u64),
-    /// Scope begin emission.
-    pub scope_begin: fn(&ScopeDesc, Context, Args) -> ScopeToken,
-    /// Scope end emission.
-    pub scope_end: fn(ScopeToken),
-    /// Resource creation emission.
-    pub resource_create: fn(&ResourceKindDesc, ResourceId, Context, u64),
-    /// Resource update emission.
-    pub resource_update: fn(&ResourceKindDesc, ResourceId, Context, u64),
-    /// Resource drop emission.
-    pub resource_drop: fn(&ResourceKindDesc, ResourceId, Context),
-    /// Frame, transaction, or pass boundary emission.
-    pub frame_marker: fn(MarkerKind, MarkerPhase, Context),
-    /// Causal flow emission.
-    pub flow: fn(FlowId, FlowPhase, Context),
-    /// Message event emission.
-    pub message: fn(&EventDesc, Context, &str, Args),
+/// Sink for every Footfall emission primitive.
+///
+/// The emission functions in this crate dispatch to the process-wide backend
+/// installed with [`install_backend`], or to [`NoopBackend`] until one is
+/// installed. Backends carry their own state, so one value can be installed
+/// directly or composed inside another backend, for example a fan-out adapter.
+///
+/// Every method has a no-op default, so a backend overrides only the
+/// primitives it cares about, and new primitives can be added without
+/// breaking existing backends.
+///
+/// # Scope tokens
+///
+/// [`Backend::scope_begin`] returns a token that is later passed to
+/// [`Backend::scope_end`]. Backends must issue tokens starting at `1`, return
+/// [`ScopeToken::INVALID`] when no scope was recorded, and ignore
+/// [`ScopeToken::INVALID`] in `scope_end`.
+pub trait Backend: Send + Sync {
+    /// Adds `value` to a counter under a semantic context.
+    fn counter_add(&self, desc: &CounterDesc, context: Context, value: u64) {
+        let _ = (desc, context, value);
+    }
+
+    /// Sets a gauge under a semantic context.
+    fn gauge_set(&self, desc: &CounterDesc, context: Context, value: u64) {
+        let _ = (desc, context, value);
+    }
+
+    /// Records one histogram sample under a semantic context.
+    fn histogram_record(&self, desc: &CounterDesc, context: Context, value: u64) {
+        let _ = (desc, context, value);
+    }
+
+    /// Begins a scope and returns the token that ends it.
+    ///
+    /// The default records nothing and returns [`ScopeToken::INVALID`].
+    fn scope_begin(&self, desc: &ScopeDesc, context: Context, args: Args) -> ScopeToken {
+        let _ = (desc, context, args);
+        ScopeToken::INVALID
+    }
+
+    /// Ends a scope previously begun by [`Backend::scope_begin`].
+    fn scope_end(&self, token: ScopeToken) {
+        let _ = token;
+    }
+
+    /// Observes the creation of a logical resource.
+    fn resource_create(
+        &self,
+        desc: &ResourceKindDesc,
+        resource_id: ResourceId,
+        context: Context,
+        size: u64,
+    ) {
+        let _ = (desc, resource_id, context, size);
+    }
+
+    /// Observes a size update of a logical resource.
+    fn resource_update(
+        &self,
+        desc: &ResourceKindDesc,
+        resource_id: ResourceId,
+        context: Context,
+        size: u64,
+    ) {
+        let _ = (desc, resource_id, context, size);
+    }
+
+    /// Observes the drop of a logical resource.
+    fn resource_drop(&self, desc: &ResourceKindDesc, resource_id: ResourceId, context: Context) {
+        let _ = (desc, resource_id, context);
+    }
+
+    /// Observes a frame, transaction, or pass boundary.
+    fn frame_marker(&self, kind: MarkerKind, phase: MarkerPhase, context: Context) {
+        let _ = (kind, phase, context);
+    }
+
+    /// Observes one phase of a causal flow.
+    fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: Context) {
+        let _ = (flow_id, phase, context);
+    }
+
+    /// Observes a message event.
+    ///
+    /// The text is borrowed for the duration of the call; backends that
+    /// retain messages must copy it.
+    fn message(&self, desc: &EventDesc, context: Context, text: &str, args: Args) {
+        let _ = (desc, context, text, args);
+    }
 }
 
-impl Backend {
-    /// Built-in no-op backend used until a runtime is installed.
-    pub const NOOP: Self = Self {
-        counter_add: noop_counter_add,
-        gauge_set: noop_gauge_set,
-        histogram_record: noop_histogram_record,
-        scope_begin: noop_scope_begin,
-        scope_end: noop_scope_end,
-        resource_create: noop_resource_create,
-        resource_update: noop_resource_update,
-        resource_drop: noop_resource_drop,
-        frame_marker: noop_frame_marker,
-        flow: noop_flow,
-        message: noop_message,
-    };
-}
+/// Backend that ignores every emission.
+///
+/// This is the backend in effect until one is installed with
+/// [`install_backend`]. It is also useful as a placeholder when composing
+/// backends.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoopBackend;
+
+impl Backend for NoopBackend {}
 
 /// Returned when a backend is already installed.
 #[cfg(feature = "std")]
@@ -175,12 +233,12 @@ pub struct InstallBackendError;
 
 /// Adds to a counter descriptor under a semantic context.
 pub fn counter_add(desc: &CounterDesc, context: Context, value: u64) {
-    (backend().counter_add)(desc, context, value);
+    backend().counter_add(desc, context, value);
 }
 
 /// Sets a gauge descriptor under a semantic context.
 pub fn gauge_set(desc: &CounterDesc, context: Context, value: u64) {
-    (backend().gauge_set)(desc, context, value);
+    backend().gauge_set(desc, context, value);
 }
 
 /// Records one sample into a histogram descriptor under a semantic context.
@@ -188,7 +246,7 @@ pub fn gauge_set(desc: &CounterDesc, context: Context, value: u64) {
 /// Histograms aggregate a value distribution per descriptor and context, so
 /// consumers can derive percentiles instead of only sums and last values.
 pub fn histogram_record(desc: &CounterDesc, context: Context, value: u64) {
-    (backend().histogram_record)(desc, context, value);
+    backend().histogram_record(desc, context, value);
 }
 
 /// Begins a scope under a semantic context.
@@ -200,7 +258,7 @@ pub fn scope_begin(desc: &ScopeDesc, context: Context) -> ScopeToken {
 /// Begins a scope carrying per-instance arguments.
 #[must_use]
 pub fn scope_begin_with(desc: &ScopeDesc, context: Context, args: Args) -> ScopeToken {
-    (backend().scope_begin)(desc, context, args)
+    backend().scope_begin(desc, context, args)
 }
 
 /// Ends a previously-begun scope.
@@ -208,7 +266,7 @@ pub fn scope_begin_with(desc: &ScopeDesc, context: Context, args: Args) -> Scope
 /// Ending [`ScopeToken::INVALID`] does nothing.
 pub fn scope_end(token: ScopeToken) {
     if token.is_valid() {
-        (backend().scope_end)(token);
+        backend().scope_end(token);
     }
 }
 
@@ -229,7 +287,7 @@ pub fn resource_create(
     context: Context,
     size: u64,
 ) {
-    (backend().resource_create)(desc, resource_id, context, size);
+    backend().resource_create(desc, resource_id, context, size);
 }
 
 /// Emits a resource-update observation.
@@ -239,17 +297,17 @@ pub fn resource_update(
     context: Context,
     size: u64,
 ) {
-    (backend().resource_update)(desc, resource_id, context, size);
+    backend().resource_update(desc, resource_id, context, size);
 }
 
 /// Emits a resource-drop observation.
 pub fn resource_drop(desc: &ResourceKindDesc, resource_id: ResourceId, context: Context) {
-    (backend().resource_drop)(desc, resource_id, context);
+    backend().resource_drop(desc, resource_id, context);
 }
 
 /// Emits a frame, transaction, or pass boundary marker.
 pub fn frame_marker(kind: MarkerKind, phase: MarkerPhase, context: Context) {
-    (backend().frame_marker)(kind, phase, context);
+    backend().frame_marker(kind, phase, context);
 }
 
 /// Emits a frame begin marker.
@@ -284,17 +342,17 @@ pub fn pass_end(context: Context) {
 
 /// Starts a causal flow under a semantic context.
 pub fn flow_begin(flow_id: FlowId, context: Context) {
-    (backend().flow)(flow_id, FlowPhase::Begin, context);
+    backend().flow(flow_id, FlowPhase::Begin, context);
 }
 
 /// Continues a causal flow under a semantic context.
 pub fn flow_step(flow_id: FlowId, context: Context) {
-    (backend().flow)(flow_id, FlowPhase::Step, context);
+    backend().flow(flow_id, FlowPhase::Step, context);
 }
 
 /// Ends a causal flow under a semantic context.
 pub fn flow_end(flow_id: FlowId, context: Context) {
-    (backend().flow)(flow_id, FlowPhase::End, context);
+    backend().flow(flow_id, FlowPhase::End, context);
 }
 
 /// Emits a message event under a semantic context.
@@ -305,67 +363,35 @@ pub fn flow_end(flow_id: FlowId, context: Context) {
 /// prefer emitting through a facility that already formatted the text, such
 /// as a log or tracing bridge.
 pub fn message(desc: &EventDesc, context: Context, text: &str) {
-    (backend().message)(desc, context, text, Args::none());
+    backend().message(desc, context, text, Args::none());
 }
 
 /// Emits a message event carrying per-instance arguments.
 pub fn message_with(desc: &EventDesc, context: Context, text: &str, args: Args) {
-    (backend().message)(desc, context, text, args);
+    backend().message(desc, context, text, args);
 }
 
-/// Installs a process-wide runtime backend.
+/// Installs the process-wide backend.
+///
+/// Only the first installation succeeds; the backend stays installed for the
+/// rest of the process. Emissions made before installation go to
+/// [`NoopBackend`].
 #[cfg(feature = "std")]
-pub fn install_backend(backend: Backend) -> Result<(), InstallBackendError> {
+pub fn install_backend(backend: &'static dyn Backend) -> Result<(), InstallBackendError> {
     BACKEND.set(backend).map_err(|_| InstallBackendError)
 }
 
-fn backend() -> &'static Backend {
+fn backend() -> &'static dyn Backend {
     #[cfg(feature = "std")]
     if let Some(backend) = BACKEND.get() {
-        return backend;
+        return *backend;
     }
 
-    &Backend::NOOP
+    &NoopBackend
 }
 
 #[cfg(feature = "std")]
-static BACKEND: OnceLock<Backend> = OnceLock::new();
-
-fn noop_counter_add(_desc: &CounterDesc, _context: Context, _value: u64) {}
-
-fn noop_gauge_set(_desc: &CounterDesc, _context: Context, _value: u64) {}
-
-fn noop_histogram_record(_desc: &CounterDesc, _context: Context, _value: u64) {}
-
-fn noop_scope_begin(_desc: &ScopeDesc, _context: Context, _args: Args) -> ScopeToken {
-    ScopeToken::INVALID
-}
-
-fn noop_scope_end(_token: ScopeToken) {}
-
-fn noop_resource_create(
-    _desc: &ResourceKindDesc,
-    _resource_id: ResourceId,
-    _context: Context,
-    _size: u64,
-) {
-}
-
-fn noop_resource_update(
-    _desc: &ResourceKindDesc,
-    _resource_id: ResourceId,
-    _context: Context,
-    _size: u64,
-) {
-}
-
-fn noop_resource_drop(_desc: &ResourceKindDesc, _resource_id: ResourceId, _context: Context) {}
-
-fn noop_frame_marker(_kind: MarkerKind, _phase: MarkerPhase, _context: Context) {}
-
-fn noop_flow(_flow_id: FlowId, _phase: FlowPhase, _context: Context) {}
-
-fn noop_message(_desc: &EventDesc, _context: Context, _text: &str, _args: Args) {}
+static BACKEND: OnceLock<&'static dyn Backend> = OnceLock::new();
 
 #[cfg(test)]
 mod tests {

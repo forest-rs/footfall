@@ -13,7 +13,7 @@ use std::{
     collections::{HashMap, VecDeque},
     string::String,
     sync::{
-        Mutex, OnceLock,
+        Mutex,
         atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -26,25 +26,6 @@ const DEFAULT_SHARD_COUNT: usize = 16;
 /// Longer texts are truncated on a UTF-8 boundary before retention so one
 /// noisy log line cannot dominate event memory.
 pub const MESSAGE_TEXT_MAX_BYTES: usize = 256;
-
-/// Installs a runtime as the process-wide Footfall backend.
-pub fn install_global(runtime: &'static Runtime) -> Result<(), InstallError> {
-    register_global(runtime)?;
-    install_backend(BACKEND).map_err(InstallError::BackendAlreadyInstalled)
-}
-
-/// Registers a runtime instance for backend use without installing it into `footfall_core`.
-pub fn register_global(runtime: &'static Runtime) -> Result<(), InstallError> {
-    RUNTIME
-        .set(runtime)
-        .map_err(|_| InstallError::RuntimeAlreadyInstalled)
-}
-
-/// Returns the runtime backend function table for fan-out composition.
-#[must_use]
-pub const fn backend() -> Backend {
-    BACKEND
-}
 
 /// In-process bounded collector for counters and timestamped observation records.
 #[derive(Debug)]
@@ -141,38 +122,15 @@ impl Runtime {
         self
     }
 
-    /// Creates and installs a process-wide runtime with explicit capacities.
-    pub fn install_global_with_capacity(
-        counter_capacity: usize,
-        event_capacity: usize,
-    ) -> Result<&'static Self, InstallError> {
-        Self::new(counter_capacity, event_capacity).install_global()
-    }
-
-    /// Creates and installs a named process-wide runtime.
-    pub fn install_global_named(
-        process_name: impl Into<String>,
-        counter_capacity: usize,
-        event_capacity: usize,
-    ) -> Result<&'static Self, InstallError> {
-        Self::named(process_name, counter_capacity, event_capacity).install_global()
-    }
-
-    /// Creates and installs a named process-wide runtime with an explicit capture level.
-    pub fn install_global_named_with_level(
-        process_name: impl Into<String>,
-        counter_capacity: usize,
-        event_capacity: usize,
-        level: InstrumentationLevel,
-    ) -> Result<&'static Self, InstallError> {
-        Self::named_with_level(process_name, counter_capacity, event_capacity, level)
-            .install_global()
-    }
-
     /// Installs this runtime as the process-wide backend and keeps it alive for the process.
-    pub fn install_global(self) -> Result<&'static Self, InstallError> {
-        let runtime = Box::leak(Box::new(self));
-        install_global(runtime)?;
+    ///
+    /// The runtime is leaked so the returned reference stays valid for the rest of the
+    /// process. To compose the runtime with other backends instead, leak it yourself
+    /// (for example with [`Box::leak`]) and pass the reference to an adapter such as
+    /// `footfall_fanout`, or to [`footfall_core::install_backend`].
+    pub fn install_global(self) -> Result<&'static Self, InstallBackendError> {
+        let runtime: &'static Self = Box::leak(Box::new(self));
+        install_backend(runtime)?;
         Ok(runtime)
     }
 
@@ -479,15 +437,6 @@ impl Runtime {
             .map_or_else(|| scope_token_for_observation(observation), ContextId::get);
         shard_index(raw, self.event_shards.len())
     }
-}
-
-/// Error returned when runtime installation fails.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InstallError {
-    /// A runtime has already been installed.
-    RuntimeAlreadyInstalled,
-    /// A backend has already been installed in `footfall_core`.
-    BackendAlreadyInstalled(InstallBackendError),
 }
 
 /// Snapshot of counters, canonical contexts, and events retained by a [`Runtime`].
@@ -880,64 +829,42 @@ impl CounterKey {
     }
 }
 
-static RUNTIME: OnceLock<&'static Runtime> = OnceLock::new();
-
-const BACKEND: Backend = Backend {
-    counter_add: backend_counter_add,
-    gauge_set: backend_gauge_set,
-    histogram_record: backend_histogram_record,
-    scope_begin: backend_scope_begin,
-    scope_end: backend_scope_end,
-    resource_create: backend_resource_create,
-    resource_update: backend_resource_update,
-    resource_drop: backend_resource_drop,
-    frame_marker: backend_frame_marker,
-    flow: backend_flow,
-    message: backend_message,
-};
-
-fn backend_counter_add(desc: &CounterDesc, context: Context, value: u64) {
-    with_runtime(|runtime| {
-        if !runtime.level().captures_counters() {
+impl Backend for Runtime {
+    fn counter_add(&self, desc: &CounterDesc, context: Context, value: u64) {
+        if !self.level().captures_counters() {
             return;
         }
-        let at_micros = runtime.now_micros();
-        runtime.counter_add_at(desc, context, value, at_micros);
-    });
-}
+        let at_micros = self.now_micros();
+        self.counter_add_at(desc, context, value, at_micros);
+    }
 
-fn backend_gauge_set(desc: &CounterDesc, context: Context, value: u64) {
-    with_runtime(|runtime| {
-        if !runtime.level().captures_counters() {
+    fn gauge_set(&self, desc: &CounterDesc, context: Context, value: u64) {
+        if !self.level().captures_counters() {
             return;
         }
-        let at_micros = runtime.now_micros();
-        runtime.gauge_set_at(desc, context, value, at_micros);
-    });
-}
+        let at_micros = self.now_micros();
+        self.gauge_set_at(desc, context, value, at_micros);
+    }
 
-fn backend_histogram_record(desc: &CounterDesc, context: Context, value: u64) {
-    with_runtime(|runtime| {
-        if !runtime.level().captures_counters() {
+    fn histogram_record(&self, desc: &CounterDesc, context: Context, value: u64) {
+        if !self.level().captures_counters() {
             return;
         }
-        let at_micros = runtime.now_micros();
-        runtime.histogram_record_at(desc, context, value, at_micros);
-    });
-}
+        let at_micros = self.now_micros();
+        self.histogram_record_at(desc, context, value, at_micros);
+    }
 
-fn backend_scope_begin(desc: &ScopeDesc, context: Context, args: Args) -> ScopeToken {
-    with_runtime(|runtime| {
-        if !runtime.level().captures_scopes() {
+    fn scope_begin(&self, desc: &ScopeDesc, context: Context, args: Args) -> ScopeToken {
+        if !self.level().captures_scopes() {
             return ScopeToken::INVALID;
         }
-        let at_micros = runtime.now_micros();
-        let Some(context_id) = runtime.context_id(context) else {
-            runtime.dropped_events.fetch_add(1, Ordering::Relaxed);
+        let at_micros = self.now_micros();
+        let Some(context_id) = self.context_id(context) else {
+            self.dropped_events.fetch_add(1, Ordering::Relaxed);
             return ScopeToken::INVALID;
         };
-        let token = runtime.next_scope_token();
-        runtime.push_event_at(
+        let token = self.next_scope_token();
+        self.push_event_at(
             Observation::ScopeBegin {
                 desc_id: desc.id(),
                 name: desc.name(),
@@ -948,39 +875,35 @@ fn backend_scope_begin(desc: &ScopeDesc, context: Context, args: Args) -> ScopeT
             at_micros,
         );
         token
-    })
-    .unwrap_or(ScopeToken::INVALID)
-}
-
-fn backend_scope_end(token: ScopeToken) {
-    if !token.is_valid() {
-        return;
     }
-    with_runtime(|runtime| {
-        if !runtime.level().captures_scopes() {
-            return;
-        }
-        let at_micros = runtime.now_micros();
-        runtime.push_event_at(Observation::ScopeEnd { token }, at_micros);
-    });
-}
 
-fn backend_resource_create(
-    desc: &ResourceKindDesc,
-    resource_id: ResourceId,
-    context: Context,
-    size: u64,
-) {
-    with_runtime(|runtime| {
-        if !runtime.level().captures_resources() {
+    fn scope_end(&self, token: ScopeToken) {
+        if !token.is_valid() {
             return;
         }
-        let at_micros = runtime.now_micros();
-        let Some(context_id) = runtime.context_id(context) else {
-            runtime.dropped_events.fetch_add(1, Ordering::Relaxed);
+        if !self.level().captures_scopes() {
+            return;
+        }
+        let at_micros = self.now_micros();
+        self.push_event_at(Observation::ScopeEnd { token }, at_micros);
+    }
+
+    fn resource_create(
+        &self,
+        desc: &ResourceKindDesc,
+        resource_id: ResourceId,
+        context: Context,
+        size: u64,
+    ) {
+        if !self.level().captures_resources() {
+            return;
+        }
+        let at_micros = self.now_micros();
+        let Some(context_id) = self.context_id(context) else {
+            self.dropped_events.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        runtime.push_event_at(
+        self.push_event_at(
             Observation::ResourceCreate {
                 kind_id: desc.id(),
                 kind_name: desc.name(),
@@ -990,25 +913,24 @@ fn backend_resource_create(
             },
             at_micros,
         );
-    });
-}
+    }
 
-fn backend_resource_update(
-    desc: &ResourceKindDesc,
-    resource_id: ResourceId,
-    context: Context,
-    size: u64,
-) {
-    with_runtime(|runtime| {
-        if !runtime.level().captures_resources() {
+    fn resource_update(
+        &self,
+        desc: &ResourceKindDesc,
+        resource_id: ResourceId,
+        context: Context,
+        size: u64,
+    ) {
+        if !self.level().captures_resources() {
             return;
         }
-        let at_micros = runtime.now_micros();
-        let Some(context_id) = runtime.context_id(context) else {
-            runtime.dropped_events.fetch_add(1, Ordering::Relaxed);
+        let at_micros = self.now_micros();
+        let Some(context_id) = self.context_id(context) else {
+            self.dropped_events.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        runtime.push_event_at(
+        self.push_event_at(
             Observation::ResourceUpdate {
                 kind_id: desc.id(),
                 kind_name: desc.name(),
@@ -1018,20 +940,18 @@ fn backend_resource_update(
             },
             at_micros,
         );
-    });
-}
+    }
 
-fn backend_resource_drop(desc: &ResourceKindDesc, resource_id: ResourceId, context: Context) {
-    with_runtime(|runtime| {
-        if !runtime.level().captures_resources() {
+    fn resource_drop(&self, desc: &ResourceKindDesc, resource_id: ResourceId, context: Context) {
+        if !self.level().captures_resources() {
             return;
         }
-        let at_micros = runtime.now_micros();
-        let Some(context_id) = runtime.context_id(context) else {
-            runtime.dropped_events.fetch_add(1, Ordering::Relaxed);
+        let at_micros = self.now_micros();
+        let Some(context_id) = self.context_id(context) else {
+            self.dropped_events.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        runtime.push_event_at(
+        self.push_event_at(
             Observation::ResourceDrop {
                 kind_id: desc.id(),
                 kind_name: desc.name(),
@@ -1040,20 +960,18 @@ fn backend_resource_drop(desc: &ResourceKindDesc, resource_id: ResourceId, conte
             },
             at_micros,
         );
-    });
-}
+    }
 
-fn backend_frame_marker(kind: MarkerKind, phase: MarkerPhase, context: Context) {
-    with_runtime(|runtime| {
-        if !runtime.level().captures_markers() {
+    fn frame_marker(&self, kind: MarkerKind, phase: MarkerPhase, context: Context) {
+        if !self.level().captures_markers() {
             return;
         }
-        let at_micros = runtime.now_micros();
-        let Some(context_id) = runtime.context_id(context) else {
-            runtime.dropped_events.fetch_add(1, Ordering::Relaxed);
+        let at_micros = self.now_micros();
+        let Some(context_id) = self.context_id(context) else {
+            self.dropped_events.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        runtime.push_event_at(
+        self.push_event_at(
             Observation::FrameMarker {
                 kind,
                 phase,
@@ -1061,20 +979,18 @@ fn backend_frame_marker(kind: MarkerKind, phase: MarkerPhase, context: Context) 
             },
             at_micros,
         );
-    });
-}
+    }
 
-fn backend_flow(flow_id: FlowId, phase: FlowPhase, context: Context) {
-    with_runtime(|runtime| {
-        if !runtime.level().captures_flows() {
+    fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: Context) {
+        if !self.level().captures_flows() {
             return;
         }
-        let at_micros = runtime.now_micros();
-        let Some(context_id) = runtime.context_id(context) else {
-            runtime.dropped_events.fetch_add(1, Ordering::Relaxed);
+        let at_micros = self.now_micros();
+        let Some(context_id) = self.context_id(context) else {
+            self.dropped_events.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        runtime.push_event_at(
+        self.push_event_at(
             Observation::Flow {
                 flow_id,
                 phase,
@@ -1082,20 +998,18 @@ fn backend_flow(flow_id: FlowId, phase: FlowPhase, context: Context) {
             },
             at_micros,
         );
-    });
-}
+    }
 
-fn backend_message(desc: &EventDesc, context: Context, text: &str, args: Args) {
-    with_runtime(|runtime| {
-        if !runtime.level().captures_messages() {
+    fn message(&self, desc: &EventDesc, context: Context, text: &str, args: Args) {
+        if !self.level().captures_messages() {
             return;
         }
-        let at_micros = runtime.now_micros();
-        let Some(context_id) = runtime.context_id(context) else {
-            runtime.dropped_events.fetch_add(1, Ordering::Relaxed);
+        let at_micros = self.now_micros();
+        let Some(context_id) = self.context_id(context) else {
+            self.dropped_events.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        runtime.push_event_at(
+        self.push_event_at(
             Observation::Message {
                 desc_id: desc.id(),
                 name: desc.name(),
@@ -1105,7 +1019,7 @@ fn backend_message(desc: &EventDesc, context: Context, text: &str, args: Args) {
             },
             at_micros,
         );
-    });
+    }
 }
 
 fn truncate_message_text(text: &str) -> String {
@@ -1117,10 +1031,6 @@ fn truncate_message_text(text: &str) -> String {
         end -= 1;
     }
     String::from(&text[..end])
-}
-
-fn with_runtime<T>(f: impl FnOnce(&Runtime) -> T) -> Option<T> {
-    RUNTIME.get().map(|runtime| f(runtime))
 }
 
 static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1);
@@ -1222,7 +1132,7 @@ const fn level_from_u8(level: u8) -> InstrumentationLevel {
 mod tests {
     use super::{CounterKind, Observation, Runtime};
     use footfall_core::{
-        Args, Context, ContextId, CounterDesc, CounterDescId, FlowId, FlowPhase,
+        Args, Backend as _, Context, ContextId, CounterDesc, CounterDescId, FlowId, FlowPhase,
         InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc,
         ResourceKindId, ScopeDesc, ScopeDescId, ScopeToken, Unit,
     };
@@ -1675,23 +1585,16 @@ mod tests {
         static SCOPE: ScopeDesc = ScopeDesc::new(ScopeDescId::new(12), "record");
         static RESOURCE: ResourceKindDesc = ResourceKindDesc::new(ResourceKindId::new(13), "atlas");
 
-        let runtime = Box::leak(Box::new(Runtime::with_level(
-            16,
-            16,
-            InstrumentationLevel::Counters,
-        )));
-        super::RUNTIME
-            .set(runtime)
-            .expect("runtime backend test should install only once");
+        let runtime = Runtime::with_level(16, 16, InstrumentationLevel::Counters);
 
         let context = Context::root().with(footfall_core::LabelKey::Frame, 3_u32);
-        super::backend_counter_add(&COUNTER, context, 1);
-        let token = super::backend_scope_begin(&SCOPE, context, Args::none());
+        runtime.counter_add(&COUNTER, context, 1);
+        let token = runtime.scope_begin(&SCOPE, context, Args::none());
         assert_eq!(token, ScopeToken::INVALID);
-        super::backend_scope_end(token);
-        super::backend_resource_create(&RESOURCE, ResourceId::new(7), context, 64);
-        super::backend_frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
-        super::backend_flow(FlowId::new(9), FlowPhase::Begin, context);
+        runtime.scope_end(token);
+        runtime.resource_create(&RESOURCE, ResourceId::new(7), context, 64);
+        runtime.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
+        runtime.flow(FlowId::new(9), FlowPhase::Begin, context);
 
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.counters.len(), 1);
@@ -1699,18 +1602,18 @@ mod tests {
 
         // A scope begun while scopes were excluded must not record an end
         // after the level is raised.
-        let excluded = super::backend_scope_begin(&SCOPE, context, Args::none());
+        let excluded = runtime.scope_begin(&SCOPE, context, Args::none());
         runtime.set_level(InstrumentationLevel::Trace);
-        super::backend_scope_end(excluded);
+        runtime.scope_end(excluded);
         assert!(runtime.snapshot().events.is_empty());
 
         runtime.reset();
-        super::backend_counter_add(&COUNTER, context, 1);
-        let token = super::backend_scope_begin(&SCOPE, context, Args::none());
-        super::backend_scope_end(token);
-        super::backend_resource_create(&RESOURCE, ResourceId::new(7), context, 64);
-        super::backend_frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
-        super::backend_flow(FlowId::new(9), FlowPhase::Begin, context);
+        runtime.counter_add(&COUNTER, context, 1);
+        let token = runtime.scope_begin(&SCOPE, context, Args::none());
+        runtime.scope_end(token);
+        runtime.resource_create(&RESOURCE, ResourceId::new(7), context, 64);
+        runtime.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
+        runtime.flow(FlowId::new(9), FlowPhase::Begin, context);
 
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.counters.len(), 1);

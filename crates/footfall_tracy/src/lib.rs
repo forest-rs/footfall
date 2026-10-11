@@ -3,8 +3,7 @@
 
 //! Live Tracy backend for Footfall.
 //!
-//! `footfall_tracy` installs a process-wide [`footfall_core::Backend`] that emits directly into
-//! `tracy-client`.
+//! [`TracyBackend`] is a [`footfall_core::Backend`] that emits directly into `tracy-client`.
 //!
 //! This first slice intentionally maps only the parts of Footfall that Tracy represents naturally:
 //!
@@ -16,13 +15,14 @@
 //! Flow events are currently ignored by this backend because Tracy does not expose a strong native
 //! equivalent to Perfetto-style causal links.
 //!
-//! This crate can install itself directly as the process-wide backend, or it can be registered and
-//! composed through an adapter such as `footfall_fanout`.
+//! A [`TracyBackend`] can install itself as the process-wide backend with
+//! [`TracyBackend::install_global`], or it can be composed through an adapter such as
+//! `footfall_fanout`.
 
 use footfall_core::{
-    Args, Backend, Context, CounterDesc, CounterDescId, EventDesc, FlowId, FlowPhase,
-    InstallBackendError, LabelValue, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc,
-    ScopeDesc, ScopeDescId, ScopeToken, SourceLocation, Unit, install_backend,
+    Args, Backend, Context, CounterDesc, CounterDescId, EventDesc, InstallBackendError, LabelValue,
+    MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ScopeDesc, ScopeDescId, ScopeToken,
+    SourceLocation, Unit, install_backend,
 };
 use std::{
     cell::RefCell,
@@ -38,37 +38,8 @@ use tracy_client::{
     Client, Frame, FrameName, PlotConfiguration, PlotFormat, PlotName, Span, SpanLocation,
 };
 
-/// Installs a Tracy backend as the process-wide Footfall backend.
-pub fn install_global(tracy: &'static Tracy) -> Result<(), InstallError> {
-    register_global(tracy)?;
-    install_backend(BACKEND).map_err(InstallError::BackendAlreadyInstalled)
-}
-
-/// Registers a Tracy instance for backend use without installing it into `footfall_core`.
-pub fn register_global(tracy: &'static Tracy) -> Result<(), InstallError> {
-    tracy.register_current_thread();
-    TRACY
-        .set(tracy)
-        .map_err(|_| InstallError::TracyAlreadyInstalled)
-}
-
-/// Returns the Tracy backend function table for fan-out composition.
-#[must_use]
-pub const fn backend() -> Backend {
-    BACKEND
-}
-
-/// Error returned when Tracy backend installation fails.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InstallError {
-    /// A Tracy backend has already been installed.
-    TracyAlreadyInstalled,
-    /// Another Footfall backend has already been installed.
-    BackendAlreadyInstalled(InstallBackendError),
-}
-
-/// Live Tracy backend state.
-pub struct Tracy {
+/// Live Tracy backend.
+pub struct TracyBackend {
     client: Client,
     callstack_depth: u16,
     next_scope_token: AtomicU64,
@@ -76,7 +47,7 @@ pub struct Tracy {
     locations: Mutex<HashMap<ScopeDescId, &'static SpanLocation>>,
 }
 
-impl Tracy {
+impl TracyBackend {
     /// Creates a Tracy backend with no callstack capture on zones or messages.
     #[must_use]
     pub fn new() -> Self {
@@ -93,6 +64,16 @@ impl Tracy {
             counters: Mutex::new(CounterState::default()),
             locations: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Installs this backend as the process-wide backend and keeps it alive for the process.
+    ///
+    /// The calling thread is registered with Tracy as part of installation.
+    pub fn install_global(self) -> Result<&'static Self, InstallBackendError> {
+        let tracy: &'static Self = Box::leak(Box::new(self));
+        tracy.register_current_thread();
+        install_backend(tracy)?;
+        Ok(tracy)
     }
 
     /// Returns the callstack depth configured for this backend.
@@ -142,6 +123,11 @@ impl Tracy {
         Client::is_running()
     }
 
+    /// Distinguishes this backend's open spans and frames in thread-local state.
+    fn key(&self) -> usize {
+        core::ptr::from_ref(self).addr()
+    }
+
     fn next_scope_token(&self) -> ScopeToken {
         let raw = self.next_scope_token.fetch_add(1, Ordering::Relaxed);
         ScopeToken::new(raw)
@@ -173,7 +159,7 @@ impl Tracy {
         }
 
         OPEN_SPANS.with(|spans| {
-            spans.borrow_mut().insert(token.get(), span);
+            spans.borrow_mut().insert((self.key(), token.get()), span);
         });
 
         token
@@ -198,7 +184,7 @@ impl Tracy {
             return;
         }
         OPEN_SPANS.with(|spans| {
-            spans.borrow_mut().remove(&token.get());
+            spans.borrow_mut().remove(&(self.key(), token.get()));
         });
     }
 
@@ -229,12 +215,12 @@ impl Tracy {
             MarkerPhase::Begin => {
                 let frame = self.client.non_continuous_frame(frame_name(kind));
                 OPEN_FRAMES.with(|frames| {
-                    frames.borrow_mut().insert(kind, frame);
+                    frames.borrow_mut().insert((self.key(), kind), frame);
                 });
             }
             MarkerPhase::End => {
                 OPEN_FRAMES.with(|frames| {
-                    frames.borrow_mut().remove(&kind);
+                    frames.borrow_mut().remove(&(self.key(), kind));
                 });
             }
         }
@@ -253,16 +239,16 @@ impl Tracy {
     }
 }
 
-impl Default for Tracy {
+impl Default for TracyBackend {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl fmt::Debug for Tracy {
+impl fmt::Debug for TracyBackend {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("Tracy")
+            .debug_struct("TracyBackend")
             .field("callstack_depth", &self.callstack_depth)
             .finish_non_exhaustive()
     }
@@ -292,93 +278,76 @@ enum CounterUpdate {
 
 thread_local! {
     static THREAD_REGISTERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static OPEN_SPANS: RefCell<HashMap<u64, Span>> = RefCell::new(HashMap::new());
-    static OPEN_FRAMES: RefCell<HashMap<MarkerKind, Frame>> = RefCell::new(HashMap::new());
+    static OPEN_SPANS: RefCell<HashMap<(usize, u64), Span>> = RefCell::new(HashMap::new());
+    static OPEN_FRAMES: RefCell<HashMap<(usize, MarkerKind), Frame>> = RefCell::new(HashMap::new());
 }
 
-static TRACY: OnceLock<&'static Tracy> = OnceLock::new();
+impl Backend for TracyBackend {
+    fn counter_add(&self, desc: &CounterDesc, _context: Context, value: u64) {
+        self.register_current_thread();
+        self.observe_counter(desc, value, CounterUpdate::Add);
+    }
 
-const BACKEND: Backend = Backend {
-    counter_add: backend_counter_add,
-    gauge_set: backend_gauge_set,
-    histogram_record: backend_histogram_record,
-    scope_begin: backend_scope_begin,
-    scope_end: backend_scope_end,
-    resource_create: backend_resource_create,
-    resource_update: backend_resource_update,
-    resource_drop: backend_resource_drop,
-    frame_marker: backend_frame_marker,
-    flow: backend_flow,
-    message: backend_message,
-};
+    fn gauge_set(&self, desc: &CounterDesc, _context: Context, value: u64) {
+        self.register_current_thread();
+        self.observe_counter(desc, value, CounterUpdate::Set);
+    }
 
-fn backend_counter_add(desc: &CounterDesc, _context: Context, value: u64) {
-    with_tracy(|tracy| tracy.observe_counter(desc, value, CounterUpdate::Add));
-}
+    fn histogram_record(&self, desc: &CounterDesc, _context: Context, value: u64) {
+        // Tracy has no histogram primitive; plot each sample so the distribution
+        // is at least visible as a time series.
+        self.register_current_thread();
+        self.observe_counter(desc, value, CounterUpdate::Set);
+    }
 
-fn backend_histogram_record(desc: &CounterDesc, _context: Context, value: u64) {
-    // Tracy has no histogram primitive; plot each sample so the distribution
-    // is at least visible as a time series.
-    with_tracy(|tracy| tracy.observe_counter(desc, value, CounterUpdate::Set));
-}
+    fn scope_begin(&self, desc: &ScopeDesc, context: Context, args: Args) -> ScopeToken {
+        self.register_current_thread();
+        self.begin_scope(desc, context, args)
+    }
 
-fn backend_gauge_set(desc: &CounterDesc, _context: Context, value: u64) {
-    with_tracy(|tracy| tracy.observe_counter(desc, value, CounterUpdate::Set));
-}
+    fn scope_end(&self, token: ScopeToken) {
+        self.end_scope(token);
+    }
 
-fn backend_scope_begin(desc: &ScopeDesc, context: Context, args: Args) -> ScopeToken {
-    with_tracy(|tracy| tracy.begin_scope(desc, context, args)).unwrap_or_default()
-}
+    fn resource_create(
+        &self,
+        desc: &ResourceKindDesc,
+        resource_id: ResourceId,
+        context: Context,
+        size: u64,
+    ) {
+        self.register_current_thread();
+        self.emit_resource_message("create", desc, resource_id, context, Some(size));
+    }
 
-fn backend_scope_end(token: ScopeToken) {
-    let _ = with_tracy(|tracy| tracy.end_scope(token));
-}
+    fn resource_update(
+        &self,
+        desc: &ResourceKindDesc,
+        resource_id: ResourceId,
+        context: Context,
+        size: u64,
+    ) {
+        self.register_current_thread();
+        self.emit_resource_message("update", desc, resource_id, context, Some(size));
+    }
 
-fn backend_resource_create(
-    desc: &ResourceKindDesc,
-    resource_id: ResourceId,
-    context: Context,
-    size: u64,
-) {
-    let _ = with_tracy(|tracy| {
-        tracy.emit_resource_message("create", desc, resource_id, context, Some(size));
-    });
-}
+    fn resource_drop(&self, desc: &ResourceKindDesc, resource_id: ResourceId, context: Context) {
+        self.register_current_thread();
+        self.emit_resource_message("drop", desc, resource_id, context, None);
+    }
 
-fn backend_resource_update(
-    desc: &ResourceKindDesc,
-    resource_id: ResourceId,
-    context: Context,
-    size: u64,
-) {
-    let _ = with_tracy(|tracy| {
-        tracy.emit_resource_message("update", desc, resource_id, context, Some(size));
-    });
-}
+    fn frame_marker(&self, kind: MarkerKind, phase: MarkerPhase, _context: Context) {
+        self.register_current_thread();
+        self.handle_marker(kind, phase);
+    }
 
-fn backend_resource_drop(desc: &ResourceKindDesc, resource_id: ResourceId, context: Context) {
-    let _ =
-        with_tracy(|tracy| tracy.emit_resource_message("drop", desc, resource_id, context, None));
-}
+    // Flows are ignored: Tracy has no native causal-link primitive.
 
-fn backend_frame_marker(kind: MarkerKind, phase: MarkerPhase, _context: Context) {
-    let _ = with_tracy(|tracy| tracy.handle_marker(kind, phase));
-}
-
-fn backend_message(desc: &EventDesc, context: Context, text: &str, args: Args) {
-    with_tracy(|tracy| {
+    fn message(&self, desc: &EventDesc, context: Context, text: &str, args: Args) {
+        self.register_current_thread();
         let message = message_text(desc, context, text, args);
-        tracy.client.message(&message, tracy.callstack_depth);
-    });
-}
-
-fn backend_flow(_flow_id: FlowId, _phase: FlowPhase, _context: Context) {}
-
-fn with_tracy<T>(f: impl FnOnce(&Tracy) -> T) -> Option<T> {
-    TRACY.get().map(|tracy| {
-        tracy.register_current_thread();
-        f(tracy)
-    })
+        self.client.message(&message, self.callstack_depth);
+    }
 }
 
 fn plot_configuration(unit: Unit) -> PlotConfiguration {
