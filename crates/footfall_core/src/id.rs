@@ -25,7 +25,10 @@ macro_rules! define_id {
 }
 
 define_id!(
-    /// Canonical runtime handle for a semantic context.
+    /// Id of a registered context in a snapshot.
+    ///
+    /// It carries the same value as the [`ContextHandle`](crate::ContextHandle)
+    /// the context was emitted with; `0` is the empty root context.
     ContextId
 );
 

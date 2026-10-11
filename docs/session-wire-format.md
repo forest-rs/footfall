@@ -109,6 +109,15 @@ payload for that tag:
 Label keys are user-defined, so they travel by name. Version `2.0` replaced the
 `1.x` encoding, where each key was a `u8` tag into a fixed vocabulary.
 
+Context id `0` is the empty root context. Other context ids are the producer's
+registered context handles: opaque integers, sparse rather than dense, stable
+for as long as the producer keeps the context registered, and therefore stable
+across that producer's snapshots and sessions. Resolve them through the
+`Contexts` rows of the same snapshot, never by position. Counter, histogram,
+and event rows only reference ids present in those rows; observations whose
+handle the producer could not resolve arrive attributed to `0` and are counted
+in the dropped-contexts total.
+
 Snapshot metadata carries a `u64` wall-clock anchor after the session
 sequence: the wall-clock time of runtime creation in microseconds since the
 Unix epoch. All snapshot timestamps are relative to runtime creation, so

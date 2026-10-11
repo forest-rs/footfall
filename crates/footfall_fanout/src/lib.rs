@@ -24,8 +24,9 @@
 //! ```
 
 use footfall_core::{
-    Args, Backend, Context, CounterDesc, EventDesc, FlowId, FlowPhase, InstallBackendError,
-    MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ScopeDesc, ScopeToken, install_backend,
+    Args, Backend, Context, ContextHandle, CounterDesc, EventDesc, FlowId, FlowPhase,
+    InstallBackendError, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ScopeDesc,
+    ScopeToken, install_backend,
 };
 use std::{
     boxed::Box,
@@ -39,8 +40,10 @@ use std::{
 
 /// Backend that forwards every emission to two child backends.
 ///
-/// Emissions reach the primary backend first. Scope ends unwind in reverse
-/// order: the secondary backend ends its scope before the primary one.
+/// Emissions reach the primary backend first. Scope ends and context releases
+/// unwind in reverse order: the secondary backend sees them before the primary
+/// one. Context handles are allocated by `footfall_core`, so both children
+/// share them without translation.
 pub struct Fanout {
     primary: &'static dyn Backend,
     secondary: &'static dyn Backend,
@@ -78,22 +81,37 @@ impl fmt::Debug for Fanout {
 }
 
 impl Backend for Fanout {
-    fn counter_add(&self, desc: &'static CounterDesc, context: &Context, value: u64) {
+    fn context_registered(&self, handle: ContextHandle, context: &Context) {
+        self.primary.context_registered(handle, context);
+        self.secondary.context_registered(handle, context);
+    }
+
+    fn context_released(&self, handle: ContextHandle) {
+        self.secondary.context_released(handle);
+        self.primary.context_released(handle);
+    }
+
+    fn counter_add(&self, desc: &'static CounterDesc, context: ContextHandle, value: u64) {
         self.primary.counter_add(desc, context, value);
         self.secondary.counter_add(desc, context, value);
     }
 
-    fn gauge_set(&self, desc: &'static CounterDesc, context: &Context, value: u64) {
+    fn gauge_set(&self, desc: &'static CounterDesc, context: ContextHandle, value: u64) {
         self.primary.gauge_set(desc, context, value);
         self.secondary.gauge_set(desc, context, value);
     }
 
-    fn histogram_record(&self, desc: &'static CounterDesc, context: &Context, value: u64) {
+    fn histogram_record(&self, desc: &'static CounterDesc, context: ContextHandle, value: u64) {
         self.primary.histogram_record(desc, context, value);
         self.secondary.histogram_record(desc, context, value);
     }
 
-    fn scope_begin(&self, desc: &'static ScopeDesc, context: &Context, args: &Args) -> ScopeToken {
+    fn scope_begin(
+        &self,
+        desc: &'static ScopeDesc,
+        context: ContextHandle,
+        args: &Args,
+    ) -> ScopeToken {
         let primary = self.primary.scope_begin(desc, context, args);
         let secondary = self.secondary.scope_begin(desc, context, args);
         let token = ScopeToken::new(self.next_scope_token.fetch_add(1, Ordering::Relaxed));
@@ -123,7 +141,7 @@ impl Backend for Fanout {
         &self,
         desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
-        context: &Context,
+        context: ContextHandle,
         size: u64,
     ) {
         self.primary
@@ -136,7 +154,7 @@ impl Backend for Fanout {
         &self,
         desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
-        context: &Context,
+        context: ContextHandle,
         size: u64,
     ) {
         self.primary
@@ -149,23 +167,23 @@ impl Backend for Fanout {
         &self,
         desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
-        context: &Context,
+        context: ContextHandle,
     ) {
         self.primary.resource_drop(desc, resource_id, context);
         self.secondary.resource_drop(desc, resource_id, context);
     }
 
-    fn frame_marker(&self, kind: MarkerKind, phase: MarkerPhase, context: &Context) {
+    fn frame_marker(&self, kind: MarkerKind, phase: MarkerPhase, context: ContextHandle) {
         self.primary.frame_marker(kind, phase, context);
         self.secondary.frame_marker(kind, phase, context);
     }
 
-    fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: &Context) {
+    fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: ContextHandle) {
         self.primary.flow(flow_id, phase, context);
         self.secondary.flow(flow_id, phase, context);
     }
 
-    fn message(&self, desc: &'static EventDesc, context: &Context, text: &str, args: &Args) {
+    fn message(&self, desc: &'static EventDesc, context: ContextHandle, text: &str, args: &Args) {
         self.primary.message(desc, context, text, args);
         self.secondary.message(desc, context, text, args);
     }
@@ -181,8 +199,8 @@ struct ScopePair {
 mod tests {
     use super::Fanout;
     use footfall_core::{
-        Args, Backend, Context, CounterDesc, LabelKey, MarkerKind, MarkerPhase, NoopBackend,
-        ScopeDesc, ScopeToken,
+        Args, Backend, Context, ContextHandle, CounterDesc, LabelKey, MarkerKind, MarkerPhase,
+        NoopBackend, ScopeDesc, ScopeToken,
     };
     use std::sync::Mutex;
 
@@ -213,14 +231,22 @@ mod tests {
     }
 
     impl Backend for Recorder {
-        fn counter_add(&self, _desc: &'static CounterDesc, _context: &Context, _value: u64) {
+        fn context_registered(&self, handle: ContextHandle, _context: &Context) {
+            self.record(&format!("context_registered {}", handle.get()));
+        }
+
+        fn context_released(&self, handle: ContextHandle) {
+            self.record(&format!("context_released {}", handle.get()));
+        }
+
+        fn counter_add(&self, _desc: &'static CounterDesc, _context: ContextHandle, _value: u64) {
             self.record("counter_add");
         }
 
         fn scope_begin(
             &self,
             _desc: &'static ScopeDesc,
-            _context: &Context,
+            _context: ContextHandle,
             _args: &Args,
         ) -> ScopeToken {
             self.record("scope_begin");
@@ -231,7 +257,7 @@ mod tests {
             self.record(&format!("scope_end {}", token.get()));
         }
 
-        fn frame_marker(&self, _kind: MarkerKind, _phase: MarkerPhase, _context: &Context) {
+        fn frame_marker(&self, _kind: MarkerKind, _phase: MarkerPhase, _context: ContextHandle) {
             self.record("frame_marker");
         }
     }
@@ -247,7 +273,7 @@ mod tests {
     #[test]
     fn fanout_ignores_invalid_scope_token() {
         let fanout = Fanout::new(&NOOP, &NOOP);
-        let token = fanout.scope_begin(&SCOPE, &Context::root(), &Args::none());
+        let token = fanout.scope_begin(&SCOPE, ContextHandle::ROOT, &Args::none());
         assert!(token.is_valid(), "fanout tokens should start at 1");
 
         fanout.scope_end(ScopeToken::INVALID);
@@ -278,16 +304,20 @@ mod tests {
             Recorder::leak("primary", 11, log),
             Recorder::leak("secondary", 22, log),
         );
-        let context = Context::root().with(&FRAME, 1_u32);
+        let context = ContextHandle::new(4);
+        fanout.context_registered(context, &Context::root().with(&FRAME, 1_u32));
 
-        fanout.counter_add(&COUNTER, &context, 3);
-        let token = fanout.scope_begin(&SCOPE, &context, &Args::none());
+        fanout.counter_add(&COUNTER, context, 3);
+        let token = fanout.scope_begin(&SCOPE, context, &Args::none());
         fanout.scope_end(token);
-        fanout.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, &context);
+        fanout.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
+        fanout.context_released(context);
 
         assert_eq!(
             take(log),
             [
+                "primary context_registered 4",
+                "secondary context_registered 4",
                 "primary counter_add",
                 "secondary counter_add",
                 "primary scope_begin",
@@ -296,6 +326,8 @@ mod tests {
                 "primary scope_end 11",
                 "primary frame_marker",
                 "secondary frame_marker",
+                "secondary context_released 4",
+                "primary context_released 4",
             ]
         );
     }
@@ -309,8 +341,8 @@ mod tests {
         )));
         let outer = Fanout::new(Recorder::leak("a", 5, log), inner);
 
-        let first = outer.scope_begin(&SCOPE, &Context::root(), &Args::none());
-        let second = outer.scope_begin(&SCOPE, &Context::root(), &Args::none());
+        let first = outer.scope_begin(&SCOPE, ContextHandle::ROOT, &Args::none());
+        let second = outer.scope_begin(&SCOPE, ContextHandle::ROOT, &Args::none());
         assert_ne!(first, second, "each level issues its own tokens");
         outer.scope_end(second);
         outer.scope_end(first);

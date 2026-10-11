@@ -8,7 +8,9 @@
 //! adds on top of the runtime-direct cases in the `runtime` target.
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use footfall::{InstrumentationLevel, NoopBackend, counter_add, scope_begin, scope_end};
+use footfall::{
+    InstrumentationLevel, NoopBackend, RegisteredContext, counter_add, scope_begin, scope_end,
+};
 use footfall_benchmarks::{
     COUNTER_CAPACITY, EVENT_CAPACITY, MEASUREMENT, OPS, RECORD, WARM_UP, sample_context,
     time_chunked,
@@ -37,14 +39,15 @@ fn runtime() -> &'static Runtime {
 fn counters(c: &mut Criterion) {
     let runtime = runtime();
     runtime.set_level(InstrumentationLevel::Counters);
-    let context = sample_context();
+    let registered = RegisteredContext::new(&sample_context());
+    let context = registered.handle();
     let mut group = c.benchmark_group("fanout/counters");
     group.bench_function("counter_add", |b| {
         b.iter_custom(|iters| {
             time_chunked(
                 iters,
                 || runtime.reset(),
-                || counter_add(black_box(&OPS), black_box(&context), black_box(1)),
+                || counter_add(black_box(&OPS), black_box(context), black_box(1)),
             )
         });
     });
@@ -54,7 +57,8 @@ fn counters(c: &mut Criterion) {
 fn scoped(c: &mut Criterion) {
     let runtime = runtime();
     runtime.set_level(InstrumentationLevel::Scoped);
-    let context = sample_context();
+    let registered = RegisteredContext::new(&sample_context());
+    let context = registered.handle();
     let mut group = c.benchmark_group("fanout/scoped");
     group.bench_function("scope begin+end", |b| {
         b.iter_custom(|iters| {
@@ -62,7 +66,7 @@ fn scoped(c: &mut Criterion) {
                 iters,
                 || runtime.reset(),
                 || {
-                    let token = scope_begin(black_box(&RECORD), black_box(&context));
+                    let token = scope_begin(black_box(&RECORD), black_box(context));
                     scope_end(black_box(token));
                 },
             )

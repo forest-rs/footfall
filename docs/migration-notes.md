@@ -28,8 +28,10 @@ use `Runtime::with_level`, `Runtime::named_with_level`, or `Runtime::set_level`.
 For compatibility, `Runtime::new` and `Runtime::named` continue to default to
 `Trace`.
 
-Runtime collection now uses one context interner plus sharded counter and event
-stores. Snapshot payloads keep the same public shape; event rows are merged and
+Runtime collection keeps registered contexts in a handle-keyed table and
+writes counters and events into per-thread shards (see
+[Registered Context Handles](#registered-context-handles)). Snapshot payloads
+keep the same public shape; event rows are merged and
 ordered by timestamp during snapshot extraction, with ties broken by a
 runtime-assigned recording sequence so events recorded by one thread within the
 same microsecond keep their program order. `TimedObservation` carries that
@@ -75,8 +77,8 @@ instead of by semantic context:
 ## Reserved Scope Token
 
 `ScopeToken::INVALID` (raw value `0`) is returned when no scope was recorded:
-before a backend is installed, while the capture level excludes scopes, or
-when the runtime cannot intern the scope's context. `scope_end` ignores it, and
+before a backend is installed or while the capture level excludes scopes.
+`scope_end` ignores it, and
 the runtime, Tracy, and fan-out backends ignore it too. Backends issue tokens
 starting at `1`. Previously the no-op paths returned the descriptor id, so a
 guard started before backend installation could end an unrelated scope that
@@ -186,6 +188,10 @@ let _scope = scope_with(&RECORD, &context, &args!("items" => 3_u32));
 Backends that retain a context or arguments copy them (`*context`,
 `*args`); both types are still `Copy`.
 
+Emissions have since moved from `&Context` to registered context handles; see
+[Registered Context Handles](#registered-context-handles). `Args` are still
+passed by reference.
+
 ## Process-Wide Maximum Level
 
 `footfall_core` now keeps a process-wide maximum level
@@ -205,3 +211,68 @@ so disabled and level-excluded emissions return without dynamic dispatch.
 
 A backend installed directly with `install_backend` that relied on seeing
 emissions after something lowered the maximum level will now miss them.
+
+## Registered Context Handles
+
+Emissions no longer carry a `Context`. A context is registered once per
+semantic owner and every emission carries its `ContextHandle`, a `u64`, so
+attribution costs the same however many labels the context has, and the
+runtime no longer hashes and interns a context under one process-wide lock on
+every call.
+
+```rust
+use footfall::{RegisteredContext, context, counter_add, scope};
+
+// Before: the context travels with, and is interned on, every call.
+let pass = context!(PASS = 1_u32, NODE = 42_u32);
+let _scope = scope(&RECORD, &pass);
+counter_add(&DRAW_OPS, &pass, 1);
+
+// After: register once where the owner lives, emit with the handle.
+let pass = RegisteredContext::new(&context!(PASS = 1_u32, NODE = 42_u32));
+let _scope = scope(&RECORD, pass.handle());
+counter_add(&DRAW_OPS, pass.handle(), 1);
+```
+
+- Every emission function, `ScopeGuard::new`/`with_args`, and every `Backend`
+  method take a `ContextHandle` where they took `&Context`.
+  `ContextHandle::ROOT` replaces `&Context::root()` and needs no registration.
+- `register_context` returns a handle and `release_context` releases it.
+  `RegisteredContext` releases on drop; `RegisteredContext::into_handle`
+  keeps the context registered for the rest of the process.
+- `LazyContext` holds a context in a `static` and registers it on the first
+  `handle()` call made after a backend is installed. Contexts registered
+  eagerly before installation are never seen by the backend, and their
+  observations are attributed to the root context.
+- Equal contexts registered separately get distinct handles and are not
+  merged. Register once per owner and reuse the handle.
+- `Backend` gains `context_registered(handle, &Context)` and
+  `context_released(handle)`, both defaulting to no-ops. Backends that
+  attribute observations keep the context from registration; Tracy renders it
+  once, and fan-out forwards both calls to its children.
+- Handles are allocated by `footfall_core` from one process-wide counter and
+  never reused, so all backends share them. Snapshot `ContextId`s carry the
+  handle values: sparse, with `0` for the root context, and stable while the
+  context stays registered. `Snapshot::context` looks ids up instead of
+  indexing by position.
+- The runtime keeps live contexts across session resets and purges released
+  ones when the next session starts, so observations recorded before release
+  still resolve in that session's snapshots.
+- `Snapshot::dropped_contexts` now counts registrations refused because the
+  runtime's context table was full, plus counter rows and events whose handle
+  the runtime does not know; those are kept and attributed to the root context
+  instead of being dropped.
+- Counters and events are written into per-thread shards and merged when a
+  snapshot is taken, so threads recording the same counter no longer contend.
+  A counter key updated from several threads takes one slot of the counter
+  capacity per shard it lands in. Gauges written from several threads resolve
+  to the most recent write by timestamp.
+- `footfall_tracing` registers a context per span from its numeric and
+  boolean fields, on top of its parent span's labels, and releases it when the
+  span closes. Span scopes and the events recorded inside a span are
+  attributed to that context instead of the root.
+- `footfall_memory`'s `TrackedScratchVec::new` and `CacheStats::new` take a
+  `ContextHandle`.
+- The session wire layout is unchanged; context ids on the wire are now
+  sparse handle values, as described in
+  [WebTransport Session Wire Format](session-wire-format.md).

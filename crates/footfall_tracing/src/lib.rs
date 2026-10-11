@@ -13,6 +13,13 @@
 //! Non-message string fields are ignored because [`Args`] only stores static
 //! string values.
 //!
+//! Each span also gets a Footfall context: its numeric and boolean fields at
+//! creation, keyed by field name, on top of the labels of its parent span.
+//! The layer registers that context when the span is created and releases it
+//! when the span closes, so the span's scope and the events recorded inside
+//! it are attributed to it. A span with no such fields shares its parent's
+//! context, and spans outside any span with no fields use the root context.
+//!
 //! Descriptors are interned per callsite. `tracing` callsite metadata is
 //! `&'static`, so descriptor names and source locations come straight from
 //! the callsite. Each layer leaks one descriptor per callsite it sees, so
@@ -29,7 +36,10 @@
 //!     .expect("subscriber should install once");
 //! ```
 
-use footfall_core::{Args, EventDesc, LabelValue, ScopeDesc, ScopeToken, SourceLocation};
+use footfall_core::{
+    Args, Context, ContextHandle, EventDesc, LabelKey, LabelValue, ScopeDesc, ScopeToken,
+    SourceLocation,
+};
 use std::{cell::RefCell, collections::HashMap, fmt::Write as _, sync::Mutex};
 use tracing_core::{
     Event, Level, Metadata, Subscriber,
@@ -43,6 +53,7 @@ use tracing_subscriber::{layer::Context as LayerContext, registry::LookupSpan};
 pub struct FootfallLayer {
     scope_descs: Mutex<HashMap<CallsiteId, &'static ScopeDesc>>,
     event_descs: Mutex<HashMap<CallsiteId, &'static EventDesc>>,
+    label_keys: Mutex<HashMap<&'static str, &'static LabelKey>>,
 }
 
 type CallsiteId = tracing_core::callsite::Identifier;
@@ -54,7 +65,29 @@ impl FootfallLayer {
         Self {
             scope_descs: Mutex::new(HashMap::new()),
             event_descs: Mutex::new(HashMap::new()),
+            label_keys: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Returns the label key for a field name, leaking one key per distinct
+    /// name, so memory is bounded by the field names the callsites declare.
+    fn label_key(&self, name: &'static str) -> &'static LabelKey {
+        let mut keys = self
+            .label_keys
+            .lock()
+            .expect("label key mutex should not be poisoned");
+        keys.entry(name)
+            .or_insert_with(|| Box::leak(Box::new(LabelKey::new(name))))
+    }
+
+    /// Builds a span's context from its parent's and its own labels.
+    fn span_context(&self, parent: Context, labels: &[(&'static str, LabelValue)]) -> Context {
+        labels.iter().fold(parent, |context, (name, value)| {
+            // Contexts are bounded; labels past the capacity are dropped.
+            context
+                .try_with(self.label_key(name), *value)
+                .unwrap_or(context)
+        })
     }
 
     fn scope_desc(&self, metadata: &'static Metadata<'static>) -> &'static ScopeDesc {
@@ -95,8 +128,12 @@ fn build_scope_desc(metadata: &'static Metadata<'static>) -> ScopeDesc {
 }
 
 /// Span state stored in the tracing registry extensions.
-struct SpanArgs {
+struct SpanState {
     args: Args,
+    context: Context,
+    handle: ContextHandle,
+    /// Whether this span registered `handle` and must release it.
+    owns_handle: bool,
 }
 
 std::thread_local! {
@@ -113,8 +150,40 @@ where
         };
         let mut visitor = ArgsVisitor::default();
         attrs.record(&mut visitor);
-        span.extensions_mut()
-            .insert(SpanArgs { args: visitor.args });
+
+        let (parent_context, parent_handle) = span
+            .parent()
+            .and_then(|parent| {
+                parent
+                    .extensions()
+                    .get::<SpanState>()
+                    .map(|state| (state.context, state.handle))
+            })
+            .unwrap_or((Context::root(), ContextHandle::ROOT));
+        let (context, handle, owns_handle) = if visitor.labels.is_empty() {
+            (parent_context, parent_handle, false)
+        } else {
+            let context = self.span_context(parent_context, &visitor.labels);
+            let handle = footfall_core::register_context(&context);
+            (context, handle, !handle.is_root())
+        };
+        span.extensions_mut().insert(SpanState {
+            args: visitor.args,
+            context,
+            handle,
+            owns_handle,
+        });
+    }
+
+    fn on_close(&self, id: span::Id, ctx: LayerContext<'_, S>) {
+        let Some(span) = ctx.span(&id) else {
+            return;
+        };
+        if let Some(state) = span.extensions().get::<SpanState>()
+            && state.owns_handle
+        {
+            footfall_core::release_context(state.handle);
+        }
     }
 
     fn on_record(&self, id: &span::Id, values: &span::Record<'_>, ctx: LayerContext<'_, S>) {
@@ -122,8 +191,11 @@ where
             return;
         };
         let mut extensions = span.extensions_mut();
-        if let Some(state) = extensions.get_mut::<SpanArgs>() {
-            let mut visitor = ArgsVisitor { args: state.args };
+        if let Some(state) = extensions.get_mut::<SpanState>() {
+            let mut visitor = ArgsVisitor {
+                args: state.args,
+                labels: Vec::new(),
+            };
             values.record(&mut visitor);
             state.args = visitor.args;
         }
@@ -134,11 +206,13 @@ where
             return;
         };
         let desc = self.scope_desc(span.metadata());
-        let args = span
+        let (args, handle) = span
             .extensions()
-            .get::<SpanArgs>()
-            .map_or_else(Args::none, |state| state.args);
-        let token = footfall_core::scope_begin_with(desc, &footfall_core::Context::root(), &args);
+            .get::<SpanState>()
+            .map_or((Args::none(), ContextHandle::ROOT), |state| {
+                (state.args, state.handle)
+            });
+        let token = footfall_core::scope_begin_with(desc, handle, &args);
         SCOPE_STACK.with(|stack| stack.borrow_mut().push((id.into_u64(), token)));
     }
 
@@ -155,7 +229,15 @@ where
         }
     }
 
-    fn on_event(&self, event: &Event<'_>, _ctx: LayerContext<'_, S>) {
+    fn on_event(&self, event: &Event<'_>, ctx: LayerContext<'_, S>) {
+        let handle = ctx
+            .event_span(event)
+            .and_then(|span| {
+                span.extensions()
+                    .get::<SpanState>()
+                    .map(|state| state.handle)
+            })
+            .unwrap_or(ContextHandle::ROOT);
         let desc = self.event_desc(event.metadata());
         let mut visitor = MessageVisitor::default();
         event.record(&mut visitor);
@@ -163,7 +245,7 @@ where
             .args
             .try_with("level", level_str(*event.metadata().level()))
             .unwrap_or(visitor.args);
-        footfall_core::message_with(desc, &footfall_core::Context::root(), &visitor.text, &args);
+        footfall_core::message_with(desc, handle, &visitor.text, &args);
     }
 }
 
@@ -177,9 +259,11 @@ const fn level_str(level: Level) -> &'static str {
     }
 }
 
+/// Collects span fields as args and, at span creation, as context labels.
 #[derive(Default)]
 struct ArgsVisitor {
     args: Args,
+    labels: Vec<(&'static str, LabelValue)>,
 }
 
 impl ArgsVisitor {
@@ -189,6 +273,7 @@ impl ArgsVisitor {
         }
         // Args are bounded; overflowing fields are dropped silently.
         self.args = self.args.try_with(field.name(), value).unwrap_or(self.args);
+        self.labels.push((field.name(), value));
     }
 }
 

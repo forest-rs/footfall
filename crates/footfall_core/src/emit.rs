@@ -6,7 +6,8 @@ use crate::InstrumentationLevel;
 #[cfg(not(footfall_compile_out))]
 use crate::max_level;
 use crate::{
-    Args, Context, CounterDesc, EventDesc, FlowId, ResourceId, ResourceKindDesc, ScopeDesc,
+    Args, Context, ContextHandle, CounterDesc, EventDesc, FlowId, ResourceId, ResourceKindDesc,
+    ScopeDesc,
 };
 #[cfg(feature = "std")]
 use std::sync::OnceLock;
@@ -90,7 +91,7 @@ impl ScopeGuard {
     /// Begins a new guarded scope.
     #[cfg_attr(footfall_compile_out, inline(always))]
     #[cfg_attr(not(footfall_compile_out), inline)]
-    pub fn new(desc: &'static ScopeDesc, context: &Context) -> Self {
+    pub fn new(desc: &'static ScopeDesc, context: ContextHandle) -> Self {
         Self {
             token: scope_begin(desc, context),
             active: true,
@@ -100,7 +101,7 @@ impl ScopeGuard {
     /// Begins a new guarded scope carrying per-instance arguments.
     #[cfg_attr(footfall_compile_out, inline(always))]
     #[cfg_attr(not(footfall_compile_out), inline)]
-    pub fn with_args(desc: &'static ScopeDesc, context: &Context, args: &Args) -> Self {
+    pub fn with_args(desc: &'static ScopeDesc, context: ContextHandle, args: &Args) -> Self {
         Self {
             token: scope_begin_with(desc, context, args),
             active: true,
@@ -180,6 +181,14 @@ pub enum FlowPhase {
 /// primitives it cares about, and new primitives can be added without
 /// breaking existing backends.
 ///
+/// # Contexts
+///
+/// Emissions carry a [`ContextHandle`]. The context behind it arrives once,
+/// through [`Backend::context_registered`]; [`ContextHandle::ROOT`] is the
+/// empty root context and is never registered. A backend may receive handles
+/// it was never told about, for example ones registered before it was
+/// installed, and should attribute those to the root context.
+///
 /// # Scope tokens
 ///
 /// [`Backend::scope_begin`] returns a token that is later passed to
@@ -187,25 +196,48 @@ pub enum FlowPhase {
 /// [`ScopeToken::INVALID`] when no scope was recorded, and ignore
 /// [`ScopeToken::INVALID`] in `scope_end`.
 pub trait Backend: Send + Sync {
+    /// Learns the context behind a newly registered handle.
+    ///
+    /// Called once per [`register_context`](crate::register_context), whatever
+    /// the instrumentation level; every later emission carries only the
+    /// handle. Backends that attribute observations keep the context until
+    /// [`Backend::context_released`].
+    fn context_registered(&self, handle: ContextHandle, context: &Context) {
+        let _ = (handle, context);
+    }
+
+    /// Forgets a handle released with [`release_context`](crate::release_context).
+    ///
+    /// Observations already recorded with the handle may still need it, so a
+    /// backend may keep resolving it until it no longer holds any of them.
+    fn context_released(&self, handle: ContextHandle) {
+        let _ = handle;
+    }
+
     /// Adds `value` to a counter under a semantic context.
-    fn counter_add(&self, desc: &'static CounterDesc, context: &Context, value: u64) {
+    fn counter_add(&self, desc: &'static CounterDesc, context: ContextHandle, value: u64) {
         let _ = (desc, context, value);
     }
 
     /// Sets a gauge under a semantic context.
-    fn gauge_set(&self, desc: &'static CounterDesc, context: &Context, value: u64) {
+    fn gauge_set(&self, desc: &'static CounterDesc, context: ContextHandle, value: u64) {
         let _ = (desc, context, value);
     }
 
     /// Records one histogram sample under a semantic context.
-    fn histogram_record(&self, desc: &'static CounterDesc, context: &Context, value: u64) {
+    fn histogram_record(&self, desc: &'static CounterDesc, context: ContextHandle, value: u64) {
         let _ = (desc, context, value);
     }
 
     /// Begins a scope and returns the token that ends it.
     ///
     /// The default records nothing and returns [`ScopeToken::INVALID`].
-    fn scope_begin(&self, desc: &'static ScopeDesc, context: &Context, args: &Args) -> ScopeToken {
+    fn scope_begin(
+        &self,
+        desc: &'static ScopeDesc,
+        context: ContextHandle,
+        args: &Args,
+    ) -> ScopeToken {
         let _ = (desc, context, args);
         ScopeToken::INVALID
     }
@@ -220,7 +252,7 @@ pub trait Backend: Send + Sync {
         &self,
         desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
-        context: &Context,
+        context: ContextHandle,
         size: u64,
     ) {
         let _ = (desc, resource_id, context, size);
@@ -231,7 +263,7 @@ pub trait Backend: Send + Sync {
         &self,
         desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
-        context: &Context,
+        context: ContextHandle,
         size: u64,
     ) {
         let _ = (desc, resource_id, context, size);
@@ -242,18 +274,18 @@ pub trait Backend: Send + Sync {
         &self,
         desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
-        context: &Context,
+        context: ContextHandle,
     ) {
         let _ = (desc, resource_id, context);
     }
 
     /// Observes a frame, transaction, or pass boundary.
-    fn frame_marker(&self, kind: MarkerKind, phase: MarkerPhase, context: &Context) {
+    fn frame_marker(&self, kind: MarkerKind, phase: MarkerPhase, context: ContextHandle) {
         let _ = (kind, phase, context);
     }
 
     /// Observes one phase of a causal flow.
-    fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: &Context) {
+    fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: ContextHandle) {
         let _ = (flow_id, phase, context);
     }
 
@@ -261,7 +293,7 @@ pub trait Backend: Send + Sync {
     ///
     /// The text is borrowed for the duration of the call; backends that
     /// retain messages must copy it.
-    fn message(&self, desc: &'static EventDesc, context: &Context, text: &str, args: &Args) {
+    fn message(&self, desc: &'static EventDesc, context: ContextHandle, text: &str, args: &Args) {
         let _ = (desc, context, text, args);
     }
 }
@@ -284,14 +316,14 @@ pub struct InstallBackendError;
 /// Adds to a counter descriptor under a semantic context.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn counter_add(desc: &'static CounterDesc, context: &Context, value: u64) {
+pub fn counter_add(desc: &'static CounterDesc, context: ContextHandle, value: u64) {
     dispatch!(when max_level().captures_counters() => counter_add(desc, context, value));
 }
 
 /// Sets a gauge descriptor under a semantic context.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn gauge_set(desc: &'static CounterDesc, context: &Context, value: u64) {
+pub fn gauge_set(desc: &'static CounterDesc, context: ContextHandle, value: u64) {
     dispatch!(when max_level().captures_counters() => gauge_set(desc, context, value));
 }
 
@@ -301,7 +333,7 @@ pub fn gauge_set(desc: &'static CounterDesc, context: &Context, value: u64) {
 /// consumers can derive percentiles instead of only sums and last values.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn histogram_record(desc: &'static CounterDesc, context: &Context, value: u64) {
+pub fn histogram_record(desc: &'static CounterDesc, context: ContextHandle, value: u64) {
     dispatch!(when max_level().captures_counters() => histogram_record(desc, context, value));
 }
 
@@ -309,7 +341,7 @@ pub fn histogram_record(desc: &'static CounterDesc, context: &Context, value: u6
 #[must_use]
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn scope_begin(desc: &'static ScopeDesc, context: &Context) -> ScopeToken {
+pub fn scope_begin(desc: &'static ScopeDesc, context: ContextHandle) -> ScopeToken {
     // Dispatch directly rather than through `scope_begin_with`, so the empty
     // `Args` is only built once the level check has passed.
     dispatch!(when max_level().captures_scopes() => scope_begin(desc, context, &Args::none()) else ScopeToken::INVALID)
@@ -319,7 +351,11 @@ pub fn scope_begin(desc: &'static ScopeDesc, context: &Context) -> ScopeToken {
 #[must_use]
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn scope_begin_with(desc: &'static ScopeDesc, context: &Context, args: &Args) -> ScopeToken {
+pub fn scope_begin_with(
+    desc: &'static ScopeDesc,
+    context: ContextHandle,
+    args: &Args,
+) -> ScopeToken {
     dispatch!(when max_level().captures_scopes() => scope_begin(desc, context, args) else ScopeToken::INVALID)
 }
 
@@ -337,14 +373,14 @@ pub fn scope_end(token: ScopeToken) {
 /// Begins a scope and returns a guard that ends it on drop.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn scope(desc: &'static ScopeDesc, context: &Context) -> ScopeGuard {
+pub fn scope(desc: &'static ScopeDesc, context: ContextHandle) -> ScopeGuard {
     ScopeGuard::new(desc, context)
 }
 
 /// Begins a guarded scope carrying per-instance arguments.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn scope_with(desc: &'static ScopeDesc, context: &Context, args: &Args) -> ScopeGuard {
+pub fn scope_with(desc: &'static ScopeDesc, context: ContextHandle, args: &Args) -> ScopeGuard {
     ScopeGuard::with_args(desc, context, args)
 }
 
@@ -354,7 +390,7 @@ pub fn scope_with(desc: &'static ScopeDesc, context: &Context, args: &Args) -> S
 pub fn resource_create(
     desc: &'static ResourceKindDesc,
     resource_id: ResourceId,
-    context: &Context,
+    context: ContextHandle,
     size: u64,
 ) {
     dispatch!(when max_level().captures_resources() => resource_create(desc, resource_id, context, size));
@@ -366,7 +402,7 @@ pub fn resource_create(
 pub fn resource_update(
     desc: &'static ResourceKindDesc,
     resource_id: ResourceId,
-    context: &Context,
+    context: ContextHandle,
     size: u64,
 ) {
     dispatch!(when max_level().captures_resources() => resource_update(desc, resource_id, context, size));
@@ -375,77 +411,81 @@ pub fn resource_update(
 /// Emits a resource-drop observation.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn resource_drop(desc: &'static ResourceKindDesc, resource_id: ResourceId, context: &Context) {
+pub fn resource_drop(
+    desc: &'static ResourceKindDesc,
+    resource_id: ResourceId,
+    context: ContextHandle,
+) {
     dispatch!(when max_level().captures_resources() => resource_drop(desc, resource_id, context));
 }
 
 /// Emits a frame, transaction, or pass boundary marker.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn frame_marker(kind: MarkerKind, phase: MarkerPhase, context: &Context) {
+pub fn frame_marker(kind: MarkerKind, phase: MarkerPhase, context: ContextHandle) {
     dispatch!(when matches!(phase, MarkerPhase::End) || max_level().captures_markers() => frame_marker(kind, phase, context));
 }
 
 /// Emits a frame begin marker.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn frame_begin(context: &Context) {
+pub fn frame_begin(context: ContextHandle) {
     frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
 }
 
 /// Emits a frame end marker.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn frame_end(context: &Context) {
+pub fn frame_end(context: ContextHandle) {
     frame_marker(MarkerKind::Frame, MarkerPhase::End, context);
 }
 
 /// Emits a transaction begin marker.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn transaction_begin(context: &Context) {
+pub fn transaction_begin(context: ContextHandle) {
     frame_marker(MarkerKind::Transaction, MarkerPhase::Begin, context);
 }
 
 /// Emits a transaction end marker.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn transaction_end(context: &Context) {
+pub fn transaction_end(context: ContextHandle) {
     frame_marker(MarkerKind::Transaction, MarkerPhase::End, context);
 }
 
 /// Emits a pass begin marker.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn pass_begin(context: &Context) {
+pub fn pass_begin(context: ContextHandle) {
     frame_marker(MarkerKind::Pass, MarkerPhase::Begin, context);
 }
 
 /// Emits a pass end marker.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn pass_end(context: &Context) {
+pub fn pass_end(context: ContextHandle) {
     frame_marker(MarkerKind::Pass, MarkerPhase::End, context);
 }
 
 /// Starts a causal flow under a semantic context.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn flow_begin(flow_id: FlowId, context: &Context) {
+pub fn flow_begin(flow_id: FlowId, context: ContextHandle) {
     dispatch!(when max_level().captures_flows() => flow(flow_id, FlowPhase::Begin, context));
 }
 
 /// Continues a causal flow under a semantic context.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn flow_step(flow_id: FlowId, context: &Context) {
+pub fn flow_step(flow_id: FlowId, context: ContextHandle) {
     dispatch!(when max_level().captures_flows() => flow(flow_id, FlowPhase::Step, context));
 }
 
 /// Ends a causal flow under a semantic context.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn flow_end(flow_id: FlowId, context: &Context) {
+pub fn flow_end(flow_id: FlowId, context: ContextHandle) {
     dispatch!(when max_level().captures_flows() => flow(flow_id, FlowPhase::End, context));
 }
 
@@ -458,14 +498,14 @@ pub fn flow_end(flow_id: FlowId, context: &Context) {
 /// as a log or tracing bridge.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn message(desc: &'static EventDesc, context: &Context, text: &str) {
+pub fn message(desc: &'static EventDesc, context: ContextHandle, text: &str) {
     dispatch!(when max_level().captures_messages() => message(desc, context, text, &Args::none()));
 }
 
 /// Emits a message event carrying per-instance arguments.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn message_with(desc: &'static EventDesc, context: &Context, text: &str, args: &Args) {
+pub fn message_with(desc: &'static EventDesc, context: ContextHandle, text: &str, args: &Args) {
     dispatch!(when max_level().captures_messages() => message(desc, context, text, args));
 }
 
@@ -487,13 +527,19 @@ pub fn install_backend(backend: &'static dyn Backend) -> Result<(), InstallBacke
 }
 
 #[cfg(not(footfall_compile_out))]
-fn backend() -> &'static dyn Backend {
+pub(crate) fn backend() -> &'static dyn Backend {
     #[cfg(feature = "std")]
     if let Some(backend) = BACKEND.get() {
         return *backend;
     }
 
     &NoopBackend
+}
+
+/// Returns `true` once a backend has been installed.
+#[cfg(feature = "std")]
+pub(crate) fn backend_installed() -> bool {
+    BACKEND.get().is_some()
 }
 
 #[cfg(feature = "std")]
@@ -506,7 +552,7 @@ mod tests {
         frame_begin, frame_end, frame_marker, pass_begin, pass_end, resource_drop, scope,
         scope_begin, scope_end, transaction_begin, transaction_end,
     };
-    use crate::{Context, CounterDesc, FlowId, ResourceId, ResourceKindDesc, ScopeDesc};
+    use crate::{ContextHandle, CounterDesc, FlowId, ResourceId, ResourceKindDesc, ScopeDesc};
 
     static RECORD_PASS: ScopeDesc = ScopeDesc::new("record_pass");
     static OPS: CounterDesc = CounterDesc::count("ops");
@@ -514,7 +560,7 @@ mod tests {
 
     #[test]
     fn noop_scope_begin_returns_invalid_token() {
-        let token = scope_begin(&RECORD_PASS, &Context::root());
+        let token = scope_begin(&RECORD_PASS, ContextHandle::ROOT);
         assert_eq!(token, ScopeToken::INVALID);
         assert!(!token.is_valid());
         scope_end(token);
@@ -522,7 +568,7 @@ mod tests {
 
     #[test]
     fn scope_guard_exposes_token_and_can_end_early() {
-        let guard = scope(&RECORD_PASS, &Context::root());
+        let guard = scope(&RECORD_PASS, ContextHandle::ROOT);
         assert_eq!(guard.token(), ScopeToken::INVALID);
         guard.end();
     }
@@ -535,19 +581,19 @@ mod tests {
 
     #[test]
     fn noop_emission_surface_accepts_all_primitives() {
-        let context = Context::root();
+        let context = ContextHandle::ROOT;
 
-        counter_add(&OPS, &context, 5);
-        resource_drop(&ATLAS, ResourceId::new(7), &context);
-        frame_marker(MarkerKind::Frame, MarkerPhase::Begin, &context);
-        frame_begin(&context);
-        frame_end(&context);
-        transaction_begin(&context);
-        transaction_end(&context);
-        pass_begin(&context);
-        pass_end(&context);
-        flow_begin(FlowId::new(12), &context);
-        flow_step(FlowId::new(12), &context);
-        flow_end(FlowId::new(12), &context);
+        counter_add(&OPS, context, 5);
+        resource_drop(&ATLAS, ResourceId::new(7), context);
+        frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
+        frame_begin(context);
+        frame_end(context);
+        transaction_begin(context);
+        transaction_end(context);
+        pass_begin(context);
+        pass_end(context);
+        flow_begin(FlowId::new(12), context);
+        flow_step(FlowId::new(12), context);
+        flow_end(FlowId::new(12), context);
     }
 }
