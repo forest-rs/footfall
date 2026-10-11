@@ -20,6 +20,7 @@ env:
     -p spoor_runtime
     -p spoor_session
     -p spoor_session_wtransport
+    -p spoor_tracing
     -p spoor_tracy
   # List of packages that don't support `no_std`.
   RUST_STD_ONLY_PKGS: >-
@@ -30,6 +31,7 @@ env:
     --exclude spoor_runtime
     --exclude spoor_session
     --exclude spoor_session_wtransport
+    --exclude spoor_tracing
     --exclude spoor_tracy
     --exclude basic
   # List of packages that don't support wasip1

@@ -1306,6 +1306,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(target_os = "wasi", ignore = "wasm32-wasip1 cannot spawn threads")]
     fn parallel_counter_writes_aggregate_without_loss() {
         const THREADS: u64 = 8;
         const UPDATES: u64 = 1000;
@@ -1340,6 +1341,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(target_os = "wasi", ignore = "wasm32-wasip1 cannot spawn threads")]
     fn parallel_event_writes_respect_capacity_and_account_drops() {
         const THREADS: u64 = 8;
         const EVENTS: u64 = 200;
@@ -1396,6 +1398,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(target_os = "wasi", ignore = "wasm32-wasip1 cannot spawn threads")]
     fn events_from_different_threads_carry_distinct_thread_ids() {
         let runtime = Runtime::new(8, 8);
         let context_id = runtime
