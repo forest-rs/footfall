@@ -2119,6 +2119,7 @@ mod tests {
             events: vec![
                 footfall_runtime::TimedObservation {
                     at_micros: 15,
+                    sequence: 0,
                     thread_id: 2,
                     observation: footfall_runtime::Observation::Flow {
                         flow_id: FlowId::new(8),
@@ -2128,6 +2129,7 @@ mod tests {
                 },
                 footfall_runtime::TimedObservation {
                     at_micros: 16,
+                    sequence: 1,
                     thread_id: 2,
                     observation: footfall_runtime::Observation::Message {
                         desc_id: EventDescId::new(9),

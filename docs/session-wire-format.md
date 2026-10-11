@@ -114,6 +114,11 @@ Event rows carry a `u64` runtime-assigned thread id after the timestamp. Ids
 are small integers assigned in first-emission order within one process
 lifetime; they are not OS thread ids.
 
+Event rows are published in snapshot order: by timestamp, with ties broken by
+recording order. Events recorded by one thread keep their program order even
+when they share a timestamp, so consumers must preserve row order across
+`Events` chunks rather than re-sorting by timestamp and observation kind.
+
 Scope-begin rows end with a per-instance argument list: a `u8` count bounded
 by `footfall_core::ARGS_INLINE_CAPACITY`, followed by that many entries of key
 string plus tagged label value (the same value encoding used by context

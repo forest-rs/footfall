@@ -46,6 +46,7 @@ fn demo_snapshot() -> Snapshot {
         histograms: vec![],
         events: vec![TimedObservation {
             at_micros: 25,
+            sequence: 0,
             thread_id: 3,
             observation: Observation::FrameMarker {
                 kind: MarkerKind::Frame,

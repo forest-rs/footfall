@@ -30,7 +30,10 @@ For compatibility, `Runtime::new` and `Runtime::named` continue to default to
 
 Runtime collection now uses one context interner plus sharded counter and event
 stores. Snapshot payloads keep the same public shape; event rows are merged and
-ordered by timestamp during snapshot extraction.
+ordered by timestamp during snapshot extraction, with ties broken by a
+runtime-assigned recording sequence so events recorded by one thread within the
+same microsecond keep their program order. `TimedObservation` carries that
+sequence in its `sequence` field.
 
 ## Session Wire Format
 

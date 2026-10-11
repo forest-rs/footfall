@@ -56,6 +56,7 @@ pub struct Runtime {
     counter_capacity: usize,
     event_capacity: usize,
     next_scope_token: AtomicU64,
+    next_event_sequence: AtomicU64,
     counter_count: AtomicUsize,
     event_count: AtomicUsize,
     dropped_counters: AtomicU64,
@@ -118,6 +119,7 @@ impl Runtime {
             counter_capacity,
             event_capacity,
             next_scope_token: AtomicU64::new(1),
+            next_event_sequence: AtomicU64::new(0),
             counter_count: AtomicUsize::new(0),
             event_count: AtomicUsize::new(0),
             dropped_counters: AtomicU64::new(0),
@@ -418,12 +420,17 @@ impl Runtime {
         }
 
         let shard_index = self.event_shard_index(&observation);
+        // Taking the sequence number after the slot reservation keeps it in
+        // program order for the recording thread, which timestamps alone
+        // cannot guarantee at microsecond resolution.
+        let sequence = self.next_event_sequence.fetch_add(1, Ordering::Relaxed);
         self.event_shards[shard_index]
             .lock()
             .expect("runtime event shard should not be poisoned")
             .events
             .push_back(TimedObservation {
                 at_micros,
+                sequence,
                 thread_id: current_thread_id(),
                 observation,
             });
@@ -498,7 +505,8 @@ pub struct Snapshot {
     pub counters: Vec<CounterSnapshot>,
     /// Aggregated value distributions.
     pub histograms: Vec<HistogramSnapshot>,
-    /// Bounded sequence of timestamped observation records.
+    /// Bounded sequence of timestamped observation records, ordered by
+    /// timestamp and then by recording sequence.
     pub events: Vec<TimedObservation>,
     /// Count of observations dropped because a new context could not be interned.
     pub dropped_contexts: u64,
@@ -650,6 +658,13 @@ struct HistogramKey {
 pub struct TimedObservation {
     /// Observation time in microseconds since runtime creation.
     pub at_micros: u64,
+    /// Runtime-assigned recording sequence number.
+    ///
+    /// Sequence numbers increase in recording order across all threads and
+    /// stay monotonic across session resets. Snapshots order events by
+    /// timestamp and then by sequence, so events recorded by one thread
+    /// within the same microsecond keep their program order.
+    pub sequence: u64,
     /// Runtime-assigned id of the thread that recorded the observation.
     ///
     /// Ids are small integers assigned in first-emission order. They identify
@@ -1173,21 +1188,8 @@ fn scope_token_for_observation(observation: &Observation) -> u64 {
     }
 }
 
-fn event_sort_key(event: &TimedObservation) -> (u64, u8) {
-    (event.at_micros, observation_order(&event.observation))
-}
-
-const fn observation_order(observation: &Observation) -> u8 {
-    match observation {
-        Observation::ScopeBegin { .. } => 0,
-        Observation::ResourceCreate { .. } => 1,
-        Observation::ResourceUpdate { .. } => 2,
-        Observation::FrameMarker { .. } => 3,
-        Observation::Flow { .. } => 4,
-        Observation::Message { .. } => 4,
-        Observation::ResourceDrop { .. } => 5,
-        Observation::ScopeEnd { .. } => 6,
-    }
+fn event_sort_key(event: &TimedObservation) -> (u64, u64) {
+    (event.at_micros, event.sequence)
 }
 
 fn duration_to_micros(duration: Duration) -> u64 {
@@ -1498,6 +1500,61 @@ mod tests {
         assert_eq!(
             snapshot.events[0].observation.context_id(),
             Some(context_id)
+        );
+    }
+
+    #[test]
+    fn sequential_scopes_in_one_microsecond_keep_program_order() {
+        let runtime = Runtime::new(8, 8);
+        let first = ScopeDesc::new(ScopeDescId::new(1), "first");
+        let second = ScopeDesc::new(ScopeDescId::new(2), "second");
+        let context_id = runtime
+            .context_id(Context::root().with(footfall_core::LabelKey::Pass, 1_u32))
+            .expect("context should intern");
+
+        for desc in [&first, &second] {
+            let token = runtime.next_scope_token();
+            runtime.push_event_at(
+                Observation::ScopeBegin {
+                    desc_id: desc.id(),
+                    name: desc.name(),
+                    context_id,
+                    token,
+                    args: Args::none(),
+                },
+                5,
+            );
+            runtime.push_event_at(Observation::ScopeEnd { token }, 5);
+        }
+
+        let snapshot = runtime.snapshot();
+        let order: Vec<_> = snapshot
+            .events
+            .iter()
+            .map(|event| match &event.observation {
+                Observation::ScopeBegin { name, .. } => ("begin", *name),
+                Observation::ScopeEnd { token } => {
+                    ("end", if token.get() == 1 { "first" } else { "second" })
+                }
+                other => panic!("unexpected observation {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            order,
+            [
+                ("begin", "first"),
+                ("end", "first"),
+                ("begin", "second"),
+                ("end", "second"),
+            ],
+            "same-microsecond scopes must not appear nested"
+        );
+        assert!(
+            snapshot
+                .events
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence),
+            "sequence numbers should increase in recording order"
         );
     }
 

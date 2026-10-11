@@ -761,6 +761,7 @@ mod tests {
             events: vec![
                 TimedObservation {
                     at_micros: 22,
+                    sequence: 0,
                     thread_id: 1,
                     observation: Observation::ScopeEnd {
                         token: footfall_core::ScopeToken::new(1),
@@ -768,6 +769,7 @@ mod tests {
                 },
                 TimedObservation {
                     at_micros: 23,
+                    sequence: 1,
                     thread_id: 2,
                     observation: Observation::ScopeEnd {
                         token: footfall_core::ScopeToken::new(2),
