@@ -41,6 +41,7 @@ use tracy_client::{
 /// Live Tracy backend.
 pub struct TracyBackend {
     client: Client,
+    instance: u64,
     callstack_depth: u16,
     next_scope_token: AtomicU64,
     counters: Mutex<CounterState>,
@@ -59,6 +60,7 @@ impl TracyBackend {
     pub fn with_callstack_depth(callstack_depth: u16) -> Self {
         Self {
             client: Client::start(),
+            instance: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
             callstack_depth,
             next_scope_token: AtomicU64::new(1),
             counters: Mutex::new(CounterState::default()),
@@ -124,8 +126,12 @@ impl TracyBackend {
     }
 
     /// Distinguishes this backend's open spans and frames in thread-local state.
-    fn key(&self) -> usize {
-        core::ptr::from_ref(self).addr()
+    ///
+    /// This is a per-instance id rather than the backend's address, so a scope
+    /// begun before the backend is moved (for example into
+    /// [`TracyBackend::install_global`]) still ends afterwards.
+    const fn key(&self) -> u64 {
+        self.instance
     }
 
     fn next_scope_token(&self) -> ScopeToken {
@@ -277,10 +283,12 @@ enum CounterUpdate {
     Set,
 }
 
+static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
+
 thread_local! {
     static THREAD_REGISTERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static OPEN_SPANS: RefCell<HashMap<(usize, u64), Span>> = RefCell::new(HashMap::new());
-    static OPEN_FRAMES: RefCell<HashMap<(usize, MarkerKind), Frame>> = RefCell::new(HashMap::new());
+    static OPEN_SPANS: RefCell<HashMap<(u64, u64), Span>> = RefCell::new(HashMap::new());
+    static OPEN_FRAMES: RefCell<HashMap<(u64, MarkerKind), Frame>> = RefCell::new(HashMap::new());
 }
 
 impl Backend for TracyBackend {
@@ -472,9 +480,12 @@ fn push_label_value(text: &mut String, value: LabelValue) {
 
 #[cfg(test)]
 mod tests {
-    use super::{context_text, message_text, plot_configuration, resource_message};
+    use super::{
+        OPEN_SPANS, TracyBackend, context_text, message_text, plot_configuration, resource_message,
+    };
     use footfall_core::{
-        Args, Context, CounterDesc, EventDesc, LabelKey, ResourceId, ResourceKindDesc, Unit,
+        Args, Backend, Context, CounterDesc, EventDesc, LabelKey, ResourceId, ResourceKindDesc,
+        ScopeDesc, Unit,
     };
 
     static FRAME: LabelKey = LabelKey::new("frame");
@@ -485,6 +496,22 @@ mod tests {
     static BYTES: CounterDesc = CounterDesc::bytes("bytes");
     static ATLAS: ResourceKindDesc = ResourceKindDesc::new("atlas");
     static APP_LOG: EventDesc = EventDesc::new("app_log");
+    static RECORD: ScopeDesc = ScopeDesc::new("record");
+
+    #[test]
+    fn scope_begun_before_a_move_ends_after_it() {
+        let backend = TracyBackend::new();
+        let token = backend.scope_begin(&RECORD, Context::root(), Args::none());
+        assert_eq!(OPEN_SPANS.with(|spans| spans.borrow().len()), 1);
+
+        let moved = Box::new(backend);
+        moved.scope_end(token);
+        assert_eq!(
+            OPEN_SPANS.with(|spans| spans.borrow().len()),
+            0,
+            "the span opened before the move should close after it"
+        );
+    }
 
     #[test]
     fn context_text_formats_compact_labels() {
