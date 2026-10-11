@@ -64,6 +64,12 @@ async fn main() {
                         .await
                         .expect("error response should succeed");
                 }
+                _ => {
+                    request
+                        .respond_error("unsupported request")
+                        .await
+                        .expect("error response should succeed");
+                }
             }
         }
     });

@@ -110,6 +110,7 @@ impl fmt::Debug for LabelKey {
 
 /// Compact label value attached to a [`LabelKey`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
 pub enum LabelValue {
     /// Unsigned numeric payload.
     Unsigned(u64),

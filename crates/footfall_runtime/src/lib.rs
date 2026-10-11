@@ -624,6 +624,7 @@ impl CounterSnapshot {
 
 /// Distinguishes additive counters from gauges.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
 pub enum CounterKind {
     /// Additive counter.
     Counter,
@@ -737,6 +738,7 @@ pub struct TimedObservation {
 
 /// One retained observation record.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum Observation {
     /// Scope begin event.
     ScopeBegin {
@@ -1307,7 +1309,8 @@ const fn level_to_u8(level: InstrumentationLevel) -> u8 {
         InstrumentationLevel::Off => 0,
         InstrumentationLevel::Counters => 1,
         InstrumentationLevel::Scoped => 2,
-        InstrumentationLevel::Trace => 3,
+        // `Trace` and any future level capture everything this runtime records.
+        _ => 3,
     }
 }
 

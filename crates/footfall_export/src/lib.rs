@@ -239,8 +239,8 @@ fn build_counter_event(
         &mut json,
         "cat",
         match counter.kind {
-            CounterKind::Counter => "counter",
             CounterKind::Gauge => "gauge",
+            _ => "counter",
         },
     )?;
     json.push(',');
@@ -578,6 +578,8 @@ fn build_timed_observation(
             json.push_str("}}");
             Ok(Some(json))
         }
+        // Observation kinds this exporter does not know are left out.
+        _ => Ok(None),
     }
 }
 
@@ -713,6 +715,8 @@ fn marker_name(kind: MarkerKind, phase: MarkerPhase) -> &'static str {
         (MarkerKind::Transaction, MarkerPhase::End) => "transaction_end",
         (MarkerKind::Pass, MarkerPhase::Begin) => "pass_begin",
         (MarkerKind::Pass, MarkerPhase::End) => "pass_end",
+        (_, MarkerPhase::Begin) => "marker_begin",
+        (_, MarkerPhase::End) => "marker_end",
     }
 }
 

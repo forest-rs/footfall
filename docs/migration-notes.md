@@ -276,3 +276,26 @@ counter_add(&DRAW_OPS, pass.handle(), 1);
 - The session wire layout is unchanged; context ids on the wire are now
   sparse handle values, as described in
   [WebTransport Session Wire Format](session-wire-format.md).
+
+## Non-Exhaustive Enums
+
+Enums that are expected to grow are now `#[non_exhaustive]`, so adding a
+variant is not a breaking change. Matches outside the defining crate need a
+wildcard arm:
+
+- `footfall_core`: `Unit`, `MarkerKind`, `LabelValue`, `InstrumentationLevel`.
+- `footfall_runtime`: `CounterKind`, `Observation`.
+- `footfall_session`: `Payload`, `OwnedSessionPayload`, `OwnedObservation`,
+  `OwnedLabelValue`, `SessionErrorCode`, `SessionStreamStatus`,
+  `SessionMessage`.
+- `footfall_session_wtransport`: `SessionRequestKind`, `ServedRequestKind`.
+
+`MarkerPhase`, `FlowPhase`, and `SessionResult` stay exhaustive: they are
+complete by definition. The variants of `Observation` and `OwnedObservation`
+are not individually non-exhaustive, so consumers can still build them in
+fixtures and tests; a new field on an existing variant would be a breaking
+change and would come with a protocol version bump.
+
+Servers should answer an unknown `SessionRequestKind` with
+`respond_error`. The session encoder rejects values it has no encoding for
+with an `InvalidInput` error instead of guessing a tag.

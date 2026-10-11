@@ -3,6 +3,7 @@
 
 /// Unit associated with a counter or gauge descriptor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum Unit {
     /// Raw bytes.
     Bytes,

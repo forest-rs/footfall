@@ -185,6 +185,7 @@ impl SessionError {
 
 /// Stable live session error classification.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum SessionErrorCode {
     /// Request payload or method was malformed.
     InvalidRequest,
@@ -273,6 +274,7 @@ impl SessionStreamEnd {
 
 /// Terminal status for a live session stream.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum SessionStreamStatus {
     /// The stream completed normally.
     Completed,
@@ -288,6 +290,7 @@ pub enum SessionStreamStatus {
 /// not define a wire encoding and does not define any product-specific payload
 /// variants.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum SessionMessage<P> {
     /// One-shot request.
     Request(SessionRequest<P>),
