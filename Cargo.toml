@@ -29,16 +29,16 @@ categories = ["development-tools::debugging", "development-tools::profiling"]
 
 [workspace.dependencies]
 # Internal crate dependencies
-footfall = { default-features = false, path = "crates/footfall" }
-footfall_core = { default-features = false, path = "crates/footfall_core" }
-footfall_export = { default-features = false, path = "crates/footfall_export" }
-footfall_fanout = { default-features = false, path = "crates/footfall_fanout" }
-footfall_memory = { default-features = false, path = "crates/footfall_memory" }
-footfall_runtime = { default-features = false, path = "crates/footfall_runtime" }
-footfall_session = { default-features = false, path = "crates/footfall_session" }
-footfall_session_wtransport = { default-features = false, path = "crates/footfall_session_wtransport" }
-footfall_tracing = { default-features = false, path = "crates/footfall_tracing" }
-footfall_tracy = { default-features = false, path = "crates/footfall_tracy" }
+footfall = { default-features = false, path = "crates/footfall", version = "0.1.0" }
+footfall_core = { default-features = false, path = "crates/footfall_core", version = "0.1.0" }
+footfall_export = { default-features = false, path = "crates/footfall_export", version = "0.1.0" }
+footfall_fanout = { default-features = false, path = "crates/footfall_fanout", version = "0.1.0" }
+footfall_memory = { default-features = false, path = "crates/footfall_memory", version = "0.1.0" }
+footfall_runtime = { default-features = false, path = "crates/footfall_runtime", version = "0.1.0" }
+footfall_session = { default-features = false, path = "crates/footfall_session", version = "0.1.0" }
+footfall_session_wtransport = { default-features = false, path = "crates/footfall_session_wtransport", version = "0.1.0" }
+footfall_tracing = { default-features = false, path = "crates/footfall_tracing", version = "0.1.0" }
+footfall_tracy = { default-features = false, path = "crates/footfall_tracy", version = "0.1.0" }
 tracy-client = { default-features = false, version = "0.18.4" }
 
 [workspace.lints]
