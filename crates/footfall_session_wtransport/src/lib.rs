@@ -28,7 +28,47 @@ use wtransport::{
     error::StreamWriteError,
 };
 
-pub use wtransport::tls::Sha256Digest;
+use wtransport::tls::Sha256Digest;
+
+/// SHA-256 hash of a session server's certificate, used to pin connections.
+///
+/// Clients pass the hash a server reports through
+/// [`SessionIdentity::certificate_hash`], or the one stored with the local
+/// identity, so they can trust that server's self-signed certificate without a
+/// certificate authority. It displays as 64 lowercase hex digits.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct CertificateHash([u8; 32]);
+
+impl CertificateHash {
+    /// Creates a hash from its raw bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Returns the raw hash bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    fn from_digest(digest: &Sha256Digest) -> Self {
+        Self(*digest.as_ref())
+    }
+
+    fn to_digest(self) -> Sha256Digest {
+        Sha256Digest::new(self.0)
+    }
+}
+
+impl fmt::Display for CertificateHash {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in self.0 {
+            write!(formatter, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
 
 const DEFAULT_PATH: &str = "/footfall/session";
 const DEFAULT_LOCAL_PORT: u16 = 43_091;
@@ -64,7 +104,7 @@ pub const MAX_ARGS_PER_OBSERVATION: usize = footfall_core::ARGS_INLINE_CAPACITY;
 #[derive(Debug)]
 pub struct SessionIdentity {
     identity: Identity,
-    certificate_hash: Sha256Digest,
+    certificate_hash: CertificateHash,
 }
 
 impl SessionIdentity {
@@ -78,15 +118,15 @@ impl SessionIdentity {
             .first()
             .ok_or_else(|| io::Error::other("self-signed identity produced no certificate"))?;
         Ok(Self {
-            certificate_hash: certificate.hash(),
+            certificate_hash: CertificateHash::from_digest(&certificate.hash()),
             identity,
         })
     }
 
     /// Returns the pinned certificate hash clients should use.
     #[must_use]
-    pub fn certificate_hash(&self) -> Sha256Digest {
-        self.certificate_hash.clone()
+    pub const fn certificate_hash(&self) -> CertificateHash {
+        self.certificate_hash
     }
 
     fn clone_identity(&self) -> Identity {
@@ -100,7 +140,7 @@ impl SessionIdentity {
             .first()
             .ok_or_else(|| io::Error::other("identity produced no certificate"))?;
         Ok(Self {
-            certificate_hash: certificate.hash(),
+            certificate_hash: CertificateHash::from_digest(&certificate.hash()),
             identity,
         })
     }
@@ -154,12 +194,12 @@ impl SessionIdentity {
     }
 
     /// Loads the stable local certificate hash used for localhost session connections.
-    pub async fn load_localhost_certificate_hash() -> io::Result<Sha256Digest> {
+    pub async fn load_localhost_certificate_hash() -> io::Result<CertificateHash> {
         let paths = local_identity_paths()?;
         let certificate = wtransport::tls::Certificate::load_pemfile(&paths.cert)
             .await
             .map_err(|error| io::Error::other(error.to_string()))?;
-        Ok(certificate.hash())
+        Ok(CertificateHash::from_digest(&certificate.hash()))
     }
 }
 
@@ -577,9 +617,9 @@ impl SessionRequest {
 /// Fetches one snapshot publication from a WebTransport session server.
 pub async fn fetch_session(
     url: &str,
-    certificate_hash: Sha256Digest,
+    certificate_hash: CertificateHash,
 ) -> io::Result<Vec<OwnedSessionEnvelope>> {
-    let sessions = discover_sessions(url, certificate_hash.clone()).await?;
+    let sessions = discover_sessions(url, certificate_hash).await?;
     match sessions.as_slice() {
         [] => Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -621,11 +661,11 @@ pub async fn fetch_local_session(session_id: &str) -> io::Result<Vec<OwnedSessio
 /// Fetches the currently discoverable sessions from a session server.
 pub async fn discover_sessions(
     url: &str,
-    certificate_hash: Sha256Digest,
+    certificate_hash: CertificateHash,
 ) -> io::Result<Vec<SessionAnnouncement>> {
     let client_config = ClientConfig::builder()
         .with_bind_default()
-        .with_server_certificate_hashes([certificate_hash])
+        .with_server_certificate_hashes([certificate_hash.to_digest()])
         .build();
     let endpoint = Endpoint::client(client_config)?;
     let connection = endpoint
@@ -638,12 +678,12 @@ pub async fn discover_sessions(
 /// Fetches one named snapshot publication from a session server.
 pub async fn fetch_named_session(
     url: &str,
-    certificate_hash: Sha256Digest,
+    certificate_hash: CertificateHash,
     session_id: &str,
 ) -> io::Result<Vec<OwnedSessionEnvelope>> {
     let client_config = ClientConfig::builder()
         .with_bind_default()
-        .with_server_certificate_hashes([certificate_hash])
+        .with_server_certificate_hashes([certificate_hash.to_digest()])
         .build();
     let endpoint = Endpoint::client(client_config)?;
     let connection = endpoint
@@ -2044,6 +2084,14 @@ mod tests {
 
     static FRAME: LabelKey = LabelKey::new("frame");
     static REASON: LabelKey = LabelKey::new("reason");
+
+    #[test]
+    fn certificate_hash_displays_as_hex_and_round_trips() {
+        let hash = super::CertificateHash::from_bytes([0xab; 32]);
+        assert_eq!(hash.to_string(), "ab".repeat(32));
+        assert_eq!(hash.as_bytes(), &[0xab; 32]);
+        assert_eq!(super::CertificateHash::from_digest(&hash.to_digest()), hash);
+    }
 
     #[test]
     fn identity_renewal_tracks_certificate_validity() {
