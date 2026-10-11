@@ -72,6 +72,9 @@ impl Fanout {
     }
 
     fn end_scope(&self, token: ScopeToken) {
+        if !token.is_valid() {
+            return;
+        }
         let pair = self
             .scopes
             .lock()
@@ -196,13 +199,40 @@ mod tests {
     use super::Fanout;
     use footfall_core::{
         Backend, Context, CounterDesc, CounterDescId, LabelKey, MarkerKind, MarkerPhase, ScopeDesc,
-        ScopeDescId,
+        ScopeDescId, ScopeToken,
     };
     use std::sync::{Mutex, OnceLock};
 
     static COUNTER: CounterDesc = CounterDesc::count(CounterDescId::new(1), "ops");
     static SCOPE: ScopeDesc = ScopeDesc::new(ScopeDescId::new(2), "record");
     static LOG: OnceLock<Mutex<Vec<&'static str>>> = OnceLock::new();
+
+    #[test]
+    fn fanout_ignores_invalid_scope_token() {
+        let fanout = Fanout::new(Backend::NOOP, Backend::NOOP);
+        let token = fanout.begin_scope(&SCOPE, Context::root(), footfall_core::Args::none());
+        assert!(token.is_valid(), "fanout tokens should start at 1");
+
+        fanout.end_scope(ScopeToken::INVALID);
+        assert_eq!(
+            fanout
+                .scopes
+                .lock()
+                .expect("fanout scope mutex should not be poisoned")
+                .len(),
+            1,
+            "ending the invalid token must not touch open scopes"
+        );
+
+        fanout.end_scope(token);
+        assert!(
+            fanout
+                .scopes
+                .lock()
+                .expect("fanout scope mutex should not be poisoned")
+                .is_empty()
+        );
+    }
 
     #[test]
     fn fanout_forwards_scopes_counters_and_markers() {
@@ -301,12 +331,12 @@ mod tests {
         _desc: &ScopeDesc,
         _context: Context,
         _args: footfall_core::Args,
-    ) -> footfall_core::ScopeToken {
+    ) -> ScopeToken {
         record("primary scope_begin");
-        footfall_core::ScopeToken::new(11)
+        ScopeToken::new(11)
     }
 
-    fn primary_scope_end(_token: footfall_core::ScopeToken) {
+    fn primary_scope_end(_token: ScopeToken) {
         record("primary scope_end");
     }
 
@@ -373,12 +403,12 @@ mod tests {
         _desc: &ScopeDesc,
         _context: Context,
         _args: footfall_core::Args,
-    ) -> footfall_core::ScopeToken {
+    ) -> ScopeToken {
         record("secondary scope_begin");
-        footfall_core::ScopeToken::new(22)
+        ScopeToken::new(22)
     }
 
-    fn secondary_scope_end(_token: footfall_core::ScopeToken) {
+    fn secondary_scope_end(_token: ScopeToken) {
         record("secondary scope_end");
     }
 
