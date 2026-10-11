@@ -15,6 +15,13 @@ use footfall_session::{Chunking, Consumer, Envelope, Payload, publish_snapshot};
 use footfall_tracy::TracyBackend;
 use std::{thread::sleep, time::Duration};
 
+static FRAME: LabelKey = LabelKey::new("frame");
+static TRANSACTION: LabelKey = LabelKey::new("transaction");
+static PASS: LabelKey = LabelKey::new("pass");
+static NODE: LabelKey = LabelKey::new("node");
+static RESOURCE: LabelKey = LabelKey::new("resource");
+static CACHE: LabelKey = LabelKey::new("cache");
+
 static RECORD_FRAME: ScopeDesc = ScopeDesc::with_location(
     "record_frame",
     SourceLocation::new("tracy_live::run_frame", file!(), 95),
@@ -74,10 +81,10 @@ fn main() {
         &ATLAS,
         ATLAS_ID,
         Context::root()
-            .with(LabelKey::Frame, FRAME_COUNT)
-            .with(LabelKey::Pass, 1_u32)
-            .with(LabelKey::Cache, "glyph_atlas")
-            .with(LabelKey::Resource, ATLAS_ID),
+            .with(&FRAME, FRAME_COUNT)
+            .with(&PASS, 1_u32)
+            .with(&CACHE, "glyph_atlas")
+            .with(&RESOURCE, ATLAS_ID),
     );
 
     let snapshot = runtime.drain_snapshot();
@@ -92,15 +99,13 @@ fn main() {
 
 fn run_frame(frame: u32, scratch_metrics: ScratchMetrics, cache_metrics: CacheMetrics) {
     let frame_context = Context::root()
-        .with(LabelKey::Frame, frame)
-        .with(LabelKey::Transaction, frame / 30);
+        .with(&FRAME, frame)
+        .with(&TRANSACTION, frame / 30);
     let record_context = frame_context
-        .with(LabelKey::Pass, 1_u32)
-        .with(LabelKey::Node, 42_u32 + (frame % 6));
-    let cache_context = frame_context
-        .with(LabelKey::Pass, 1_u32)
-        .with(LabelKey::Cache, "glyph_atlas");
-    let atlas_context = cache_context.with(LabelKey::Resource, ATLAS_ID);
+        .with(&PASS, 1_u32)
+        .with(&NODE, 42_u32 + (frame % 6));
+    let cache_context = frame_context.with(&PASS, 1_u32).with(&CACHE, "glyph_atlas");
+    let atlas_context = cache_context.with(&RESOURCE, ATLAS_ID);
 
     frame_marker(MarkerKind::Frame, MarkerPhase::Begin, frame_context);
 

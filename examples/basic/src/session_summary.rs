@@ -1,7 +1,6 @@
 // Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use footfall::LabelKey;
 use footfall_session::{
     OwnedArgEntry, OwnedContextEntry, OwnedLabelValue, OwnedObservation, OwnedSessionEnvelope,
     OwnedSessionPayload,
@@ -386,7 +385,8 @@ pub(crate) fn print_summary(summary: &SessionSummary) {
 
 fn context_cache_name(entries: &[OwnedContextEntry]) -> Option<String> {
     entries.iter().find_map(|entry| {
-        if entry.key == LabelKey::Cache {
+        // Remote consumers see label keys by name.
+        if entry.key == "cache" {
             match &entry.value {
                 OwnedLabelValue::String(value) => Some(value.clone()),
                 _ => None,

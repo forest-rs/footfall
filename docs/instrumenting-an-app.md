@@ -31,12 +31,16 @@ Example shape:
 
 ```rust
 use footfall::{
-    CounterDesc, InstrumentationLevel, ScopeDesc, counter_add, scope,
+    CounterDesc, InstrumentationLevel, LabelKey, ScopeDesc, counter_add, scope,
 };
 use footfall_runtime::Runtime;
 
 static RECORD_SCOPE: ScopeDesc = footfall::scope_desc!("record_frame");
 static DRAW_OPS: CounterDesc = footfall::counter_desc!(count, "draw_ops");
+
+// Footfall ships no label vocabulary; declare the keys your app attributes by.
+static FRAME: LabelKey = LabelKey::new("frame");
+static PASS: LabelKey = LabelKey::new("pass");
 
 fn install_footfall() -> &'static Runtime {
     Runtime::named_with_level("my_app", 512, 4096, InstrumentationLevel::Scoped)
@@ -45,7 +49,7 @@ fn install_footfall() -> &'static Runtime {
 }
 
 fn record_frame(frame: u32) {
-    let context = footfall::context!(Frame = frame, Pass = 1_u32);
+    let context = footfall::context!(FRAME = frame, PASS = 1_u32);
     let _scope = scope(&RECORD_SCOPE, context);
     counter_add(&DRAW_OPS, context, 42);
 }
@@ -53,6 +57,10 @@ fn record_frame(frame: u32) {
 
 The low-level `scope_begin` and `scope_end` calls remain available when a scope
 crosses lexical boundaries.
+
+Descriptors and label keys are identified by address, so declare them as
+`static` items, never `const`. Remote consumers see label keys by name, so give
+keys distinct names; a library should prefix its keys with its own name.
 
 ## Context Discipline
 

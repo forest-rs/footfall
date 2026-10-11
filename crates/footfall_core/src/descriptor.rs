@@ -6,13 +6,13 @@
 use crate::{CounterDescId, EventDescId, ResourceKindId, ScopeDescId, Unit};
 use core::{fmt, ptr};
 
-/// Private marker that keeps descriptors out of `const` promotion.
+/// Private marker that keeps descriptors and label keys out of `const` promotion.
 ///
 /// A value whose type has a `Drop` impl cannot be promoted to a `'static`
 /// temporary, so `&CONST_DESCRIPTOR` fails to compile where `&'static` is
 /// required. The marker is zero-sized, and `static` items are never dropped,
 /// so the impl never runs for a declared descriptor.
-struct StaticOnly;
+pub(crate) struct StaticOnly;
 
 impl Drop for StaticOnly {
     fn drop(&mut self) {}

@@ -14,6 +14,8 @@ use footfall_session_wtransport::{
     discover_sessions, fetch_named_session,
 };
 
+static FRAME: LabelKey = LabelKey::new("frame");
+
 fn demo_snapshot() -> Snapshot {
     Snapshot {
         metadata: SnapshotMetadata {
@@ -31,7 +33,7 @@ fn demo_snapshot() -> Snapshot {
             },
             ContextSnapshot {
                 id: ContextId::new(1),
-                context: Context::root().with(LabelKey::Frame, 7_u32),
+                context: Context::root().with(&FRAME, 7_u32),
             },
         ],
         counters: vec![CounterSnapshot {

@@ -137,3 +137,26 @@ id, so two crates can no longer collide by choosing the same number.
 - Descriptors are no longer `Copy` or `Clone`, and `==` compares identity.
 - `footfall_tracing` leaks one descriptor per callsite instead of allocating
   ids from a reserved range; `TRACING_DESC_ID_BASE` is removed.
+
+## User-Defined Label Keys
+
+`LabelKey` is no longer a closed enum of UI terms (`Frame`, `Widget`, `Node`,
+...). Applications and libraries declare their own keys as `static` items:
+
+```rust
+static FRAME: LabelKey = LabelKey::new("frame");
+
+let context = Context::root().with(&FRAME, 7_u32);
+let context = footfall::context!(FRAME = 7_u32);
+```
+
+- `Context::with`, `try_with`, `get`, and `contains` take `&'static LabelKey`.
+  `context!` takes paths to static keys instead of variant names.
+- `ContextEntry::key` returns `&'static LabelKey`; use `LabelKey::name` where
+  `LabelKey::as_str` was used. Keys compare by identity, like descriptors, and
+  a `const` key is rejected where a `&'static` key is required.
+- Consumers outside the process see keys by name. `OwnedContextEntry::key` is
+  now a `String`.
+- The session protocol version is now `2.0`: context labels carry the key
+  name string instead of a `u8` vocabulary tag. `1.x` consumers cannot decode
+  `2.0` envelopes. See [WebTransport Session Wire Format](session-wire-format.md).

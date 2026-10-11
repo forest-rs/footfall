@@ -647,7 +647,7 @@ fn write_context(writer: &mut impl Write, context: Context) -> fmt::Result {
             writer.write_char(',')?;
         }
         first = false;
-        write_json_string(writer, entry.key().as_str())?;
+        write_json_string(writer, entry.key().name())?;
         writer.write_char(':')?;
         write_label_value(writer, entry.value())?;
     }
@@ -680,7 +680,7 @@ fn track_name(context: Context) -> String {
         if index > 0 {
             name.push_str(" / ");
         }
-        name.push_str(entry.key().as_str());
+        name.push_str(entry.key().name());
         name.push('=');
         append_label_value(&mut name, entry.value());
     }
@@ -765,6 +765,10 @@ mod tests {
         ContextSnapshot, CounterKind, CounterSnapshot, Observation, Snapshot, TimedObservation,
     };
 
+    static FRAME: LabelKey = LabelKey::new("frame");
+    static PASS: LabelKey = LabelKey::new("pass");
+    static REASON: LabelKey = LabelKey::new("reason");
+
     #[test]
     fn exporter_emits_metadata_context_tracks_and_scope_pairing() {
         let snapshot = Snapshot {
@@ -783,9 +787,7 @@ mod tests {
                 },
                 ContextSnapshot {
                     id: ContextId::new(1),
-                    context: Context::root()
-                        .with(LabelKey::Frame, 7_u32)
-                        .with(LabelKey::Pass, 1_u32),
+                    context: Context::root().with(&FRAME, 7_u32).with(&PASS, 1_u32),
                 },
             ],
             counters: vec![CounterSnapshot {
@@ -869,7 +871,7 @@ mod tests {
                 },
                 ContextSnapshot {
                     id: ContextId::new(1),
-                    context: Context::root().with(LabelKey::Frame, 7_u32),
+                    context: Context::root().with(&FRAME, 7_u32),
                 },
             ],
             counters,
@@ -1003,8 +1005,8 @@ mod tests {
     #[test]
     fn track_name_uses_context_entries() {
         let context = Context::root()
-            .with(LabelKey::Frame, 3_u32)
-            .with(LabelKey::Reason, "invalidate");
+            .with(&FRAME, 3_u32)
+            .with(&REASON, "invalidate");
         assert_eq!(track_name(context), "frame=3 / reason=invalidate");
     }
 

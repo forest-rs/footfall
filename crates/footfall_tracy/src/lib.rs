@@ -435,7 +435,7 @@ fn context_text(context: Context) -> String {
         if index > 0 {
             text.push_str(" / ");
         }
-        text.push_str(entry.key().as_str());
+        text.push_str(entry.key().name());
         text.push('=');
         push_label_value(&mut text, entry.value());
     }
@@ -477,6 +477,11 @@ mod tests {
         Args, Context, CounterDesc, EventDesc, LabelKey, ResourceId, ResourceKindDesc, Unit,
     };
 
+    static FRAME: LabelKey = LabelKey::new("frame");
+    static PASS: LabelKey = LabelKey::new("pass");
+    static CACHE: LabelKey = LabelKey::new("cache");
+    static REASON: LabelKey = LabelKey::new("reason");
+
     static BYTES: CounterDesc = CounterDesc::bytes("bytes");
     static ATLAS: ResourceKindDesc = ResourceKindDesc::new("atlas");
     static APP_LOG: EventDesc = EventDesc::new("app_log");
@@ -484,9 +489,9 @@ mod tests {
     #[test]
     fn context_text_formats_compact_labels() {
         let context = Context::root()
-            .with(LabelKey::Frame, 7_u32)
-            .with(LabelKey::Pass, 1_u32)
-            .with(LabelKey::Reason, "invalidate");
+            .with(&FRAME, 7_u32)
+            .with(&PASS, 1_u32)
+            .with(&REASON, "invalidate");
 
         assert_eq!(
             context_text(context),
@@ -504,7 +509,7 @@ mod tests {
 
     #[test]
     fn resource_messages_include_context_and_size() {
-        let context = Context::root().with(LabelKey::Cache, "glyph_atlas");
+        let context = Context::root().with(&CACHE, "glyph_atlas");
         let message = resource_message("create", &ATLAS, ResourceId::new(9), context, Some(4096));
         assert!(message.contains("resource create atlas#9"));
         assert!(message.contains("size=4096"));
@@ -513,7 +518,7 @@ mod tests {
 
     #[test]
     fn messages_include_context_and_args() {
-        let context = Context::root().with(LabelKey::Frame, 7_u32);
+        let context = Context::root().with(&FRAME, 7_u32);
         let args = Args::none().with("bytes", 4096_u32).with("level", "info");
         let message = message_text(&APP_LOG, context, "uploaded atlas", args);
 

@@ -11,13 +11,13 @@
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use footfall::{
-    Args, Context, InstrumentationLevel, LabelKey, counter_add, gauge_set, histogram_record,
-    message, message_with, resource_update, scope, scope_begin, scope_end,
+    Args, Context, InstrumentationLevel, counter_add, gauge_set, histogram_record, message,
+    message_with, resource_update, scope, scope_begin, scope_end,
 };
 use footfall_benchmarks::{
-    ATLAS, ATLAS_ID, COUNTER_CAPACITY, EVENT_CAPACITY, LATENCY, LOG, MEASUREMENT, OPS, QUEUE_DEPTH,
-    RECORD, SEEDED_FRAMES, THREAD_COUNTS, WARM_UP, rotating_contexts, sample_context,
-    seed_snapshot, time_chunked, time_parallel_counter_add,
+    ATLAS, ATLAS_ID, CACHE, COUNTER_CAPACITY, EVENT_CAPACITY, FRAME, LATENCY, LOG, MEASUREMENT,
+    OPS, PASS, QUEUE_DEPTH, RECORD, SEEDED_FRAMES, THREAD_COUNTS, WARM_UP, rotating_contexts,
+    sample_context, seed_snapshot, time_chunked, time_parallel_counter_add,
 };
 use footfall_export::to_chrome_trace_json;
 use footfall_runtime::Runtime;
@@ -109,9 +109,9 @@ fn counters(c: &mut Criterion) {
         b.iter_custom(|iters| {
             time_chunked(iters, reset, || {
                 let context = Context::root()
-                    .with(LabelKey::Frame, black_box(7_u32))
-                    .with(LabelKey::Pass, black_box(1_u32))
-                    .with(LabelKey::Cache, "atlas");
+                    .with(&FRAME, black_box(7_u32))
+                    .with(&PASS, black_box(1_u32))
+                    .with(&CACHE, "atlas");
                 counter_add(black_box(&OPS), black_box(context), black_box(1));
             })
         });

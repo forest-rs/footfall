@@ -76,7 +76,7 @@ Each encoded envelope starts with:
 4. `u64 chunk_index`
 5. `u8 payload_tag`
 
-Current codec version is `1.0`. The payload tags are:
+Current codec version is `2.0`. The payload tags are:
 
 - `0`: `SnapshotStart`
 - `1`: `Contexts`
@@ -95,6 +95,19 @@ accepts envelopes with its own major version and an equal or older minor
 version, and rejects a different major version or a newer minor version.
 
 ## Row Fields Worth Calling Out
+
+Context rows carry a `u64` context id, a `u32` label count bounded by
+`footfall_core::CONTEXT_INLINE_CAPACITY`, and that many labels. Each label is
+the key name string followed by a tagged label value: a `u8` tag, then the
+payload for that tag:
+
+- `0`: unsigned, `u64`
+- `1`: signed, `i64`
+- `2`: bool, `u8` (`0` false, `1` true)
+- `3`: string
+
+Label keys are user-defined, so they travel by name. Version `2.0` replaced the
+`1.x` encoding, where each key was a `u8` tag into a fixed vocabulary.
 
 Snapshot metadata carries a `u64` wall-clock anchor after the session
 sequence: the wall-clock time of runtime creation in microseconds since the

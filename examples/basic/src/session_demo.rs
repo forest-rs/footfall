@@ -12,6 +12,14 @@ use footfall_runtime::{Runtime, Snapshot};
 use footfall_tracing::FootfallLayer;
 use tracing_subscriber::layer::SubscriberExt as _;
 
+static FRAME: LabelKey = LabelKey::new("frame");
+static TRANSACTION: LabelKey = LabelKey::new("transaction");
+static PASS: LabelKey = LabelKey::new("pass");
+static NODE: LabelKey = LabelKey::new("node");
+static RESOURCE: LabelKey = LabelKey::new("resource");
+static CACHE: LabelKey = LabelKey::new("cache");
+static REASON: LabelKey = LabelKey::new("reason");
+
 static RECORD_FRAME: ScopeDesc =
     footfall::scope_desc!("record_frame", "session_demo::DemoCapture::capture_frame");
 static TESSELLATE_NODE: ScopeDesc = footfall::scope_desc!(
@@ -58,15 +66,13 @@ impl DemoCapture {
 
     fn capture_frame_with_tracing(&self, frame: u32) -> Snapshot {
         let frame_context = Context::root()
-            .with(LabelKey::Frame, frame)
-            .with(LabelKey::Transaction, 1_u32 + frame / 8);
+            .with(&FRAME, frame)
+            .with(&TRANSACTION, 1_u32 + frame / 8);
         let record_context = frame_context
-            .with(LabelKey::Pass, 1_u32)
-            .with(LabelKey::Node, 77_u32 + (frame % 5));
-        let cache_context = frame_context
-            .with(LabelKey::Pass, 1_u32)
-            .with(LabelKey::Cache, "glyph_atlas");
-        let atlas_context = cache_context.with(LabelKey::Resource, ATLAS_ID);
+            .with(&PASS, 1_u32)
+            .with(&NODE, 77_u32 + (frame % 5));
+        let cache_context = frame_context.with(&PASS, 1_u32).with(&CACHE, "glyph_atlas");
+        let atlas_context = cache_context.with(&RESOURCE, ATLAS_ID);
 
         let scratch_metrics = ScratchMetrics {
             current_bytes: &SCRATCH_CURRENT,
@@ -84,7 +90,7 @@ impl DemoCapture {
         pass_begin(record_context);
         flow_begin(
             INVALIDATION_FLOW,
-            frame_context.with(LabelKey::Reason, "layout_invalidation"),
+            frame_context.with(&REASON, "layout_invalidation"),
         );
         {
             let _frame_scope = scope(&RECORD_FRAME, frame_context);
