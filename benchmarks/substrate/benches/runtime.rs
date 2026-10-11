@@ -32,14 +32,13 @@ use tracing_subscriber::layer::SubscriberExt as _;
 fn runtime() -> &'static Runtime {
     static RUNTIME: OnceLock<&'static Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
-        let runtime = Runtime::named_with_level(
-            "footfall_benchmarks",
-            COUNTER_CAPACITY,
-            EVENT_CAPACITY,
-            InstrumentationLevel::Off,
-        )
-        .install_global()
-        .expect("benchmark runtime should install once per process");
+        let runtime = Runtime::builder()
+            .process_name("footfall_benchmarks")
+            .level(InstrumentationLevel::Off)
+            .counter_capacity(COUNTER_CAPACITY)
+            .event_capacity(EVENT_CAPACITY)
+            .install_global()
+            .expect("benchmark runtime should install once per process");
         tracing::subscriber::set_global_default(
             tracing_subscriber::registry().with(FootfallLayer::new()),
         )

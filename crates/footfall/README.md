@@ -25,7 +25,8 @@ static RENDER: ScopeDesc = ScopeDesc::new("render");
 static UPLOAD_BYTES: CounterDesc = CounterDesc::bytes("upload_bytes");
 
 // The application installs a backend once, before emitting.
-let runtime = Runtime::new(256, 4096)
+let runtime = Runtime::builder()
+    .process_name("my_app")
     .install_global()
     .expect("no other backend is installed");
 

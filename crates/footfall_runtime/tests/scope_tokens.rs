@@ -17,7 +17,9 @@ fn guard_started_before_install_does_not_end_a_later_scope() {
     let early = scope(&EARLY, ContextHandle::ROOT);
     assert_eq!(early.token(), ScopeToken::INVALID);
 
-    let runtime = Runtime::new(16, 16)
+    let runtime = Runtime::builder()
+        .counter_capacity(16)
+        .event_capacity(16)
         .install_global()
         .expect("runtime should install once");
 

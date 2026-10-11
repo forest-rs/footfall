@@ -8,7 +8,10 @@ use footfall_runtime::Runtime;
 
 #[test]
 fn installed_runtime_level_sets_the_core_max_level() {
-    let runtime = Runtime::with_level(8, 8, InstrumentationLevel::Counters)
+    let runtime = Runtime::builder()
+        .level(InstrumentationLevel::Counters)
+        .counter_capacity(8)
+        .event_capacity(8)
         .install_global()
         .expect("runtime should install once for this test binary");
     assert_eq!(max_level(), InstrumentationLevel::Counters);
@@ -20,6 +23,10 @@ fn installed_runtime_level_sets_the_core_max_level() {
     assert_eq!(max_level(), InstrumentationLevel::Trace);
 
     // A runtime that is not the installed backend leaves the level alone.
-    Runtime::new(8, 8).set_level(InstrumentationLevel::Off);
+    Runtime::builder()
+        .counter_capacity(8)
+        .event_capacity(8)
+        .build()
+        .set_level(InstrumentationLevel::Off);
     assert_eq!(max_level(), InstrumentationLevel::Trace);
 }

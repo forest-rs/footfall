@@ -52,8 +52,11 @@ pub(crate) struct DemoCapture {
 
 impl DemoCapture {
     pub(crate) fn install(process_name: &str, session_name: &str) -> Self {
-        let runtime = Runtime::named(process_name, 128, 256)
-            .with_session_name(session_name)
+        let runtime = Runtime::builder()
+            .process_name(process_name)
+            .session_name(session_name)
+            .counter_capacity(128)
+            .event_capacity(256)
             .install_global()
             .expect("global runtime should install once");
         Self { runtime }

@@ -47,7 +47,12 @@ fn demo_snapshot() -> Snapshot {
                 context_id: ContextId::new(1),
             },
         ))
-        .dropped(0, 0, 1)
+        .drops(
+            footfall_runtime::Drops::new()
+                .with_refused_contexts(0)
+                .with_counter_updates(0)
+                .with_events(1),
+        )
         .build()
 }
 

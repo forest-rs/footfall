@@ -103,28 +103,20 @@ pub fn write_chrome_trace_json(snapshot: &Snapshot, writer: &mut impl Write) -> 
         ));
     }
 
-    if snapshot.dropped_contexts() > 0 {
-        events.push(build_internal_counter_event(
-            snapshot.captured_at_micros(),
-            "footfall_dropped_contexts",
-            snapshot.dropped_contexts(),
-        ));
-    }
-
-    if snapshot.dropped_counters() > 0 {
-        events.push(build_internal_counter_event(
-            snapshot.captured_at_micros(),
-            "footfall_dropped_counters",
-            snapshot.dropped_counters(),
-        ));
-    }
-
-    if snapshot.dropped_events() > 0 {
-        events.push(build_internal_counter_event(
-            snapshot.captured_at_micros(),
-            "footfall_dropped_events",
-            snapshot.dropped_events(),
-        ));
+    let drops = snapshot.drops();
+    for (name, count) in [
+        ("footfall_refused_contexts", drops.refused_contexts()),
+        ("footfall_unattributed", drops.unattributed()),
+        ("footfall_dropped_counter_updates", drops.counter_updates()),
+        ("footfall_dropped_events", drops.events()),
+    ] {
+        if count > 0 {
+            events.push(build_internal_counter_event(
+                snapshot.captured_at_micros(),
+                name,
+                count,
+            ));
+        }
     }
 
     // Events stay in construction order. Timed observations follow the
@@ -216,6 +208,18 @@ fn build_capture_window_event(snapshot: &Snapshot) -> String {
         snapshot.metadata().wall_clock_anchor_micros(),
     )
     .expect("string write should succeed");
+    // Drop totals are always present, so a reader can tell "nothing was
+    // dropped" from "this export does not say".
+    let drops = snapshot.drops();
+    for (name, count) in [
+        ("refused_contexts", drops.refused_contexts()),
+        ("unattributed", drops.unattributed()),
+        ("dropped_counter_updates", drops.counter_updates()),
+        ("dropped_events", drops.events()),
+    ] {
+        json.push(',');
+        write_json_field_u64(&mut json, name, count).expect("string write should succeed");
+    }
     json.push_str("}}");
     json
 }
@@ -770,8 +774,8 @@ mod tests {
         MarkerPhase, ScopeToken, Unit,
     };
     use footfall_runtime::{
-        ContextSnapshot, CounterKind, CounterSnapshot, Observation, Snapshot, SnapshotMetadata,
-        TimedObservation,
+        ContextSnapshot, CounterKind, CounterSnapshot, Drops, Observation, Snapshot,
+        SnapshotMetadata, TimedObservation,
     };
 
     static FRAME: LabelKey = LabelKey::new("frame");
@@ -840,7 +844,12 @@ mod tests {
                     context_id: ContextId::new(1),
                 },
             ))
-            .dropped(1, 1, 2)
+            .drops(
+                Drops::new()
+                    .with_refused_contexts(1)
+                    .with_counter_updates(1)
+                    .with_events(2),
+            )
             .build();
 
         let json = to_chrome_trace_json(&snapshot);
@@ -855,7 +864,9 @@ mod tests {
         assert!(json.contains("\"ph\":\"E\""));
         assert!(json.contains("\"ph\":\"s\""));
         assert!(json.contains("\"footfall_capture\""));
-        assert!(json.contains("\"footfall_dropped_contexts\""));
+        assert!(json.contains("\"footfall_refused_contexts\""));
+        assert!(!json.contains("\"footfall_unattributed\""));
+        assert!(json.contains("\"refused_contexts\":1,\"unattributed\":0,"));
     }
 
     fn snapshot_with(counters: Vec<CounterSnapshot>, events: Vec<TimedObservation>) -> Snapshot {

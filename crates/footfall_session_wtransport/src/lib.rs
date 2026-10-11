@@ -2260,7 +2260,12 @@ mod tests {
                     args: footfall_core::Args::none().with("level", "info"),
                 },
             ))
-            .dropped(0, 1, 2)
+            .drops(
+                footfall_runtime::Drops::new()
+                    .with_refused_contexts(0)
+                    .with_counter_updates(1)
+                    .with_events(2),
+            )
             .build();
 
         let envelopes = collect_snapshot(&snapshot, Chunking::new(8, 8, 8, 8));
