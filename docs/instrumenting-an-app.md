@@ -58,9 +58,10 @@ fn record_frame(frame: u32) {
 The low-level `scope_begin` and `scope_end` calls remain available when a scope
 crosses lexical boundaries.
 
-Descriptors and label keys are identified by address, so declare them as
-`static` items, never `const`. Remote consumers see label keys by name, so give
-keys distinct names; a library should prefix its keys with its own name.
+Descriptors are identified by address, so declare them as `static` items,
+never `const`; the compiler rejects a `const` descriptor where one is
+required. Label keys are identified by name, so give keys distinct names; a
+library should prefix its keys with its own name.
 
 ## Context Discipline
 

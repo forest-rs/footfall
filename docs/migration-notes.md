@@ -127,9 +127,9 @@ id, so two crates can no longer collide by choosing the same number.
   `resource_kind_desc!` macros drop it too, for example
   `scope_desc!("record_frame")` and `counter_desc!(count, "draw_ops")`.
 - Emission functions, `ScopeGuard`, and `Backend` methods take
-  `&'static` descriptors. Declare descriptors as `static` items. A `const`
-  descriptor no longer compiles where a `&'static` one is required, because
-  every use of a `const` would be a different descriptor.
+  `&'static` descriptors. Declare descriptors as `static` items. Neither
+  `&CONST_DESC` nor a `const DESC: &ScopeDesc = &ScopeDesc::new(..)` compiles,
+  because every use of a `const` would be a different descriptor.
 - `id()` derives an opaque id from the address. Ids are unique among live
   descriptors within one process run and are not stable across runs. The
   address never leaves the process: snapshots, exports, and the session wire
@@ -157,8 +157,8 @@ let context = footfall::context!(FRAME = 7_u32);
 - `Context::with`, `try_with`, `get`, and `contains` take `&'static LabelKey`.
   `context!` takes paths to static keys instead of variant names.
 - `ContextEntry::key` returns `&'static LabelKey`; use `LabelKey::name` where
-  `LabelKey::as_str` was used. Keys compare by identity, like descriptors, and
-  a `const` key is rejected where a `&'static` key is required.
+  `LabelKey::as_str` was used. Keys are identified by name, in process and on
+  the wire, so `static` and `const` keys with the same name are the same key.
 - Consumers outside the process see keys by name. `OwnedContextEntry::key` is
   now a `String`.
 - The session protocol version is now `2.0`: context labels carry the key

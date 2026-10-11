@@ -17,19 +17,24 @@
 //!
 //! # Descriptors
 //!
-//! A descriptor's identity is its address, and so is a [`LabelKey`]'s.
-//! Declare them as `static` items, never `const`: every use of a `const`
-//! would create a fresh value at a fresh address. Each of these types carries
-//! a private zero-sized marker with a `Drop` impl, which stops the compiler
-//! from promoting `&CONST` to `'static`, so passing a `const` where a
-//! `&'static` descriptor or key is required is a compile error rather than a
-//! silent identity bug:
+//! A descriptor's identity is its address. Declare descriptors as `static`
+//! items, never `const`: every use of a `const` would create a fresh value at
+//! a fresh address, which would silently split one descriptor into many.
+//! Each descriptor type carries a private interior-mutable marker, which the
+//! compiler refuses to promote or share through a `const`, so both ways of
+//! reaching a descriptor through a `const` are compile errors:
 //!
 //! ```compile_fail,E0716
 //! use footfall_core::{Context, ScopeDesc, scope};
 //!
 //! const RECORD: ScopeDesc = ScopeDesc::new("record");
 //! let _guard = scope(&RECORD, Context::root());
+//! ```
+//!
+//! ```compile_fail,E0492
+//! use footfall_core::ScopeDesc;
+//!
+//! pub const RECORD: &ScopeDesc = &ScopeDesc::new("record");
 //! ```
 //!
 //! ```

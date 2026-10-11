@@ -4,18 +4,27 @@
 //! Static descriptors. See the crate docs for the identity rules.
 
 use crate::{CounterDescId, EventDescId, ResourceKindId, ScopeDescId, Unit};
-use core::{fmt, ptr};
+use core::{fmt, ptr, sync::atomic::AtomicU8};
 
-/// Private marker that keeps descriptors and label keys out of `const` promotion.
+/// Private marker that keeps descriptors out of `const` evaluation.
 ///
-/// A value whose type has a `Drop` impl cannot be promoted to a `'static`
-/// temporary, so `&CONST_DESCRIPTOR` fails to compile where `&'static` is
-/// required. The marker is zero-sized, and `static` items are never dropped,
-/// so the impl never runs for a declared descriptor.
-pub(crate) struct StaticOnly;
+/// The marker has interior mutability, which the compiler treats as a reason
+/// to never share a value between uses. That closes both ways a `const` could
+/// otherwise reach a `'static` reference with a fresh address per use:
+///
+/// - `&CONST_DESCRIPTOR` is not promoted to a `'static` temporary (E0716).
+/// - `const DESC: &ScopeDesc = &ScopeDesc::new(..)` is rejected outright,
+///   because a constant may not refer to interior-mutable data (E0492).
+///
+/// The atomic is never read or written; it only carries the type property.
+pub(crate) struct StaticOnly(
+    #[expect(dead_code, reason = "the atomic only carries its type property")] AtomicU8,
+);
 
-impl Drop for StaticOnly {
-    fn drop(&mut self) {}
+impl StaticOnly {
+    pub(crate) const fn new() -> Self {
+        Self(AtomicU8::new(0))
+    }
 }
 
 /// Returns the opaque identity of a `'static` descriptor.
@@ -79,7 +88,7 @@ impl ScopeDesc {
         Self {
             name,
             location: None,
-            _static_only: StaticOnly,
+            _static_only: StaticOnly::new(),
         }
     }
 
@@ -89,7 +98,7 @@ impl ScopeDesc {
         Self {
             name,
             location: Some(location),
-            _static_only: StaticOnly,
+            _static_only: StaticOnly::new(),
         }
     }
 
@@ -130,7 +139,7 @@ impl EventDesc {
     pub const fn new(name: &'static str) -> Self {
         Self {
             name,
-            _static_only: StaticOnly,
+            _static_only: StaticOnly::new(),
         }
     }
 
@@ -167,7 +176,7 @@ impl CounterDesc {
         Self {
             name,
             unit,
-            _static_only: StaticOnly,
+            _static_only: StaticOnly::new(),
         }
     }
 
@@ -220,7 +229,7 @@ impl ResourceKindDesc {
     pub const fn new(name: &'static str) -> Self {
         Self {
             name,
-            _static_only: StaticOnly,
+            _static_only: StaticOnly::new(),
         }
     }
 
