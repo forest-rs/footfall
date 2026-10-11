@@ -141,6 +141,7 @@ impl Drop for ScopeGuard {
 
 /// Coarse marker kind used to structure a trace.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
 pub enum MarkerKind {
     /// Marks a frame boundary.
     Frame,

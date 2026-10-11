@@ -182,6 +182,7 @@ impl Consumer for SummaryConsumer {
             | Payload::Contexts(_)
             | Payload::Histograms(_)
             | Payload::SnapshotEnd(_) => {}
+            _ => {}
         }
         Ok(())
     }

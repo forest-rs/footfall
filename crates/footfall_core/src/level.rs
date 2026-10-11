@@ -5,6 +5,7 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 /// Runtime instrumentation level.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+#[non_exhaustive]
 pub enum InstrumentationLevel {
     /// Instrumentation is disabled.
     #[default]

@@ -105,6 +105,7 @@ pub struct Envelope<'a> {
 
 /// Borrowed payload variants for snapshot publication.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum Payload<'a> {
     /// Describes the snapshot window before chunk data arrives.
     SnapshotStart(SnapshotSummary<'a>),
@@ -182,6 +183,7 @@ pub struct OwnedContextEntry {
 
 /// Owned label value suitable for transport.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum OwnedLabelValue {
     /// Unsigned numeric payload.
     Unsigned(u64),
@@ -259,6 +261,7 @@ pub struct OwnedTimedObservation {
 
 /// Owned observation payload suitable for transport.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum OwnedObservation {
     /// Scope begin event.
     ScopeBegin {
@@ -359,6 +362,7 @@ pub struct OwnedSessionEnvelope {
 
 /// Owned payload variants for snapshot publication.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum OwnedSessionPayload {
     /// Describes the snapshot window before chunk data arrives.
     SnapshotStart(OwnedSnapshotSummary),
@@ -511,7 +515,7 @@ impl Envelope<'_> {
                     histograms.iter().map(owned_histogram_snapshot).collect(),
                 ),
                 Payload::Events(events) => OwnedSessionPayload::Events(
-                    events.iter().map(owned_timed_observation).collect(),
+                    events.iter().filter_map(owned_timed_observation).collect(),
                 ),
                 Payload::SnapshotEnd(dropped) => OwnedSessionPayload::SnapshotEnd(dropped),
             },
@@ -562,6 +566,9 @@ fn owned_label_value(value: LabelValue) -> OwnedLabelValue {
         LabelValue::Signed(value) => OwnedLabelValue::Signed(value),
         LabelValue::Bool(value) => OwnedLabelValue::Bool(value),
         LabelValue::StaticStr(value) => OwnedLabelValue::String(String::from(value)),
+        // Value kinds this protocol version cannot carry travel as their
+        // debug text rather than being dropped.
+        _ => OwnedLabelValue::String(alloc::format!("{value:?}")),
     }
 }
 
@@ -592,16 +599,17 @@ fn owned_histogram_snapshot(histogram: &HistogramSnapshot) -> OwnedHistogramSnap
     }
 }
 
-fn owned_timed_observation(observation: &TimedObservation) -> OwnedTimedObservation {
-    OwnedTimedObservation {
+fn owned_timed_observation(observation: &TimedObservation) -> Option<OwnedTimedObservation> {
+    Some(OwnedTimedObservation {
         at_micros: observation.at_micros,
         thread_id: observation.thread_id,
-        observation: owned_observation(&observation.observation),
-    }
+        observation: owned_observation(&observation.observation)?,
+    })
 }
 
-fn owned_observation(observation: &Observation) -> OwnedObservation {
-    match observation {
+/// Returns `None` for observation kinds this protocol version cannot carry.
+fn owned_observation(observation: &Observation) -> Option<OwnedObservation> {
+    Some(match observation {
         Observation::ScopeBegin {
             desc_id,
             name,
@@ -684,7 +692,8 @@ fn owned_observation(observation: &Observation) -> OwnedObservation {
             text: text.clone(),
             args: owned_args(*args),
         },
-    }
+        _ => return None,
+    })
 }
 
 #[cfg(test)]

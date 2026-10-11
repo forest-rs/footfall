@@ -192,6 +192,7 @@ impl SessionAnnouncement {
 
 /// Request kind received by a session server.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum SessionRequestKind {
     /// Request the currently discoverable sessions from this server.
     Discover,
@@ -226,6 +227,7 @@ pub struct ServedRequest {
 
 /// Classification for a served request.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum ServedRequestKind {
     /// Discovery request returning one or more session announcements.
     Discovery {
@@ -840,6 +842,7 @@ fn encode_borrowed_envelope(envelope: Envelope<'_>) -> io::Result<Vec<u8>> {
             encode_u8(&mut bytes, 4);
             encode_dropped_summary(&mut bytes, dropped);
         }
+        _ => return Err(unsupported("payload")),
     }
     Ok(bytes)
 }
@@ -873,6 +876,7 @@ fn encode_envelope(envelope: &OwnedSessionEnvelope) -> io::Result<Vec<u8>> {
             encode_u8(&mut bytes, 4);
             encode_dropped_summary(&mut bytes, *dropped);
         }
+        _ => return Err(unsupported("payload")),
     }
     Ok(bytes)
 }
@@ -1097,6 +1101,7 @@ fn encode_borrowed_label_value(
             encode_u8(bytes, 3);
             encode_string(bytes, value)?;
         }
+        _ => return Err(unsupported("label value")),
     }
     Ok(())
 }
@@ -1107,9 +1112,9 @@ fn encode_counters(bytes: &mut Vec<u8>, counters: &[OwnedCounterSnapshot]) -> io
     for counter in counters {
         encode_u64(bytes, counter.desc_id.get());
         encode_string(bytes, &counter.name)?;
-        encode_u8(bytes, encode_unit(counter.unit));
+        encode_u8(bytes, encode_unit(counter.unit)?);
         encode_u64(bytes, counter.context_id.get());
-        encode_u8(bytes, encode_counter_kind(counter.kind));
+        encode_u8(bytes, encode_counter_kind(counter.kind)?);
         encode_u64(bytes, counter.value);
         encode_u64(bytes, counter.updated_at_micros);
     }
@@ -1124,9 +1129,9 @@ fn encode_borrowed_counters(
     for counter in counters {
         encode_u64(bytes, counter.desc_id.get());
         encode_string(bytes, counter.name)?;
-        encode_u8(bytes, encode_unit(counter.unit));
+        encode_u8(bytes, encode_unit(counter.unit)?);
         encode_u64(bytes, counter.context_id.get());
-        encode_u8(bytes, encode_counter_kind(counter.kind));
+        encode_u8(bytes, encode_counter_kind(counter.kind)?);
         encode_u64(bytes, counter.value);
         encode_u64(bytes, counter.updated_at_micros);
     }
@@ -1156,7 +1161,7 @@ fn encode_histograms(bytes: &mut Vec<u8>, histograms: &[OwnedHistogramSnapshot])
     for histogram in histograms {
         encode_u64(bytes, histogram.desc_id.get());
         encode_string(bytes, &histogram.name)?;
-        encode_u8(bytes, encode_unit(histogram.unit));
+        encode_u8(bytes, encode_unit(histogram.unit)?);
         encode_u64(bytes, histogram.context_id.get());
         encode_histogram_body(
             bytes,
@@ -1179,7 +1184,7 @@ fn encode_borrowed_histograms(
     for histogram in histograms {
         encode_u64(bytes, histogram.desc_id.get());
         encode_string(bytes, histogram.name)?;
-        encode_u8(bytes, encode_unit(histogram.unit));
+        encode_u8(bytes, encode_unit(histogram.unit)?);
         encode_u64(bytes, histogram.context_id.get());
         encode_histogram_body(
             bytes,
@@ -1351,7 +1356,7 @@ fn encode_borrowed_observation(
             context_id,
         } => {
             encode_u8(bytes, 5);
-            encode_u8(bytes, encode_marker_kind(*kind));
+            encode_u8(bytes, encode_marker_kind(*kind)?);
             encode_u8(bytes, encode_marker_phase(*phase));
             encode_u64(bytes, context_id.get());
         }
@@ -1379,6 +1384,7 @@ fn encode_borrowed_observation(
             encode_string(bytes, text)?;
             encode_borrowed_args(bytes, *args)?;
         }
+        _ => return Err(unsupported("observation")),
     }
     Ok(())
 }
@@ -1457,6 +1463,7 @@ fn encode_label_value(bytes: &mut Vec<u8>, value: &OwnedLabelValue) -> io::Resul
             encode_u8(bytes, 3);
             encode_string(bytes, value)?;
         }
+        _ => return Err(unsupported("label value")),
     }
     Ok(())
 }
@@ -1541,7 +1548,7 @@ fn encode_observation(bytes: &mut Vec<u8>, observation: &OwnedObservation) -> io
             context_id,
         } => {
             encode_u8(bytes, 5);
-            encode_u8(bytes, encode_marker_kind(*kind));
+            encode_u8(bytes, encode_marker_kind(*kind)?);
             encode_u8(bytes, encode_marker_phase(*phase));
             encode_u64(bytes, context_id.get());
         }
@@ -1569,6 +1576,7 @@ fn encode_observation(bytes: &mut Vec<u8>, observation: &OwnedObservation) -> io
             encode_string(bytes, text)?;
             encode_args(bytes, args)?;
         }
+        _ => return Err(unsupported("observation")),
     }
     Ok(())
 }
@@ -1629,10 +1637,11 @@ fn decode_observation(cursor: &mut Cursor<'_>) -> io::Result<OwnedObservation> {
     }
 }
 
-fn encode_counter_kind(kind: CounterKind) -> u8 {
+fn encode_counter_kind(kind: CounterKind) -> io::Result<u8> {
     match kind {
-        CounterKind::Counter => 0,
-        CounterKind::Gauge => 1,
+        CounterKind::Counter => Ok(0),
+        CounterKind::Gauge => Ok(1),
+        _ => Err(unsupported("counter kind")),
     }
 }
 
@@ -1647,14 +1656,15 @@ fn decode_counter_kind(tag: u8) -> io::Result<CounterKind> {
     }
 }
 
-fn encode_unit(unit: Unit) -> u8 {
+fn encode_unit(unit: Unit) -> io::Result<u8> {
     match unit {
-        Unit::Bytes => 0,
-        Unit::Count => 1,
-        Unit::Nanos => 2,
-        Unit::Micros => 3,
-        Unit::Ratio => 4,
-        Unit::Items => 5,
+        Unit::Bytes => Ok(0),
+        Unit::Count => Ok(1),
+        Unit::Nanos => Ok(2),
+        Unit::Micros => Ok(3),
+        Unit::Ratio => Ok(4),
+        Unit::Items => Ok(5),
+        _ => Err(unsupported("unit")),
     }
 }
 
@@ -1673,12 +1683,21 @@ fn decode_unit(tag: u8) -> io::Result<Unit> {
     }
 }
 
-fn encode_marker_kind(kind: MarkerKind) -> u8 {
+fn encode_marker_kind(kind: MarkerKind) -> io::Result<u8> {
     match kind {
-        MarkerKind::Frame => 0,
-        MarkerKind::Transaction => 1,
-        MarkerKind::Pass => 2,
+        MarkerKind::Frame => Ok(0),
+        MarkerKind::Transaction => Ok(1),
+        MarkerKind::Pass => Ok(2),
+        _ => Err(unsupported("marker kind")),
     }
+}
+
+/// Error for a value this protocol version has no encoding for.
+fn unsupported(what: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("{what} has no encoding in this session protocol version"),
+    )
 }
 
 fn decode_marker_kind(tag: u8) -> io::Result<MarkerKind> {

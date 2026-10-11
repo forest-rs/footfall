@@ -69,6 +69,12 @@ async fn main() {
                                 .await
                                 .expect("error response should succeed");
                         }
+                        _ => {
+                            request
+                                .respond_error("unsupported request")
+                                .await
+                                .expect("error response should succeed");
+                        }
                     }
                     Err(error) => {
                         eprintln!("serve failed for frame {frame}: {error}");

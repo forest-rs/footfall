@@ -410,7 +410,8 @@ fn plot_configuration(unit: Unit) -> PlotConfiguration {
     let format = match unit {
         Unit::Bytes => PlotFormat::Memory,
         Unit::Ratio => PlotFormat::Percentage,
-        Unit::Count | Unit::Nanos | Unit::Micros | Unit::Items => PlotFormat::Number,
+        // Count, time, item, and any future units plot as plain numbers.
+        _ => PlotFormat::Number,
     };
     PlotConfiguration::default().format(format)
 }
@@ -422,12 +423,14 @@ fn frame_name(kind: MarkerKind) -> FrameName {
             *TRANSACTION_NAME.get_or_init(|| FrameName::new_leak(String::from("transaction")))
         }
         MarkerKind::Pass => *PASS_NAME.get_or_init(|| FrameName::new_leak(String::from("pass"))),
+        _ => *MARKER_NAME.get_or_init(|| FrameName::new_leak(String::from("marker"))),
     }
 }
 
 static FRAME_NAME: OnceLock<FrameName> = OnceLock::new();
 static TRANSACTION_NAME: OnceLock<FrameName> = OnceLock::new();
 static PASS_NAME: OnceLock<FrameName> = OnceLock::new();
+static MARKER_NAME: OnceLock<FrameName> = OnceLock::new();
 fn resource_message(
     verb: &str,
     desc: &'static ResourceKindDesc,
@@ -515,6 +518,7 @@ fn push_label_value(text: &mut String, value: LabelValue) {
             let _ = write!(text, "{value}");
         }
         LabelValue::StaticStr(value) => text.push_str(value),
+        _ => text.push('?'),
     }
 }
 

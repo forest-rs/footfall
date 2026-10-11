@@ -102,6 +102,12 @@ async fn discovery_and_snapshot_fetch_round_trip() {
                         .await
                         .expect("error response should succeed");
                 }
+                _ => {
+                    request
+                        .respond_error("unsupported request")
+                        .await
+                        .expect("error response should succeed");
+                }
             }
         }
     });

@@ -276,10 +276,12 @@ pub(crate) fn summarize(envelopes: &[OwnedSessionEnvelope]) -> SessionSummary {
                         }
                         OwnedObservation::ScopeEnd { .. }
                         | OwnedObservation::FrameMarker { .. } => {}
+                        _ => {}
                     }
                 }
             }
             OwnedSessionPayload::SnapshotEnd(_) => {}
+            _ => {}
         }
     }
 
@@ -409,6 +411,7 @@ fn format_context(entries: &[OwnedContextEntry]) -> String {
                     OwnedLabelValue::Signed(value) => value.to_string(),
                     OwnedLabelValue::Bool(value) => value.to_string(),
                     OwnedLabelValue::String(value) => value.clone(),
+                    _ => String::from("?"),
                 }
             )
         })
@@ -429,6 +432,7 @@ fn format_label_value(value: &OwnedLabelValue) -> String {
         OwnedLabelValue::Signed(value) => value.to_string(),
         OwnedLabelValue::Bool(value) => value.to_string(),
         OwnedLabelValue::String(value) => value.clone(),
+        _ => String::from("?"),
     }
 }
 
