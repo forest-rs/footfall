@@ -53,3 +53,21 @@ The low-level emission API remains available, but common call sites can now use:
   for compact static descriptors and contexts.
 - `Runtime::install_global_*` helpers and `Runtime::with_session_name` to avoid
   spelling `Box::leak` in application setup.
+
+## Chrome Trace Export Tracks
+
+`footfall_export` now lays out Chrome Trace Event JSON by recording thread
+instead of by semantic context:
+
+- Timed observations use the runtime-assigned thread id as `tid`, with one
+  `thread N` track per thread. The canonical context id moves into `args` as
+  `context_id`, alongside the expanded `context` labels.
+- Events keep the snapshot order instead of being re-sorted by timestamp and
+  kind, so same-microsecond scopes on one thread no longer nest.
+- A scope end closes the slice on the track where the scope began. An end
+  whose begin is not in the snapshot is skipped and counted in the
+  `footfall_unmatched_scope_ends` internal counter.
+- Counters and gauges become one Chrome counter track per descriptor and
+  context, named `name [context labels]`, with a single numeric series named
+  after the descriptor unit. Aggregates and capture metadata live on track
+  `0`.
