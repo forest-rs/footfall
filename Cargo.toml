@@ -94,3 +94,7 @@ clippy.wildcard_dependencies = "warn"
 # Prefer using `#[expect(...)]` instead of `#[allow(...)]`.
 # `#[expect(...)]` warns when the suppressed lint no longer fires.
 clippy.allow_attributes = "warn"
+
+# `--cfg footfall_compile_out` strips every emission at compile time; see the
+# footfall_core crate docs.
+rust.unexpected_cfgs = { check-cfg = ["cfg(footfall_compile_out)"], level = "warn" }

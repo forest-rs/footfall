@@ -47,6 +47,24 @@
 //! Descriptors created at runtime, for example by a bridge from another
 //! instrumentation framework, can be leaked with `Box::leak` to obtain a
 //! `&'static` descriptor with its own identity.
+//!
+//! # Compiling instrumentation out
+//!
+//! Building with `--cfg footfall_compile_out`, for example
+//! `RUSTFLAGS="--cfg footfall_compile_out" cargo build --release`, turns
+//! every emission function into an empty `#[inline(always)]` function:
+//! nothing reaches a backend, [`scope_begin`] returns
+//! [`ScopeToken::INVALID`], and instrumented code compiles to nothing beyond
+//! evaluating its arguments. The rest of the API, including
+//! `install_backend`, keeps working,
+//! so no call site changes.
+//!
+//! This is deliberately a compiler `cfg` rather than a cargo feature. Like
+//! `log`'s `max_level_off`, it changes behavior for the whole build instead
+//! of adding to it, and cargo features unify across the dependency graph and
+//! are switched on by `--all-features`, so a feature would let any dependency
+//! or tooling run strip instrumentation from an entire application. Only the
+//! final binary should make that choice; libraries must never set it.
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
