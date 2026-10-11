@@ -26,9 +26,9 @@ fn spans_and_events_reach_the_runtime() {
 
     let snapshot = runtime.drain_snapshot();
     let (begin, span_context) = snapshot
-        .events
+        .events()
         .iter()
-        .find_map(|event| match &event.observation {
+        .find_map(|event| match event.observation() {
             Observation::ScopeBegin {
                 name,
                 args,
@@ -50,22 +50,22 @@ fn spans_and_events_reach_the_runtime() {
     let labels = snapshot
         .context(span_context)
         .expect("the span context should resolve")
-        .context;
+        .context();
     assert_eq!(labels.len(), 1);
     assert_eq!(labels.as_slice()[0].key().name(), "items");
-    assert_eq!(snapshot.dropped_contexts, 0);
+    assert_eq!(snapshot.dropped_contexts(), 0);
     assert!(
         snapshot
-            .events
+            .events()
             .iter()
-            .any(|event| matches!(&event.observation, Observation::ScopeEnd { .. })),
+            .any(|event| matches!(event.observation(), Observation::ScopeEnd { .. })),
         "span exit should record a scope end"
     );
 
     let message = snapshot
-        .events
+        .events()
         .iter()
-        .find_map(|event| match &event.observation {
+        .find_map(|event| match event.observation() {
             Observation::Message {
                 text,
                 args,
@@ -113,7 +113,7 @@ fn spans_and_events_reach_the_runtime() {
     }
     let mut ids: Vec<_> = runtime
         .snapshot()
-        .events
+        .events()
         .iter()
         .filter_map(scope_begin_desc_id)
         .collect();
@@ -130,7 +130,7 @@ fn spans_and_events_reach_the_runtime() {
 fn scope_begin_desc_id(
     event: &footfall_runtime::TimedObservation,
 ) -> Option<footfall_core::ScopeDescId> {
-    match &event.observation {
+    match event.observation() {
         Observation::ScopeBegin { desc_id, .. } => Some(*desc_id),
         _ => None,
     }

@@ -167,11 +167,31 @@ impl SessionIdentity {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionAnnouncement {
     /// Stable session id unique within one session server.
-    pub id: String,
+    id: String,
     /// Process name associated with the published session.
-    pub process_name: String,
+    process_name: String,
     /// Optional capture-session label.
-    pub session_name: Option<String>,
+    session_name: Option<String>,
+}
+
+impl SessionAnnouncement {
+    /// Returns the stable session id unique within one session server.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Returns the process name associated with the published session.
+    #[must_use]
+    pub fn process_name(&self) -> &str {
+        &self.process_name
+    }
+
+    /// Returns the optional capture-session label.
+    #[must_use]
+    pub fn session_name(&self) -> Option<&str> {
+        self.session_name.as_deref()
+    }
 }
 
 impl SessionAnnouncement {
@@ -218,11 +238,31 @@ impl SessionRequestKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServedRequest {
     /// Request authority observed by the server.
-    pub authority: String,
+    authority: String,
     /// Request path served by the server.
-    pub path: String,
+    path: String,
     /// Response kind emitted by the server.
-    pub kind: ServedRequestKind,
+    kind: ServedRequestKind,
+}
+
+impl ServedRequest {
+    /// Returns the request authority observed by the server.
+    #[must_use]
+    pub fn authority(&self) -> &str {
+        &self.authority
+    }
+
+    /// Returns the request path served by the server.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Returns the response kind emitted by the server.
+    #[must_use]
+    pub const fn kind(&self) -> &ServedRequestKind {
+        &self.kind
+    }
 }
 
 /// Classification for a served request.
@@ -247,9 +287,23 @@ pub enum ServedRequestKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionServerConfig {
     /// Local UDP address to bind.
-    pub bind_address: SocketAddr,
+    bind_address: SocketAddr,
     /// WebTransport path accepted by the server.
-    pub path: String,
+    path: String,
+}
+
+impl SessionServerConfig {
+    /// Returns the local UDP address to bind.
+    #[must_use]
+    pub const fn bind_address(&self) -> SocketAddr {
+        self.bind_address
+    }
+
+    /// Returns the WebTransport path accepted by the server.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
 }
 
 impl Default for SessionServerConfig {
@@ -262,6 +316,24 @@ impl Default for SessionServerConfig {
 }
 
 impl SessionServerConfig {
+    /// Sets the local UDP address to bind.
+    ///
+    /// The default binds to localhost. The session protocol has no client
+    /// authentication, so binding to any other interface exposes snapshots,
+    /// including message text, to every client that can reach the port.
+    #[must_use]
+    pub const fn with_bind_address(mut self, bind_address: SocketAddr) -> Self {
+        self.bind_address = bind_address;
+        self
+    }
+
+    /// Sets the WebTransport path accepted by the server.
+    #[must_use]
+    pub fn with_path(mut self, path: impl Into<String>) -> Self {
+        self.path = path.into();
+        self
+    }
+
     /// Returns the fixed localhost session configuration used for local attach workflows.
     #[must_use]
     pub fn local_default() -> Self {
@@ -816,8 +888,8 @@ fn map_finish_error(result: Result<(), StreamWriteError>) -> io::Result<()> {
 
 fn encode_borrowed_envelope(envelope: Envelope<'_>) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    encode_header(&mut bytes, envelope.header);
-    match envelope.payload {
+    encode_header(&mut bytes, envelope.header());
+    match envelope.payload() {
         Payload::SnapshotStart(summary) => {
             encode_u8(&mut bytes, 0);
             encode_borrowed_snapshot_summary(&mut bytes, summary)?;
@@ -850,8 +922,8 @@ fn encode_borrowed_envelope(envelope: Envelope<'_>) -> io::Result<Vec<u8>> {
 #[cfg(test)]
 fn encode_envelope(envelope: &OwnedSessionEnvelope) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    encode_header(&mut bytes, envelope.header);
-    match &envelope.payload {
+    encode_header(&mut bytes, envelope.header());
+    match envelope.payload() {
         OwnedSessionPayload::SnapshotStart(summary) => {
             encode_u8(&mut bytes, 0);
             encode_snapshot_summary(&mut bytes, summary)?;
@@ -909,14 +981,14 @@ fn decode_envelope(bytes: &[u8]) -> io::Result<OwnedSessionEnvelope> {
             "trailing bytes after session envelope",
         ));
     }
-    Ok(OwnedSessionEnvelope { header, payload })
+    Ok(OwnedSessionEnvelope::new(header, payload))
 }
 
 fn encode_header(bytes: &mut Vec<u8>, header: EnvelopeHeader) {
-    encode_u16(bytes, header.protocol_version.major());
-    encode_u16(bytes, header.protocol_version.minor());
-    encode_u64(bytes, header.session_sequence);
-    encode_u64(bytes, header.chunk_index);
+    encode_u16(bytes, header.protocol_version().major());
+    encode_u16(bytes, header.protocol_version().minor());
+    encode_u64(bytes, header.session_sequence());
+    encode_u64(bytes, header.chunk_index());
 }
 
 fn decode_header(cursor: &mut Cursor<'_>) -> io::Result<EnvelopeHeader> {
@@ -931,22 +1003,22 @@ fn decode_header(cursor: &mut Cursor<'_>) -> io::Result<EnvelopeHeader> {
             ),
         ));
     }
-    Ok(EnvelopeHeader {
+    Ok(EnvelopeHeader::new(
         protocol_version,
-        session_sequence: decode_u64(cursor)?,
-        chunk_index: decode_u64(cursor)?,
-    })
+        decode_u64(cursor)?,
+        decode_u64(cursor)?,
+    ))
 }
 
 #[cfg(test)]
 fn encode_snapshot_summary(bytes: &mut Vec<u8>, summary: &OwnedSnapshotSummary) -> io::Result<()> {
-    encode_snapshot_metadata(bytes, &summary.metadata)?;
-    encode_u64(bytes, summary.capture_start_micros);
-    encode_u64(bytes, summary.captured_at_micros);
-    encode_usize(bytes, summary.context_count)?;
-    encode_usize(bytes, summary.counter_count)?;
-    encode_usize(bytes, summary.histogram_count)?;
-    encode_usize(bytes, summary.event_count)?;
+    encode_snapshot_metadata(bytes, summary.metadata())?;
+    encode_u64(bytes, summary.capture_start_micros());
+    encode_u64(bytes, summary.captured_at_micros());
+    encode_usize(bytes, summary.context_count())?;
+    encode_usize(bytes, summary.counter_count())?;
+    encode_usize(bytes, summary.histogram_count())?;
+    encode_usize(bytes, summary.event_count())?;
     Ok(())
 }
 
@@ -954,26 +1026,26 @@ fn encode_borrowed_snapshot_summary(
     bytes: &mut Vec<u8>,
     summary: footfall_session::SnapshotSummary<'_>,
 ) -> io::Result<()> {
-    encode_snapshot_metadata_borrowed(bytes, summary.metadata)?;
-    encode_u64(bytes, summary.capture_start_micros);
-    encode_u64(bytes, summary.captured_at_micros);
-    encode_usize(bytes, summary.context_count)?;
-    encode_usize(bytes, summary.counter_count)?;
-    encode_usize(bytes, summary.histogram_count)?;
-    encode_usize(bytes, summary.event_count)?;
+    encode_snapshot_metadata_borrowed(bytes, summary.metadata())?;
+    encode_u64(bytes, summary.capture_start_micros());
+    encode_u64(bytes, summary.captured_at_micros());
+    encode_usize(bytes, summary.context_count())?;
+    encode_usize(bytes, summary.counter_count())?;
+    encode_usize(bytes, summary.histogram_count())?;
+    encode_usize(bytes, summary.event_count())?;
     Ok(())
 }
 
 fn decode_snapshot_summary(cursor: &mut Cursor<'_>) -> io::Result<OwnedSnapshotSummary> {
-    Ok(OwnedSnapshotSummary {
-        metadata: decode_snapshot_metadata(cursor)?,
-        capture_start_micros: decode_u64(cursor)?,
-        captured_at_micros: decode_u64(cursor)?,
-        context_count: decode_usize(cursor)?,
-        counter_count: decode_usize(cursor)?,
-        histogram_count: decode_usize(cursor)?,
-        event_count: decode_usize(cursor)?,
-    })
+    Ok(OwnedSnapshotSummary::new(
+        decode_snapshot_metadata(cursor)?,
+        decode_u64(cursor)?,
+        decode_u64(cursor)?,
+        decode_usize(cursor)?,
+        decode_usize(cursor)?,
+        decode_usize(cursor)?,
+        decode_usize(cursor)?,
+    ))
 }
 
 #[cfg(test)]
@@ -981,16 +1053,16 @@ fn encode_snapshot_metadata(
     bytes: &mut Vec<u8>,
     metadata: &OwnedSnapshotMetadata,
 ) -> io::Result<()> {
-    encode_string(bytes, &metadata.process_name)?;
-    match &metadata.session_name {
+    encode_string(bytes, metadata.process_name())?;
+    match &metadata.session_name() {
         Some(session_name) => {
             encode_u8(bytes, 1);
             encode_string(bytes, session_name)?;
         }
         None => encode_u8(bytes, 0),
     }
-    encode_u64(bytes, metadata.session_sequence);
-    encode_u64(bytes, metadata.wall_clock_anchor_micros);
+    encode_u64(bytes, metadata.session_sequence());
+    encode_u64(bytes, metadata.wall_clock_anchor_micros());
     Ok(())
 }
 
@@ -998,16 +1070,16 @@ fn encode_snapshot_metadata_borrowed(
     bytes: &mut Vec<u8>,
     metadata: &footfall_runtime::SnapshotMetadata,
 ) -> io::Result<()> {
-    encode_string(bytes, &metadata.process_name)?;
-    match &metadata.session_name {
+    encode_string(bytes, metadata.process_name())?;
+    match &metadata.session_name() {
         Some(session_name) => {
             encode_u8(bytes, 1);
             encode_string(bytes, session_name)?;
         }
         None => encode_u8(bytes, 0),
     }
-    encode_u64(bytes, metadata.session_sequence);
-    encode_u64(bytes, metadata.wall_clock_anchor_micros);
+    encode_u64(bytes, metadata.session_sequence());
+    encode_u64(bytes, metadata.wall_clock_anchor_micros());
     Ok(())
 }
 
@@ -1023,23 +1095,23 @@ fn decode_snapshot_metadata(cursor: &mut Cursor<'_>) -> io::Result<OwnedSnapshot
             ));
         }
     };
-    Ok(OwnedSnapshotMetadata {
+    Ok(OwnedSnapshotMetadata::new(
         process_name,
         session_name,
-        session_sequence: decode_u64(cursor)?,
-        wall_clock_anchor_micros: decode_u64(cursor)?,
-    })
+        decode_u64(cursor)?,
+        decode_u64(cursor)?,
+    ))
 }
 
 #[cfg(test)]
 fn encode_contexts(bytes: &mut Vec<u8>, contexts: &[OwnedContextSnapshot]) -> io::Result<()> {
     encode_len(bytes, contexts.len())?;
     for context in contexts {
-        encode_u64(bytes, context.id.get());
-        encode_len(bytes, context.entries.len())?;
-        for entry in &context.entries {
-            encode_string(bytes, &entry.key)?;
-            encode_label_value(bytes, &entry.value)?;
+        encode_u64(bytes, context.id().get());
+        encode_len(bytes, context.entries().len())?;
+        for entry in context.entries() {
+            encode_string(bytes, entry.key())?;
+            encode_label_value(bytes, entry.value())?;
         }
     }
     Ok(())
@@ -1051,9 +1123,9 @@ fn encode_borrowed_contexts(
 ) -> io::Result<()> {
     encode_len(bytes, contexts.len())?;
     for context in contexts {
-        encode_u64(bytes, context.id.get());
-        encode_len(bytes, context.context.len())?;
-        for entry in context.context.iter() {
+        encode_u64(bytes, context.id().get());
+        encode_len(bytes, context.context().len())?;
+        for entry in context.context().iter() {
             encode_string(bytes, entry.key().name())?;
             encode_borrowed_label_value(bytes, entry.value())?;
         }
@@ -1070,12 +1142,12 @@ fn decode_contexts(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedContextSnapsh
             decode_bounded_len(cursor, MAX_CONTEXT_ENTRIES_PER_CONTEXT, "context entries")?;
         let mut entries = Vec::with_capacity(entry_len);
         for _ in 0..entry_len {
-            entries.push(OwnedContextEntry {
-                key: decode_string(cursor)?,
-                value: decode_label_value(cursor)?,
-            });
+            entries.push(OwnedContextEntry::new(
+                decode_string(cursor)?,
+                decode_label_value(cursor)?,
+            ));
         }
-        contexts.push(OwnedContextSnapshot { id, entries });
+        contexts.push(OwnedContextSnapshot::new(id, entries));
     }
     Ok(contexts)
 }
@@ -1110,13 +1182,13 @@ fn encode_borrowed_label_value(
 fn encode_counters(bytes: &mut Vec<u8>, counters: &[OwnedCounterSnapshot]) -> io::Result<()> {
     encode_len(bytes, counters.len())?;
     for counter in counters {
-        encode_u64(bytes, counter.desc_id.get());
-        encode_string(bytes, &counter.name)?;
-        encode_u8(bytes, encode_unit(counter.unit)?);
-        encode_u64(bytes, counter.context_id.get());
-        encode_u8(bytes, encode_counter_kind(counter.kind)?);
-        encode_u64(bytes, counter.value);
-        encode_u64(bytes, counter.updated_at_micros);
+        encode_u64(bytes, counter.desc_id().get());
+        encode_string(bytes, counter.name())?;
+        encode_u8(bytes, encode_unit(counter.unit())?);
+        encode_u64(bytes, counter.context_id().get());
+        encode_u8(bytes, encode_counter_kind(counter.kind())?);
+        encode_u64(bytes, counter.value());
+        encode_u64(bytes, counter.updated_at_micros());
     }
     Ok(())
 }
@@ -1127,13 +1199,13 @@ fn encode_borrowed_counters(
 ) -> io::Result<()> {
     encode_len(bytes, counters.len())?;
     for counter in counters {
-        encode_u64(bytes, counter.desc_id.get());
-        encode_string(bytes, counter.name)?;
-        encode_u8(bytes, encode_unit(counter.unit)?);
-        encode_u64(bytes, counter.context_id.get());
-        encode_u8(bytes, encode_counter_kind(counter.kind)?);
-        encode_u64(bytes, counter.value);
-        encode_u64(bytes, counter.updated_at_micros);
+        encode_u64(bytes, counter.desc_id().get());
+        encode_string(bytes, counter.name())?;
+        encode_u8(bytes, encode_unit(counter.unit())?);
+        encode_u64(bytes, counter.context_id().get());
+        encode_u8(bytes, encode_counter_kind(counter.kind())?);
+        encode_u64(bytes, counter.value());
+        encode_u64(bytes, counter.updated_at_micros());
     }
     Ok(())
 }
@@ -1142,15 +1214,15 @@ fn decode_counters(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedCounterSnapsh
     let len = decode_bounded_len(cursor, MAX_ROWS_PER_ENVELOPE, "counter rows")?;
     let mut counters = Vec::with_capacity(len);
     for _ in 0..len {
-        counters.push(OwnedCounterSnapshot {
-            desc_id: CounterDescId::new(decode_u64(cursor)?),
-            name: decode_string(cursor)?,
-            unit: decode_unit(decode_u8(cursor)?)?,
-            context_id: ContextId::new(decode_u64(cursor)?),
-            kind: decode_counter_kind(decode_u8(cursor)?)?,
-            value: decode_u64(cursor)?,
-            updated_at_micros: decode_u64(cursor)?,
-        });
+        counters.push(OwnedCounterSnapshot::new(
+            CounterDescId::new(decode_u64(cursor)?),
+            decode_string(cursor)?,
+            decode_unit(decode_u8(cursor)?)?,
+            ContextId::new(decode_u64(cursor)?),
+            decode_counter_kind(decode_u8(cursor)?)?,
+            decode_u64(cursor)?,
+            decode_u64(cursor)?,
+        ));
     }
     Ok(counters)
 }
@@ -1159,18 +1231,18 @@ fn decode_counters(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedCounterSnapsh
 fn encode_histograms(bytes: &mut Vec<u8>, histograms: &[OwnedHistogramSnapshot]) -> io::Result<()> {
     encode_len(bytes, histograms.len())?;
     for histogram in histograms {
-        encode_u64(bytes, histogram.desc_id.get());
-        encode_string(bytes, &histogram.name)?;
-        encode_u8(bytes, encode_unit(histogram.unit)?);
-        encode_u64(bytes, histogram.context_id.get());
+        encode_u64(bytes, histogram.desc_id().get());
+        encode_string(bytes, histogram.name())?;
+        encode_u8(bytes, encode_unit(histogram.unit())?);
+        encode_u64(bytes, histogram.context_id().get());
         encode_histogram_body(
             bytes,
-            histogram.count,
-            histogram.sum,
-            histogram.min,
-            histogram.max,
-            &histogram.buckets,
-            histogram.updated_at_micros,
+            histogram.count(),
+            histogram.sum(),
+            histogram.min(),
+            histogram.max(),
+            histogram.buckets(),
+            histogram.updated_at_micros(),
         );
     }
     Ok(())
@@ -1182,18 +1254,18 @@ fn encode_borrowed_histograms(
 ) -> io::Result<()> {
     encode_len(bytes, histograms.len())?;
     for histogram in histograms {
-        encode_u64(bytes, histogram.desc_id.get());
-        encode_string(bytes, histogram.name)?;
-        encode_u8(bytes, encode_unit(histogram.unit)?);
-        encode_u64(bytes, histogram.context_id.get());
+        encode_u64(bytes, histogram.desc_id().get());
+        encode_string(bytes, histogram.name())?;
+        encode_u8(bytes, encode_unit(histogram.unit())?);
+        encode_u64(bytes, histogram.context_id().get());
         encode_histogram_body(
             bytes,
-            histogram.count,
-            histogram.sum,
-            histogram.min,
-            histogram.max,
-            &histogram.buckets,
-            histogram.updated_at_micros,
+            histogram.count(),
+            histogram.sum(),
+            histogram.min(),
+            histogram.max(),
+            histogram.buckets(),
+            histogram.updated_at_micros(),
         );
     }
     Ok(())
@@ -1234,7 +1306,7 @@ fn decode_histograms(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedHistogramSn
         for bucket in &mut buckets {
             *bucket = decode_u64(cursor)?;
         }
-        histograms.push(OwnedHistogramSnapshot {
+        histograms.push(OwnedHistogramSnapshot::new(
             desc_id,
             name,
             unit,
@@ -1244,8 +1316,8 @@ fn decode_histograms(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedHistogramSn
             min,
             max,
             buckets,
-            updated_at_micros: decode_u64(cursor)?,
-        });
+            decode_u64(cursor)?,
+        ));
     }
     Ok(histograms)
 }
@@ -1254,9 +1326,9 @@ fn decode_histograms(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedHistogramSn
 fn encode_events(bytes: &mut Vec<u8>, events: &[OwnedTimedObservation]) -> io::Result<()> {
     encode_len(bytes, events.len())?;
     for event in events {
-        encode_u64(bytes, event.at_micros);
-        encode_u64(bytes, event.thread_id);
-        encode_observation(bytes, &event.observation)?;
+        encode_u64(bytes, event.at_micros());
+        encode_u64(bytes, event.thread_id());
+        encode_observation(bytes, event.observation())?;
     }
     Ok(())
 }
@@ -1267,9 +1339,9 @@ fn encode_borrowed_events(
 ) -> io::Result<()> {
     encode_len(bytes, events.len())?;
     for event in events {
-        encode_u64(bytes, event.at_micros);
-        encode_u64(bytes, event.thread_id);
-        encode_borrowed_observation(bytes, &event.observation)?;
+        encode_u64(bytes, event.at_micros());
+        encode_u64(bytes, event.thread_id());
+        encode_borrowed_observation(bytes, event.observation())?;
     }
     Ok(())
 }
@@ -1278,11 +1350,11 @@ fn decode_events(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedTimedObservatio
     let len = decode_bounded_len(cursor, MAX_ROWS_PER_ENVELOPE, "event rows")?;
     let mut events = Vec::with_capacity(len);
     for _ in 0..len {
-        events.push(OwnedTimedObservation {
-            at_micros: decode_u64(cursor)?,
-            thread_id: decode_u64(cursor)?,
-            observation: decode_observation(cursor)?,
-        });
+        events.push(OwnedTimedObservation::new(
+            decode_u64(cursor)?,
+            decode_u64(cursor)?,
+            decode_observation(cursor)?,
+        ));
     }
     Ok(events)
 }
@@ -1395,8 +1467,8 @@ fn encode_args(bytes: &mut Vec<u8>, args: &[OwnedArgEntry]) -> io::Result<()> {
         .expect("bounded args count fits into u8");
     encode_u8(bytes, count);
     for entry in args.iter().take(usize::from(count)) {
-        encode_string(bytes, &entry.key)?;
-        encode_label_value(bytes, &entry.value)?;
+        encode_string(bytes, entry.key())?;
+        encode_label_value(bytes, entry.value())?;
     }
     Ok(())
 }
@@ -1422,26 +1494,26 @@ fn decode_args(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedArgEntry>> {
     }
     let mut args = Vec::with_capacity(count);
     for _ in 0..count {
-        args.push(OwnedArgEntry {
-            key: decode_string(cursor)?,
-            value: decode_label_value(cursor)?,
-        });
+        args.push(OwnedArgEntry::new(
+            decode_string(cursor)?,
+            decode_label_value(cursor)?,
+        ));
     }
     Ok(args)
 }
 
 fn encode_dropped_summary(bytes: &mut Vec<u8>, dropped: DroppedSummary) {
-    encode_u64(bytes, dropped.contexts);
-    encode_u64(bytes, dropped.counters);
-    encode_u64(bytes, dropped.events);
+    encode_u64(bytes, dropped.contexts());
+    encode_u64(bytes, dropped.counters());
+    encode_u64(bytes, dropped.events());
 }
 
 fn decode_dropped_summary(cursor: &mut Cursor<'_>) -> io::Result<DroppedSummary> {
-    Ok(DroppedSummary {
-        contexts: decode_u64(cursor)?,
-        counters: decode_u64(cursor)?,
-        events: decode_u64(cursor)?,
-    })
+    Ok(DroppedSummary::new(
+        decode_u64(cursor)?,
+        decode_u64(cursor)?,
+        decode_u64(cursor)?,
+    ))
 }
 
 #[cfg(test)]
@@ -2009,22 +2081,18 @@ mod tests {
     /// wire-format document must be updated to match.
     #[test]
     fn encoded_envelopes_match_golden_fixtures() {
-        let counters = OwnedSessionEnvelope {
-            header: EnvelopeHeader {
-                protocol_version: PROTOCOL_VERSION,
-                session_sequence: 4,
-                chunk_index: 2,
-            },
-            payload: OwnedSessionPayload::Counters(vec![OwnedCounterSnapshot {
-                desc_id: CounterDescId::new(3),
-                name: String::from("ops"),
-                unit: footfall_core::Unit::Count,
-                context_id: ContextId::new(1),
-                kind: CounterKind::Counter,
-                value: 7,
-                updated_at_micros: 14,
-            }]),
-        };
+        let counters = OwnedSessionEnvelope::new(
+            EnvelopeHeader::new(PROTOCOL_VERSION, 4, 2),
+            OwnedSessionPayload::Counters(vec![OwnedCounterSnapshot::new(
+                CounterDescId::new(3),
+                String::from("ops"),
+                footfall_core::Unit::Count,
+                ContextId::new(1),
+                CounterKind::Counter,
+                7,
+                14,
+            )]),
+        );
         let encoded = encode_envelope(&counters).expect("encoding should succeed");
         assert_eq!(
             to_hex(&encoded),
@@ -2032,27 +2100,23 @@ mod tests {
              006f70730101000000000000000007000000000000000e00000000000000"
         );
 
-        let events = OwnedSessionEnvelope {
-            header: EnvelopeHeader {
-                protocol_version: PROTOCOL_VERSION,
-                session_sequence: 4,
-                chunk_index: 3,
-            },
-            payload: OwnedSessionPayload::Events(vec![OwnedTimedObservation {
-                at_micros: 15,
-                thread_id: 2,
-                observation: OwnedObservation::ScopeBegin {
+        let events = OwnedSessionEnvelope::new(
+            EnvelopeHeader::new(PROTOCOL_VERSION, 4, 3),
+            OwnedSessionPayload::Events(vec![OwnedTimedObservation::new(
+                15,
+                2,
+                OwnedObservation::ScopeBegin {
                     desc_id: footfall_core::ScopeDescId::new(5),
                     name: String::from("record"),
                     context_id: ContextId::new(1),
                     token: ScopeToken::new(9),
-                    args: vec![OwnedArgEntry {
-                        key: String::from("items"),
-                        value: OwnedLabelValue::Unsigned(3),
-                    }],
+                    args: vec![OwnedArgEntry::new(
+                        String::from("items"),
+                        OwnedLabelValue::Unsigned(3),
+                    )],
                 },
-            }]),
-        };
+            )]),
+        );
         let encoded = encode_envelope(&events).expect("encoding should succeed");
         assert_eq!(
             to_hex(&encoded),
@@ -2063,118 +2127,93 @@ mod tests {
 
         // Context rows carry label keys by name. The production encoder for
         // borrowed runtime snapshots must produce the same bytes.
-        let header = EnvelopeHeader {
-            protocol_version: PROTOCOL_VERSION,
-            session_sequence: 4,
-            chunk_index: 1,
-        };
-        let contexts = OwnedSessionEnvelope {
+        let header = EnvelopeHeader::new(PROTOCOL_VERSION, 4, 1);
+        let contexts = OwnedSessionEnvelope::new(
             header,
-            payload: OwnedSessionPayload::Contexts(vec![OwnedContextSnapshot {
-                id: ContextId::new(1),
-                entries: vec![
-                    OwnedContextEntry {
-                        key: String::from("frame"),
-                        value: OwnedLabelValue::Unsigned(7),
-                    },
-                    OwnedContextEntry {
-                        key: String::from("reason"),
-                        value: OwnedLabelValue::String(String::from("invalidate")),
-                    },
+            OwnedSessionPayload::Contexts(vec![OwnedContextSnapshot::new(
+                ContextId::new(1),
+                vec![
+                    OwnedContextEntry::new(String::from("frame"), OwnedLabelValue::Unsigned(7)),
+                    OwnedContextEntry::new(
+                        String::from("reason"),
+                        OwnedLabelValue::String(String::from("invalidate")),
+                    ),
                 ],
-            }]),
-        };
+            )]),
+        );
         let expected = "02000000040000000000000001000000000000000101000000010000000000000002000000\
                         050000006672616d6500070000000000000006000000726561736f6e030a000000696e76\
                         616c6964617465";
         let encoded = encode_envelope(&contexts).expect("encoding should succeed");
         assert_eq!(to_hex(&encoded), expected.replace(' ', ""));
 
-        let borrowed = [footfall_runtime::ContextSnapshot {
-            id: ContextId::new(1),
-            context: Context::root()
+        let borrowed = [footfall_runtime::ContextSnapshot::new(
+            ContextId::new(1),
+            Context::root()
                 .with(&FRAME, 7_u32)
                 .with(&REASON, "invalidate"),
-        }];
-        let encoded = encode_borrowed_envelope(Envelope {
-            header,
-            payload: Payload::Contexts(&borrowed),
-        })
-        .expect("encoding should succeed");
+        )];
+        let encoded = encode_borrowed_envelope(Envelope::new(header, Payload::Contexts(&borrowed)))
+            .expect("encoding should succeed");
         assert_eq!(to_hex(&encoded), expected.replace(' ', ""));
     }
 
     #[test]
     fn codec_round_trips_owned_session_envelopes() {
-        let snapshot = Snapshot {
-            metadata: SnapshotMetadata {
-                process_name: String::from("demo"),
-                session_name: Some(String::from("wt")),
-                session_sequence: 4,
-                wall_clock_anchor_micros: 1_700_000_000_000_000,
-            },
-            capture_start_micros: 12,
-            captured_at_micros: 20,
-            contexts: vec![footfall_runtime::ContextSnapshot {
-                id: ContextId::new(0),
-                context: Context::root()
+        let mut histogram = footfall_runtime::HistogramSnapshot::new(
+            CounterDescId::new(4),
+            "frame_micros",
+            footfall_core::Unit::Micros,
+            ContextId::new(0),
+        );
+        histogram.record(8, 14);
+        histogram.record(16, 15);
+        let metadata = SnapshotMetadata::new("demo")
+            .with_session_name("wt")
+            .with_session_sequence(4)
+            .with_wall_clock_anchor_micros(1_700_000_000_000_000);
+        let snapshot = Snapshot::builder(metadata)
+            .capture_window(12, 20)
+            .context(footfall_runtime::ContextSnapshot::new(
+                ContextId::new(0),
+                Context::root()
                     .with(&FRAME, 9_u32)
                     .with(&REASON, "invalidate"),
-            }],
-            counters: vec![footfall_runtime::CounterSnapshot {
-                desc_id: CounterDescId::new(3),
-                name: "ops",
-                unit: footfall_core::Unit::Count,
-                context_id: ContextId::new(0),
-                kind: CounterKind::Counter,
-                value: 7,
-                updated_at_micros: 14,
-            }],
-            histograms: vec![footfall_runtime::HistogramSnapshot {
-                desc_id: CounterDescId::new(4),
-                name: "frame_micros",
-                unit: footfall_core::Unit::Micros,
-                context_id: ContextId::new(0),
-                count: 2,
-                sum: 24,
-                min: 8,
-                max: 16,
-                buckets: {
-                    let mut buckets = [0; footfall_runtime::HISTOGRAM_BUCKET_COUNT];
-                    buckets[4] = 1;
-                    buckets[5] = 1;
-                    buckets
+            ))
+            .counter(footfall_runtime::CounterSnapshot::new(
+                CounterDescId::new(3),
+                "ops",
+                footfall_core::Unit::Count,
+                ContextId::new(0),
+                CounterKind::Counter,
+                7,
+                14,
+            ))
+            .histogram(histogram)
+            .event(footfall_runtime::TimedObservation::new(
+                15,
+                0,
+                2,
+                footfall_runtime::Observation::Flow {
+                    flow_id: FlowId::new(8),
+                    phase: FlowPhase::Step,
+                    context_id: ContextId::new(0),
                 },
-                updated_at_micros: 15,
-            }],
-            events: vec![
-                footfall_runtime::TimedObservation {
-                    at_micros: 15,
-                    sequence: 0,
-                    thread_id: 2,
-                    observation: footfall_runtime::Observation::Flow {
-                        flow_id: FlowId::new(8),
-                        phase: FlowPhase::Step,
-                        context_id: ContextId::new(0),
-                    },
+            ))
+            .event(footfall_runtime::TimedObservation::new(
+                16,
+                1,
+                2,
+                footfall_runtime::Observation::Message {
+                    desc_id: EventDescId::new(9),
+                    name: "app_log",
+                    context_id: ContextId::new(0),
+                    text: String::from("cache warmed"),
+                    args: footfall_core::Args::none().with("level", "info"),
                 },
-                footfall_runtime::TimedObservation {
-                    at_micros: 16,
-                    sequence: 1,
-                    thread_id: 2,
-                    observation: footfall_runtime::Observation::Message {
-                        desc_id: EventDescId::new(9),
-                        name: "app_log",
-                        context_id: ContextId::new(0),
-                        text: String::from("cache warmed"),
-                        args: footfall_core::Args::none().with("level", "info"),
-                    },
-                },
-            ],
-            dropped_contexts: 0,
-            dropped_counters: 1,
-            dropped_events: 2,
-        };
+            ))
+            .dropped(0, 1, 2)
+            .build();
 
         let envelopes = collect_snapshot(&snapshot, Chunking::new(8, 8, 8, 8));
         let round_tripped = envelopes
@@ -2187,14 +2226,14 @@ mod tests {
 
         assert_eq!(round_tripped, envelopes);
         assert!(matches!(
-            &round_tripped[3].payload,
+            &round_tripped[3].payload(),
             OwnedSessionPayload::Histograms(histograms)
-                if histograms[0].name == "frame_micros" && histograms[0].buckets[4] == 1
+                if histograms[0].name() == "frame_micros" && histograms[0].buckets()[4] == 1
         ));
         assert!(matches!(
-            &round_tripped[4].payload,
+            &round_tripped[4].payload(),
             OwnedSessionPayload::Events(events)
-                if matches!(&events[0].observation, OwnedObservation::Flow {
+                if matches!(&events[0].observation(), OwnedObservation::Flow {
                     flow_id,
                     phase: FlowPhase::Step,
                     context_id
@@ -2204,22 +2243,18 @@ mod tests {
 
     #[test]
     fn cursor_detects_trailing_bytes() {
-        let envelope = OwnedSessionEnvelope {
-            header: EnvelopeHeader {
-                protocol_version: PROTOCOL_VERSION,
-                session_sequence: 1,
-                chunk_index: 0,
-            },
-            payload: OwnedSessionPayload::Events(vec![OwnedTimedObservation {
-                at_micros: 2,
-                thread_id: 1,
-                observation: OwnedObservation::FrameMarker {
+        let envelope = OwnedSessionEnvelope::new(
+            EnvelopeHeader::new(PROTOCOL_VERSION, 1, 0),
+            OwnedSessionPayload::Events(vec![OwnedTimedObservation::new(
+                2,
+                1,
+                OwnedObservation::FrameMarker {
                     kind: MarkerKind::Frame,
                     phase: MarkerPhase::Begin,
                     context_id: ContextId::new(0),
                 },
-            }]),
-        };
+            )]),
+        );
         let mut encoded = encode_envelope(&envelope).expect("encoding should succeed");
         encoded.push(99);
         let error = decode_envelope(&encoded).expect_err("decoder should reject trailing bytes");
@@ -2237,14 +2272,7 @@ mod tests {
     #[test]
     fn decoder_rejects_oversized_strings_before_payload_allocation() {
         let mut bytes = Vec::new();
-        encode_header(
-            &mut bytes,
-            EnvelopeHeader {
-                protocol_version: PROTOCOL_VERSION,
-                session_sequence: 1,
-                chunk_index: 0,
-            },
-        );
+        encode_header(&mut bytes, EnvelopeHeader::new(PROTOCOL_VERSION, 1, 0));
         encode_u8(&mut bytes, 0);
         encode_u32(
             &mut bytes,
@@ -2259,14 +2287,7 @@ mod tests {
     #[test]
     fn decoder_rejects_oversized_row_counts_before_allocation() {
         let mut bytes = Vec::new();
-        encode_header(
-            &mut bytes,
-            EnvelopeHeader {
-                protocol_version: PROTOCOL_VERSION,
-                session_sequence: 1,
-                chunk_index: 0,
-            },
-        );
+        encode_header(&mut bytes, EnvelopeHeader::new(PROTOCOL_VERSION, 1, 0));
         encode_u8(&mut bytes, 1);
         encode_u32(
             &mut bytes,
@@ -2282,14 +2303,7 @@ mod tests {
     #[test]
     fn decoder_rejects_oversized_context_entry_counts_before_allocation() {
         let mut bytes = Vec::new();
-        encode_header(
-            &mut bytes,
-            EnvelopeHeader {
-                protocol_version: PROTOCOL_VERSION,
-                session_sequence: 1,
-                chunk_index: 0,
-            },
-        );
+        encode_header(&mut bytes, EnvelopeHeader::new(PROTOCOL_VERSION, 1, 0));
         encode_u8(&mut bytes, 1);
         encode_u32(&mut bytes, 1);
         encode_u64(&mut bytes, 0);
@@ -2307,20 +2321,16 @@ mod tests {
 
     #[test]
     fn scope_token_observation_round_trips() {
-        let envelope = OwnedSessionEnvelope {
-            header: EnvelopeHeader {
-                protocol_version: PROTOCOL_VERSION,
-                session_sequence: 2,
-                chunk_index: 1,
-            },
-            payload: OwnedSessionPayload::Events(vec![OwnedTimedObservation {
-                at_micros: 3,
-                thread_id: 4,
-                observation: OwnedObservation::ScopeEnd {
+        let envelope = OwnedSessionEnvelope::new(
+            EnvelopeHeader::new(PROTOCOL_VERSION, 2, 1),
+            OwnedSessionPayload::Events(vec![OwnedTimedObservation::new(
+                3,
+                4,
+                OwnedObservation::ScopeEnd {
                     token: ScopeToken::new(11),
                 },
-            }]),
-        };
+            )]),
+        );
         let decoded =
             decode_envelope(&encode_envelope(&envelope).expect("encoding should succeed"))
                 .expect("decoding should succeed");
@@ -2329,18 +2339,10 @@ mod tests {
 
     #[test]
     fn decoder_rejects_incompatible_codec_versions() {
-        let envelope = OwnedSessionEnvelope {
-            header: EnvelopeHeader {
-                protocol_version: PROTOCOL_VERSION,
-                session_sequence: 1,
-                chunk_index: 0,
-            },
-            payload: OwnedSessionPayload::SnapshotEnd(footfall_session::DroppedSummary {
-                contexts: 0,
-                counters: 0,
-                events: 0,
-            }),
-        };
+        let envelope = OwnedSessionEnvelope::new(
+            EnvelopeHeader::new(PROTOCOL_VERSION, 1, 0),
+            OwnedSessionPayload::SnapshotEnd(footfall_session::DroppedSummary::new(0, 0, 0)),
+        );
         let encoded = encode_envelope(&envelope).expect("encoding should succeed");
 
         // The frame starts with little-endian u16 major and u16 minor.

@@ -39,19 +39,19 @@ fn contexts_register_through_the_installed_backend() {
     counter_add(&OPS, transparent.handle(), 2);
 
     let snapshot = runtime.snapshot();
-    assert_eq!(snapshot.dropped_contexts, 0);
-    for counter in &snapshot.counters {
+    assert_eq!(snapshot.dropped_contexts(), 0);
+    for counter in snapshot.counters() {
         let context = snapshot
-            .context(counter.context_id)
+            .context(counter.context_id())
             .expect("every counter context should resolve");
-        let expected = if counter.value == 1 {
+        let expected = if counter.value() == 1 {
             "opaque"
         } else {
             "transparent"
         };
         assert_eq!(
             context
-                .context
+                .context()
                 .get(&PASS)
                 .and_then(|value| value.as_static_str()),
             Some(expected)

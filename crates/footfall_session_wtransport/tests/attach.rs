@@ -17,49 +17,38 @@ use footfall_session_wtransport::{
 static FRAME: LabelKey = LabelKey::new("frame");
 
 fn demo_snapshot() -> Snapshot {
-    Snapshot {
-        metadata: SnapshotMetadata {
-            process_name: String::from("attach_test"),
-            session_name: Some(String::from("e2e")),
-            session_sequence: 6,
-            wall_clock_anchor_micros: 1_700_000_000_000_000,
-        },
-        capture_start_micros: 0,
-        captured_at_micros: 40,
-        contexts: vec![
-            ContextSnapshot {
-                id: ContextId::new(0),
-                context: Context::root(),
-            },
-            ContextSnapshot {
-                id: ContextId::new(1),
-                context: Context::root().with(&FRAME, 7_u32),
-            },
-        ],
-        counters: vec![CounterSnapshot {
-            desc_id: CounterDescId::new(1),
-            name: "upload_bytes",
-            unit: Unit::Bytes,
-            context_id: ContextId::new(1),
-            kind: CounterKind::Counter,
-            value: 4096,
-            updated_at_micros: 20,
-        }],
-        histograms: vec![],
-        events: vec![TimedObservation {
-            at_micros: 25,
-            sequence: 0,
-            thread_id: 3,
-            observation: Observation::FrameMarker {
+    let metadata = SnapshotMetadata::new("attach_test")
+        .with_session_name("e2e")
+        .with_session_sequence(6)
+        .with_wall_clock_anchor_micros(1_700_000_000_000_000);
+    Snapshot::builder(metadata)
+        .capture_window(0, 40)
+        .context(ContextSnapshot::new(ContextId::new(0), Context::root()))
+        .context(ContextSnapshot::new(
+            ContextId::new(1),
+            Context::root().with(&FRAME, 7_u32),
+        ))
+        .counter(CounterSnapshot::new(
+            CounterDescId::new(1),
+            "upload_bytes",
+            Unit::Bytes,
+            ContextId::new(1),
+            CounterKind::Counter,
+            4096,
+            20,
+        ))
+        .event(TimedObservation::new(
+            25,
+            0,
+            3,
+            Observation::FrameMarker {
                 kind: MarkerKind::Frame,
                 phase: MarkerPhase::Begin,
                 context_id: ContextId::new(1),
             },
-        }],
-        dropped_contexts: 0,
-        dropped_counters: 0,
-        dropped_events: 1,
-    }
+        ))
+        .dropped(0, 0, 1)
+        .build()
 }
 
 #[tokio::test]
@@ -89,7 +78,7 @@ async fn discovery_and_snapshot_fetch_round_trip() {
                         .expect("discovery response should succeed");
                 }
                 SessionRequestKind::Snapshot { session_id }
-                    if session_id == served_announcement.id =>
+                    if session_id == served_announcement.id() =>
                 {
                     request
                         .respond_snapshot(demo_snapshot(), Chunking::new(1, 1, 1, 1))
@@ -116,40 +105,40 @@ async fn discovery_and_snapshot_fetch_round_trip() {
         .await
         .expect("discovery should succeed");
     assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0].id, "e2e");
-    assert_eq!(sessions[0].process_name, "attach_test");
-    assert_eq!(sessions[0].session_name.as_deref(), Some("e2e"));
+    assert_eq!(sessions[0].id(), "e2e");
+    assert_eq!(sessions[0].process_name(), "attach_test");
+    assert_eq!(sessions[0].session_name(), Some("e2e"));
 
     let envelopes = fetch_named_session(&url, certificate_hash.clone(), "e2e")
         .await
         .expect("snapshot fetch should succeed");
 
     assert!(matches!(
-        envelopes.first().map(|envelope| &envelope.payload),
+        envelopes.first().map(|envelope| envelope.payload()),
         Some(OwnedSessionPayload::SnapshotStart(summary))
-            if summary.metadata.process_name == "attach_test"
+            if summary.metadata().process_name() == "attach_test"
     ));
     assert!(matches!(
-        envelopes.last().map(|envelope| &envelope.payload),
-        Some(OwnedSessionPayload::SnapshotEnd(dropped)) if dropped.events == 1
+        envelopes.last().map(|envelope| envelope.payload()),
+        Some(OwnedSessionPayload::SnapshotEnd(dropped)) if dropped.events() == 1
     ));
     let counter = envelopes
         .iter()
-        .find_map(|envelope| match &envelope.payload {
+        .find_map(|envelope| match envelope.payload() {
             OwnedSessionPayload::Counters(rows) => rows.first(),
             _ => None,
         })
         .expect("publication should carry one counter row");
-    assert_eq!(counter.name, "upload_bytes");
-    assert_eq!(counter.unit, Unit::Bytes);
+    assert_eq!(counter.name(), "upload_bytes");
+    assert_eq!(counter.unit(), Unit::Bytes);
     let event = envelopes
         .iter()
-        .find_map(|envelope| match &envelope.payload {
+        .find_map(|envelope| match envelope.payload() {
             OwnedSessionPayload::Events(rows) => rows.first(),
             _ => None,
         })
         .expect("publication should carry one event row");
-    assert_eq!(event.thread_id, 3);
+    assert_eq!(event.thread_id(), 3);
 
     let error = fetch_named_session(&url, certificate_hash, "missing")
         .await

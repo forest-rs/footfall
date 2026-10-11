@@ -410,7 +410,7 @@ impl Runtime {
             return;
         }
 
-        let mut histogram = HistogramSnapshot::new(desc, context_id);
+        let mut histogram = HistogramSnapshot::new(desc.id(), desc.name(), desc.unit(), context_id);
         histogram.record(value, at_micros);
         shard.histograms.insert(key, histogram);
     }
@@ -517,37 +517,121 @@ impl Runtime {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Snapshot {
     /// Snapshot metadata identifying the process and capture session.
-    pub metadata: SnapshotMetadata,
+    metadata: SnapshotMetadata,
     /// Snapshot start time relative to runtime creation.
-    pub capture_start_micros: u64,
+    capture_start_micros: u64,
     /// Time since runtime creation when the snapshot was captured.
-    pub captured_at_micros: u64,
+    captured_at_micros: u64,
     /// Registered contexts live during the session, sorted by id, starting
     /// with the root context (id `0`).
     ///
     /// Ids carry the [`ContextHandle`] values the contexts were emitted with.
     /// Contexts released during the session are included so observations
     /// recorded before release still resolve.
-    pub contexts: Vec<ContextSnapshot>,
+    contexts: Vec<ContextSnapshot>,
     /// Aggregated counters and gauges.
-    pub counters: Vec<CounterSnapshot>,
+    counters: Vec<CounterSnapshot>,
     /// Aggregated value distributions.
-    pub histograms: Vec<HistogramSnapshot>,
+    histograms: Vec<HistogramSnapshot>,
     /// Bounded sequence of timestamped observation records, ordered by
     /// timestamp and then by recording sequence.
-    pub events: Vec<TimedObservation>,
+    events: Vec<TimedObservation>,
     /// Count of context failures in the session: registrations refused
     /// because the context table was full, plus counter rows and events whose
     /// context handle the runtime does not know. Those rows and events are
     /// kept and attributed to the root context instead.
-    pub dropped_contexts: u64,
+    dropped_contexts: u64,
     /// Count of counter updates dropped due to counter-key capacity pressure.
-    pub dropped_counters: u64,
+    dropped_counters: u64,
     /// Count of events dropped due to event-capacity pressure.
-    pub dropped_events: u64,
+    dropped_events: u64,
 }
 
 impl Snapshot {
+    /// Starts building a snapshot by hand, for example as a test fixture for
+    /// a snapshot consumer. Runtimes produce snapshots through
+    /// [`Runtime::snapshot`] and [`Runtime::drain_snapshot`].
+    pub fn builder(metadata: SnapshotMetadata) -> SnapshotBuilder {
+        SnapshotBuilder {
+            snapshot: Self {
+                metadata,
+                ..Self::default()
+            },
+        }
+    }
+
+    /// Returns the metadata identifying the process and capture session.
+    #[must_use]
+    pub const fn metadata(&self) -> &SnapshotMetadata {
+        &self.metadata
+    }
+
+    /// Returns the capture start time relative to runtime creation.
+    #[must_use]
+    pub const fn capture_start_micros(&self) -> u64 {
+        self.capture_start_micros
+    }
+
+    /// Returns the time since runtime creation when the snapshot was captured.
+    #[must_use]
+    pub const fn captured_at_micros(&self) -> u64 {
+        self.captured_at_micros
+    }
+
+    /// Returns the registered contexts live during the session, sorted by id
+    /// and starting with the root context (id `0`).
+    ///
+    /// Ids carry the [`ContextHandle`] values the contexts were emitted with.
+    /// Contexts released during the session are included so observations
+    /// recorded before release still resolve.
+    #[must_use]
+    pub fn contexts(&self) -> &[ContextSnapshot] {
+        &self.contexts
+    }
+
+    /// Returns the aggregated counters and gauges.
+    #[must_use]
+    pub fn counters(&self) -> &[CounterSnapshot] {
+        &self.counters
+    }
+
+    /// Returns the aggregated value distributions.
+    #[must_use]
+    pub fn histograms(&self) -> &[HistogramSnapshot] {
+        &self.histograms
+    }
+
+    /// Returns the bounded sequence of timestamped observation records,
+    /// ordered by timestamp and then by recording sequence.
+    #[must_use]
+    pub fn events(&self) -> &[TimedObservation] {
+        &self.events
+    }
+
+    /// Returns the count of context failures in the session.
+    ///
+    /// This counts registrations refused because the context table was full,
+    /// plus counter rows and events whose context handle the runtime does not
+    /// know. Those rows and events are kept and attributed to the root
+    /// context instead.
+    #[must_use]
+    pub const fn dropped_contexts(&self) -> u64 {
+        self.dropped_contexts
+    }
+
+    /// Returns the count of counter updates dropped due to counter-key
+    /// capacity pressure.
+    #[must_use]
+    pub const fn dropped_counters(&self) -> u64 {
+        self.dropped_counters
+    }
+
+    /// Returns the count of events dropped due to event-capacity pressure.
+    #[must_use]
+    pub const fn dropped_events(&self) -> u64 {
+        self.dropped_events
+    }
+
     /// Resolves one canonical context by id.
     #[must_use]
     pub fn context(&self, context_id: ContextId) -> Option<&ContextSnapshot> {
@@ -558,15 +642,72 @@ impl Snapshot {
     }
 }
 
+/// Builds a [`Snapshot`] by hand; see [`Snapshot::builder`].
+#[derive(Clone, Debug)]
+#[must_use = "a snapshot builder does nothing until `build` is called"]
+pub struct SnapshotBuilder {
+    snapshot: Snapshot,
+}
+
+impl SnapshotBuilder {
+    /// Sets the capture window relative to runtime creation.
+    pub const fn capture_window(mut self, start_micros: u64, captured_at_micros: u64) -> Self {
+        self.snapshot.capture_start_micros = start_micros;
+        self.snapshot.captured_at_micros = captured_at_micros;
+        self
+    }
+
+    /// Adds one context row. Rows are sorted by id when the snapshot is built.
+    pub fn context(mut self, context: ContextSnapshot) -> Self {
+        self.snapshot.contexts.push(context);
+        self
+    }
+
+    /// Adds one counter or gauge row.
+    pub fn counter(mut self, counter: CounterSnapshot) -> Self {
+        self.snapshot.counters.push(counter);
+        self
+    }
+
+    /// Adds one histogram row.
+    pub fn histogram(mut self, histogram: HistogramSnapshot) -> Self {
+        self.snapshot.histograms.push(histogram);
+        self
+    }
+
+    /// Adds one event. Events are ordered by timestamp and then by sequence
+    /// when the snapshot is built.
+    pub fn event(mut self, event: TimedObservation) -> Self {
+        self.snapshot.events.push(event);
+        self
+    }
+
+    /// Sets the drop counters reported by the snapshot.
+    pub const fn dropped(mut self, contexts: u64, counters: u64, events: u64) -> Self {
+        self.snapshot.dropped_contexts = contexts;
+        self.snapshot.dropped_counters = counters;
+        self.snapshot.dropped_events = events;
+        self
+    }
+
+    /// Finishes the snapshot.
+    #[must_use]
+    pub fn build(mut self) -> Snapshot {
+        self.snapshot.contexts.sort_by_key(|context| context.id);
+        self.snapshot.events.sort_by_key(event_sort_key);
+        self.snapshot
+    }
+}
+
 /// Metadata describing the process and session that produced a snapshot.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SnapshotMetadata {
     /// Process name used by exporters.
-    pub process_name: String,
+    process_name: String,
     /// Optional capture-session label.
-    pub session_name: Option<String>,
+    session_name: Option<String>,
     /// Monotonic sequence number of the capture session.
-    pub session_sequence: u64,
+    session_sequence: u64,
     /// Wall-clock time of runtime creation in microseconds since the Unix
     /// epoch.
     ///
@@ -574,38 +715,185 @@ pub struct SnapshotMetadata {
     /// this anchor to any `*_micros` value yields wall-clock time. The anchor
     /// lets consumers correlate captures with logs and merge sessions from
     /// multiple processes onto one timeline.
-    pub wall_clock_anchor_micros: u64,
+    wall_clock_anchor_micros: u64,
+}
+
+impl SnapshotMetadata {
+    /// Creates metadata for the named process with no session name, session
+    /// sequence `0`, and a zero wall-clock anchor.
+    #[must_use]
+    pub fn new(process_name: impl Into<String>) -> Self {
+        Self {
+            process_name: process_name.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Sets the capture-session label.
+    #[must_use]
+    pub fn with_session_name(mut self, session_name: impl Into<String>) -> Self {
+        self.session_name = Some(session_name.into());
+        self
+    }
+
+    /// Sets the capture-session sequence number.
+    #[must_use]
+    pub const fn with_session_sequence(mut self, session_sequence: u64) -> Self {
+        self.session_sequence = session_sequence;
+        self
+    }
+
+    /// Sets the wall-clock anchor in microseconds since the Unix epoch.
+    #[must_use]
+    pub const fn with_wall_clock_anchor_micros(mut self, wall_clock_anchor_micros: u64) -> Self {
+        self.wall_clock_anchor_micros = wall_clock_anchor_micros;
+        self
+    }
+
+    /// Returns the process name used by exporters.
+    #[must_use]
+    pub fn process_name(&self) -> &str {
+        &self.process_name
+    }
+
+    /// Returns the capture-session label, if one is set.
+    #[must_use]
+    pub fn session_name(&self) -> Option<&str> {
+        self.session_name.as_deref()
+    }
+
+    /// Returns the monotonic sequence number of the capture session.
+    #[must_use]
+    pub const fn session_sequence(&self) -> u64 {
+        self.session_sequence
+    }
+
+    /// Returns the wall-clock time of runtime creation in microseconds since
+    /// the Unix epoch.
+    ///
+    /// All snapshot timestamps are relative to runtime creation, so adding
+    /// this anchor to any `*_micros` value yields wall-clock time. The anchor
+    /// lets consumers correlate captures with logs and merge sessions from
+    /// multiple processes onto one timeline.
+    #[must_use]
+    pub const fn wall_clock_anchor_micros(&self) -> u64 {
+        self.wall_clock_anchor_micros
+    }
 }
 
 /// One canonical context carried by a snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContextSnapshot {
     /// Canonical context id.
-    pub id: ContextId,
+    id: ContextId,
     /// Explicit semantic context value.
-    pub context: Context,
+    context: Context,
+}
+
+impl ContextSnapshot {
+    /// Creates a context row.
+    #[must_use]
+    pub const fn new(id: ContextId, context: Context) -> Self {
+        Self { id, context }
+    }
+
+    /// Returns the context id, which carries the emitting [`ContextHandle`].
+    #[must_use]
+    pub const fn id(&self) -> ContextId {
+        self.id
+    }
+
+    /// Returns the semantic context value.
+    #[must_use]
+    pub const fn context(&self) -> &Context {
+        &self.context
+    }
 }
 
 /// One aggregated counter or gauge value.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CounterSnapshot {
     /// Session-scoped counter descriptor id; see [`Snapshot`].
-    pub desc_id: CounterDescId,
+    desc_id: CounterDescId,
     /// Stable descriptor name.
-    pub name: &'static str,
+    name: &'static str,
     /// Unit copied from the counter descriptor.
-    pub unit: Unit,
+    unit: Unit,
     /// Canonical semantic context id.
-    pub context_id: ContextId,
+    context_id: ContextId,
     /// Whether the value is additive or gauge-like.
-    pub kind: CounterKind,
+    kind: CounterKind,
     /// Aggregated value.
-    pub value: u64,
+    value: u64,
     /// Last update time relative to runtime creation.
-    pub updated_at_micros: u64,
+    updated_at_micros: u64,
 }
 
 impl CounterSnapshot {
+    /// Creates a counter row.
+    #[must_use]
+    pub const fn new(
+        desc_id: CounterDescId,
+        name: &'static str,
+        unit: Unit,
+        context_id: ContextId,
+        kind: CounterKind,
+        value: u64,
+        updated_at_micros: u64,
+    ) -> Self {
+        Self {
+            desc_id,
+            name,
+            unit,
+            context_id,
+            kind,
+            value,
+            updated_at_micros,
+        }
+    }
+
+    /// Returns the session-scoped counter descriptor id; see [`Snapshot`].
+    #[must_use]
+    pub const fn desc_id(&self) -> CounterDescId {
+        self.desc_id
+    }
+
+    /// Returns the stable descriptor name.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// Returns the unit copied from the counter descriptor.
+    #[must_use]
+    pub const fn unit(&self) -> Unit {
+        self.unit
+    }
+
+    /// Returns the canonical semantic context id.
+    #[must_use]
+    pub const fn context_id(&self) -> ContextId {
+        self.context_id
+    }
+
+    /// Returns whether the value is additive or gauge-like.
+    #[must_use]
+    pub const fn kind(&self) -> CounterKind {
+        self.kind
+    }
+
+    /// Returns the aggregated value.
+    #[must_use]
+    pub const fn value(&self) -> u64 {
+        self.value
+    }
+
+    /// Returns the last update time relative to runtime creation.
+    #[must_use]
+    pub const fn updated_at_micros(&self) -> u64 {
+        self.updated_at_micros
+    }
+
     /// Folds another shard's value for the same key into this one.
     fn merge(&mut self, other: &Self) {
         match self.kind {
@@ -644,33 +932,41 @@ pub const HISTOGRAM_BUCKET_COUNT: usize = 64;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HistogramSnapshot {
     /// Session-scoped counter descriptor id; see [`Snapshot`].
-    pub desc_id: CounterDescId,
+    desc_id: CounterDescId,
     /// Stable descriptor name.
-    pub name: &'static str,
+    name: &'static str,
     /// Unit copied from the counter descriptor.
-    pub unit: Unit,
+    unit: Unit,
     /// Canonical semantic context id.
-    pub context_id: ContextId,
+    context_id: ContextId,
     /// Number of recorded samples.
-    pub count: u64,
+    count: u64,
     /// Saturating sum of recorded samples.
-    pub sum: u64,
+    sum: u64,
     /// Smallest recorded sample. Meaningless while `count` is zero.
-    pub min: u64,
+    min: u64,
     /// Largest recorded sample.
-    pub max: u64,
+    max: u64,
     /// Power-of-two bucket counts indexed by sample bit length.
-    pub buckets: [u64; HISTOGRAM_BUCKET_COUNT],
+    buckets: [u64; HISTOGRAM_BUCKET_COUNT],
     /// Last update time relative to runtime creation.
-    pub updated_at_micros: u64,
+    updated_at_micros: u64,
 }
 
 impl HistogramSnapshot {
-    fn new(desc: &'static CounterDesc, context_id: ContextId) -> Self {
+    /// Creates an empty histogram row; add samples with
+    /// [`HistogramSnapshot::record`].
+    #[must_use]
+    pub const fn new(
+        desc_id: CounterDescId,
+        name: &'static str,
+        unit: Unit,
+        context_id: ContextId,
+    ) -> Self {
         Self {
-            desc_id: desc.id(),
-            name: desc.name(),
-            unit: desc.unit(),
+            desc_id,
+            name,
+            unit,
             context_id,
             count: 0,
             sum: 0,
@@ -693,7 +989,69 @@ impl HistogramSnapshot {
         self.updated_at_micros = self.updated_at_micros.max(other.updated_at_micros);
     }
 
-    fn record(&mut self, value: u64, at_micros: u64) {
+    /// Returns the session-scoped counter descriptor id; see [`Snapshot`].
+    #[must_use]
+    pub const fn desc_id(&self) -> CounterDescId {
+        self.desc_id
+    }
+
+    /// Returns the stable descriptor name.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// Returns the unit copied from the counter descriptor.
+    #[must_use]
+    pub const fn unit(&self) -> Unit {
+        self.unit
+    }
+
+    /// Returns the canonical semantic context id.
+    #[must_use]
+    pub const fn context_id(&self) -> ContextId {
+        self.context_id
+    }
+
+    /// Returns the number of recorded samples.
+    #[must_use]
+    pub const fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Returns the saturating sum of recorded samples.
+    #[must_use]
+    pub const fn sum(&self) -> u64 {
+        self.sum
+    }
+
+    /// Returns the smallest recorded sample. Meaningless while
+    /// [`count`](Self::count) is zero.
+    #[must_use]
+    pub const fn min(&self) -> u64 {
+        self.min
+    }
+
+    /// Returns the largest recorded sample.
+    #[must_use]
+    pub const fn max(&self) -> u64 {
+        self.max
+    }
+
+    /// Returns the power-of-two bucket counts indexed by sample bit length.
+    #[must_use]
+    pub const fn buckets(&self) -> &[u64; HISTOGRAM_BUCKET_COUNT] {
+        &self.buckets
+    }
+
+    /// Returns the last update time relative to runtime creation.
+    #[must_use]
+    pub const fn updated_at_micros(&self) -> u64 {
+        self.updated_at_micros
+    }
+
+    /// Records one sample at the given time relative to runtime creation.
+    pub fn record(&mut self, value: u64, at_micros: u64) {
         self.count = self.count.saturating_add(1);
         self.sum = self.sum.saturating_add(value);
         self.min = self.min.min(value);
@@ -719,21 +1077,72 @@ struct HistogramKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TimedObservation {
     /// Observation time in microseconds since runtime creation.
-    pub at_micros: u64,
+    at_micros: u64,
     /// Runtime-assigned recording sequence number.
     ///
     /// Sequence numbers increase in recording order across all threads and
     /// stay monotonic across session resets. Snapshots order events by
     /// timestamp and then by sequence, so events recorded by one thread
     /// within the same microsecond keep their program order.
-    pub sequence: u64,
+    sequence: u64,
     /// Runtime-assigned id of the thread that recorded the observation.
     ///
     /// Ids are small integers assigned in first-emission order. They identify
     /// threads within one process lifetime and are not OS thread ids.
-    pub thread_id: u64,
+    thread_id: u64,
     /// Observation payload.
-    pub observation: Observation,
+    observation: Observation,
+}
+
+impl TimedObservation {
+    /// Creates a timed observation.
+    #[must_use]
+    pub const fn new(
+        at_micros: u64,
+        sequence: u64,
+        thread_id: u64,
+        observation: Observation,
+    ) -> Self {
+        Self {
+            at_micros,
+            sequence,
+            thread_id,
+            observation,
+        }
+    }
+
+    /// Returns the observation time in microseconds since runtime creation.
+    #[must_use]
+    pub const fn at_micros(&self) -> u64 {
+        self.at_micros
+    }
+
+    /// Returns the runtime-assigned recording sequence number.
+    ///
+    /// Sequence numbers increase in recording order across all threads and
+    /// stay monotonic across session resets. Snapshots order events by
+    /// timestamp and then by sequence, so events recorded by one thread
+    /// within the same microsecond keep their program order.
+    #[must_use]
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Returns the runtime-assigned id of the thread that recorded the
+    /// observation.
+    ///
+    /// Ids are small integers assigned in first-emission order. They identify
+    /// threads within one process lifetime and are not OS thread ids.
+    #[must_use]
+    pub const fn thread_id(&self) -> u64 {
+        self.thread_id
+    }
+
+    /// Returns the observation payload.
+    #[must_use]
+    pub const fn observation(&self) -> &Observation {
+        &self.observation
+    }
 }
 
 /// One retained observation record.

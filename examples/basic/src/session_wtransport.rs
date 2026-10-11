@@ -30,7 +30,7 @@ async fn main() {
     let served_announcement = announcement.clone();
 
     println!("server: {}", default_local_url());
-    println!("session: {}", announcement.id);
+    println!("session: {}", announcement.id());
 
     let server_task = tokio::spawn(async move {
         let mut served_snapshot = false;
@@ -47,14 +47,14 @@ async fn main() {
                         .expect("discovery response should succeed");
                 }
                 SessionRequestKind::Snapshot { session_id }
-                    if session_id == served_announcement.id =>
+                    if session_id == served_announcement.id() =>
                 {
                     let snapshot = capture.capture_frame(11);
                     let served = request
                         .respond_snapshot(snapshot, Chunking::new(2, 2, 2, 16))
                         .await
                         .expect("snapshot response should succeed");
-                    if let ServedRequestKind::Snapshot { .. } = served.kind {
+                    if let ServedRequestKind::Snapshot { .. } = served.kind() {
                         served_snapshot = true;
                     }
                 }
@@ -79,9 +79,9 @@ async fn main() {
         .expect("session discovery should succeed");
     let discovered = sessions
         .into_iter()
-        .find(|session| session.id == announcement.id)
+        .find(|session| session.id() == announcement.id())
         .expect("published session should be discoverable");
-    let envelopes = fetch_local_session(&discovered.id)
+    let envelopes = fetch_local_session(discovered.id())
         .await
         .expect("session client should fetch one snapshot");
     server_task

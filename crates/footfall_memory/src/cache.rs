@@ -7,13 +7,55 @@ use footfall_core::{ContextHandle, CounterDesc, counter_add, gauge_set};
 #[derive(Clone, Copy, Debug)]
 pub struct CacheMetrics {
     /// Resident byte gauge.
-    pub current_bytes: &'static CounterDesc,
+    current_bytes: &'static CounterDesc,
     /// Hit counter.
-    pub hit_count: &'static CounterDesc,
+    hit_count: &'static CounterDesc,
     /// Miss counter.
-    pub miss_count: &'static CounterDesc,
+    miss_count: &'static CounterDesc,
     /// Eviction counter.
-    pub eviction_count: &'static CounterDesc,
+    eviction_count: &'static CounterDesc,
+}
+
+impl CacheMetrics {
+    /// Creates a new `CacheMetrics`.
+    #[must_use]
+    pub const fn new(
+        current_bytes: &'static CounterDesc,
+        hit_count: &'static CounterDesc,
+        miss_count: &'static CounterDesc,
+        eviction_count: &'static CounterDesc,
+    ) -> Self {
+        Self {
+            current_bytes,
+            hit_count,
+            miss_count,
+            eviction_count,
+        }
+    }
+
+    /// Returns the resident byte gauge.
+    #[must_use]
+    pub const fn current_bytes(&self) -> &'static CounterDesc {
+        self.current_bytes
+    }
+
+    /// Returns the hit counter.
+    #[must_use]
+    pub const fn hit_count(&self) -> &'static CounterDesc {
+        self.hit_count
+    }
+
+    /// Returns the miss counter.
+    #[must_use]
+    pub const fn miss_count(&self) -> &'static CounterDesc {
+        self.miss_count
+    }
+
+    /// Returns the eviction counter.
+    #[must_use]
+    pub const fn eviction_count(&self) -> &'static CounterDesc {
+        self.eviction_count
+    }
 }
 
 /// Lightweight cache statistics helper.

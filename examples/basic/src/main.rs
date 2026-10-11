@@ -66,17 +66,9 @@ fn main() {
     let atlas_context = atlas.handle();
     let invalidate_context = invalidate.handle();
 
-    let scratch_metrics = ScratchMetrics {
-        current_bytes: &SCRATCH_CURRENT,
-        peak_bytes: &SCRATCH_PEAK,
-        grow_count: &SCRATCH_GROW,
-    };
-    let cache_metrics = CacheMetrics {
-        current_bytes: &CACHE_CURRENT,
-        hit_count: &CACHE_HITS,
-        miss_count: &CACHE_MISSES,
-        eviction_count: &CACHE_EVICTIONS,
-    };
+    let scratch_metrics = ScratchMetrics::new(&SCRATCH_CURRENT, &SCRATCH_PEAK, &SCRATCH_GROW);
+    let cache_metrics =
+        CacheMetrics::new(&CACHE_CURRENT, &CACHE_HITS, &CACHE_MISSES, &CACHE_EVICTIONS);
 
     frame_begin(frame_context);
     pass_begin(record_context);

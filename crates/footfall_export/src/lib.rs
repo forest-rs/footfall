@@ -44,9 +44,9 @@ pub fn write_chrome_trace_json(snapshot: &Snapshot, writer: &mut impl Write) -> 
         1,
         0,
         "name",
-        &snapshot.metadata.process_name,
+        snapshot.metadata().process_name(),
     ));
-    if let Some(session_name) = snapshot.metadata.session_name.as_deref() {
+    if let Some(session_name) = snapshot.metadata().session_name() {
         events.push(build_metadata_event(
             "process_labels",
             1,
@@ -63,9 +63,9 @@ pub fn write_chrome_trace_json(snapshot: &Snapshot, writer: &mut impl Write) -> 
         "footfall",
     ));
     let threads: BTreeSet<u64> = snapshot
-        .events
+        .events()
         .iter()
-        .map(|event| event.thread_id)
+        .map(|event| event.thread_id())
         .collect();
     for thread_id in threads {
         events.push(build_metadata_event(
@@ -78,17 +78,17 @@ pub fn write_chrome_trace_json(snapshot: &Snapshot, writer: &mut impl Write) -> 
     }
     events.push(build_capture_window_event(snapshot));
 
-    for counter in &snapshot.counters {
+    for counter in snapshot.counters() {
         events.push(build_counter_event(snapshot, counter)?);
     }
 
-    for histogram in &snapshot.histograms {
+    for histogram in snapshot.histograms() {
         events.push(build_histogram_event(snapshot, histogram)?);
     }
 
     let mut scope_tracks = HashMap::<ScopeToken, u64>::new();
     let mut unmatched_scope_ends = 0_u64;
-    for event in &snapshot.events {
+    for event in snapshot.events() {
         match build_timed_observation(snapshot, event, &mut scope_tracks)? {
             Some(json) => events.push(json),
             None => unmatched_scope_ends += 1,
@@ -97,33 +97,33 @@ pub fn write_chrome_trace_json(snapshot: &Snapshot, writer: &mut impl Write) -> 
 
     if unmatched_scope_ends > 0 {
         events.push(build_internal_counter_event(
-            snapshot.captured_at_micros,
+            snapshot.captured_at_micros(),
             "footfall_unmatched_scope_ends",
             unmatched_scope_ends,
         ));
     }
 
-    if snapshot.dropped_contexts > 0 {
+    if snapshot.dropped_contexts() > 0 {
         events.push(build_internal_counter_event(
-            snapshot.captured_at_micros,
+            snapshot.captured_at_micros(),
             "footfall_dropped_contexts",
-            snapshot.dropped_contexts,
+            snapshot.dropped_contexts(),
         ));
     }
 
-    if snapshot.dropped_counters > 0 {
+    if snapshot.dropped_counters() > 0 {
         events.push(build_internal_counter_event(
-            snapshot.captured_at_micros,
+            snapshot.captured_at_micros(),
             "footfall_dropped_counters",
-            snapshot.dropped_counters,
+            snapshot.dropped_counters(),
         ));
     }
 
-    if snapshot.dropped_events > 0 {
+    if snapshot.dropped_events() > 0 {
         events.push(build_internal_counter_event(
-            snapshot.captured_at_micros,
+            snapshot.captured_at_micros(),
             "footfall_dropped_events",
-            snapshot.dropped_events,
+            snapshot.dropped_events(),
         ));
     }
 
@@ -182,7 +182,7 @@ fn build_capture_window_event(snapshot: &Snapshot) -> String {
     json.push(',');
     write_json_field_str(&mut json, "ph", "i").expect("string write should succeed");
     json.push_str(",\"s\":\"g\",");
-    write_json_field_u64(&mut json, "ts", snapshot.captured_at_micros)
+    write_json_field_u64(&mut json, "ts", snapshot.captured_at_micros())
         .expect("string write should succeed");
     json.push(',');
     write_json_field_u64(&mut json, "pid", 1).expect("string write should succeed");
@@ -192,24 +192,28 @@ fn build_capture_window_event(snapshot: &Snapshot) -> String {
     write_json_field_u64(
         &mut json,
         "capture_start_micros",
-        snapshot.capture_start_micros,
+        snapshot.capture_start_micros(),
     )
     .expect("string write should succeed");
     json.push(',');
-    write_json_field_u64(&mut json, "capture_end_micros", snapshot.captured_at_micros)
-        .expect("string write should succeed");
+    write_json_field_u64(
+        &mut json,
+        "capture_end_micros",
+        snapshot.captured_at_micros(),
+    )
+    .expect("string write should succeed");
     json.push(',');
     write_json_field_u64(
         &mut json,
         "session_sequence",
-        snapshot.metadata.session_sequence,
+        snapshot.metadata().session_sequence(),
     )
     .expect("string write should succeed");
     json.push(',');
     write_json_field_u64(
         &mut json,
         "wall_clock_anchor_micros",
-        snapshot.metadata.wall_clock_anchor_micros,
+        snapshot.metadata().wall_clock_anchor_micros(),
     )
     .expect("string write should succeed");
     json.push_str("}}");
@@ -222,8 +226,8 @@ fn build_counter_event(
 ) -> Result<String, fmt::Error> {
     let mut json = String::new();
     let context = snapshot
-        .context(counter.context_id)
-        .map(|context| context.context)
+        .context(counter.context_id())
+        .map(|context| *context.context())
         .unwrap_or_else(Context::root);
 
     // Chrome keys counter tracks by name within a process, so the context is
@@ -232,13 +236,13 @@ fn build_counter_event(
     write_json_field_str(
         &mut json,
         "name",
-        &counter_track_name(counter.name, context),
+        &counter_track_name(counter.name(), context),
     )?;
     json.push(',');
     write_json_field_str(
         &mut json,
         "cat",
-        match counter.kind {
+        match counter.kind() {
             CounterKind::Gauge => "gauge",
             _ => "counter",
         },
@@ -246,14 +250,14 @@ fn build_counter_event(
     json.push(',');
     write_json_field_str(&mut json, "ph", "C")?;
     json.push(',');
-    write_json_field_u64(&mut json, "ts", counter.updated_at_micros)?;
+    write_json_field_u64(&mut json, "ts", counter.updated_at_micros())?;
     json.push(',');
     write_json_field_u64(&mut json, "pid", 1)?;
     json.push(',');
     write_json_field_u64(&mut json, "tid", AGGREGATE_TID)?;
     // Counter args become plotted series, so they carry only the value.
     json.push_str(",\"args\":{");
-    write_json_field_u64(&mut json, counter.unit.as_str(), counter.value)?;
+    write_json_field_u64(&mut json, counter.unit().as_str(), counter.value())?;
     json.push_str("}}");
 
     Ok(json)
@@ -271,38 +275,38 @@ fn build_histogram_event(
     histogram: &HistogramSnapshot,
 ) -> Result<String, fmt::Error> {
     let context = snapshot
-        .context(histogram.context_id)
-        .map(|context| context.context)
+        .context(histogram.context_id())
+        .map(|context| *context.context())
         .unwrap_or_else(Context::root);
     let mut json = String::new();
     json.push('{');
-    write_json_field_str(&mut json, "name", histogram.name)?;
+    write_json_field_str(&mut json, "name", histogram.name())?;
     json.push(',');
     write_json_field_str(&mut json, "cat", "histogram")?;
     json.push(',');
     write_json_field_str(&mut json, "ph", "i")?;
     json.push_str(",\"s\":\"t\",");
-    write_json_field_u64(&mut json, "ts", histogram.updated_at_micros)?;
+    write_json_field_u64(&mut json, "ts", histogram.updated_at_micros())?;
     json.push(',');
     write_json_field_u64(&mut json, "pid", 1)?;
     json.push(',');
     write_json_field_u64(&mut json, "tid", AGGREGATE_TID)?;
     json.push_str(",\"args\":{");
-    write_json_field_u64(&mut json, "count", histogram.count)?;
+    write_json_field_u64(&mut json, "count", histogram.count())?;
     json.push(',');
-    write_json_field_u64(&mut json, "sum", histogram.sum)?;
+    write_json_field_u64(&mut json, "sum", histogram.sum())?;
     json.push(',');
     write_json_field_u64(
         &mut json,
         "min",
-        if histogram.count == 0 {
+        if histogram.count() == 0 {
             0
         } else {
-            histogram.min
+            histogram.min()
         },
     )?;
     json.push(',');
-    write_json_field_u64(&mut json, "max", histogram.max)?;
+    write_json_field_u64(&mut json, "max", histogram.max())?;
     json.push(',');
     write_json_field_u64(&mut json, "p50", histogram_percentile(histogram, 0.50))?;
     json.push(',');
@@ -310,7 +314,7 @@ fn build_histogram_event(
     json.push(',');
     write_json_field_u64(&mut json, "p99", histogram_percentile(histogram, 0.99))?;
     json.push_str(",\"unit\":");
-    write_json_string(&mut json, histogram.unit.as_str())?;
+    write_json_string(&mut json, histogram.unit().as_str())?;
     json.push_str(",\"context\":");
     write_context(&mut json, context)?;
     json.push_str("}}");
@@ -322,7 +326,7 @@ fn build_histogram_event(
 /// Returns the upper bound of the bucket containing the requested rank,
 /// clamped to the observed maximum.
 fn histogram_percentile(histogram: &HistogramSnapshot, quantile: f64) -> u64 {
-    if histogram.count == 0 {
+    if histogram.count() == 0 {
         return 0;
     }
     #[expect(
@@ -331,9 +335,9 @@ fn histogram_percentile(histogram: &HistogramSnapshot, quantile: f64) -> u64 {
         clippy::cast_sign_loss,
         reason = "rank estimation tolerates precision loss at extreme counts"
     )]
-    let rank = ((histogram.count as f64) * quantile).ceil().max(1.0) as u64;
+    let rank = ((histogram.count() as f64) * quantile).ceil().max(1.0) as u64;
     let mut cumulative = 0_u64;
-    for (index, bucket) in histogram.buckets.iter().enumerate() {
+    for (index, bucket) in histogram.buckets().iter().enumerate() {
         cumulative = cumulative.saturating_add(*bucket);
         if cumulative >= rank {
             let upper = if index == 0 {
@@ -341,10 +345,10 @@ fn histogram_percentile(histogram: &HistogramSnapshot, quantile: f64) -> u64 {
             } else {
                 u64::MAX >> (u64::BITS as usize - index)
             };
-            return upper.min(histogram.max);
+            return upper.min(histogram.max());
         }
     }
-    histogram.max
+    histogram.max()
 }
 
 fn build_internal_counter_event(at_micros: u64, name: &str, value: u64) -> String {
@@ -375,7 +379,7 @@ fn build_timed_observation(
     event: &TimedObservation,
     scope_tracks: &mut HashMap<ScopeToken, u64>,
 ) -> Result<Option<String>, fmt::Error> {
-    match &event.observation {
+    match event.observation() {
         Observation::ScopeBegin {
             name,
             context_id,
@@ -383,10 +387,10 @@ fn build_timed_observation(
             args,
             ..
         } => {
-            scope_tracks.insert(*token, event.thread_id);
+            scope_tracks.insert(*token, event.thread_id());
             let context = snapshot
                 .context(*context_id)
-                .map(|context| context.context)
+                .map(|context| *context.context())
                 .unwrap_or_else(Context::root);
             let mut json = String::new();
             json.push('{');
@@ -396,11 +400,11 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_str(&mut json, "ph", "B")?;
             json.push(',');
-            write_json_field_u64(&mut json, "ts", event.at_micros)?;
+            write_json_field_u64(&mut json, "ts", event.at_micros())?;
             json.push(',');
             write_json_field_u64(&mut json, "pid", 1)?;
             json.push(',');
-            write_json_field_u64(&mut json, "tid", event.thread_id)?;
+            write_json_field_u64(&mut json, "tid", event.thread_id())?;
             json.push_str(",\"args\":{");
             write_json_field_u64(&mut json, "context_id", context_id.get())?;
             if !args.is_empty() {
@@ -423,7 +427,7 @@ fn build_timed_observation(
             json.push('{');
             write_json_field_str(&mut json, "ph", "E")?;
             json.push(',');
-            write_json_field_u64(&mut json, "ts", event.at_micros)?;
+            write_json_field_u64(&mut json, "ts", event.at_micros())?;
             json.push(',');
             write_json_field_u64(&mut json, "pid", 1)?;
             json.push(',');
@@ -439,8 +443,8 @@ fn build_timed_observation(
             ..
         } => build_resource_event(
             snapshot,
-            event.at_micros,
-            event.thread_id,
+            event.at_micros(),
+            event.thread_id(),
             "resource_create",
             kind_name,
             *resource_id,
@@ -456,8 +460,8 @@ fn build_timed_observation(
             ..
         } => build_resource_event(
             snapshot,
-            event.at_micros,
-            event.thread_id,
+            event.at_micros(),
+            event.thread_id(),
             "resource_update",
             kind_name,
             *resource_id,
@@ -472,8 +476,8 @@ fn build_timed_observation(
             ..
         } => build_resource_event(
             snapshot,
-            event.at_micros,
-            event.thread_id,
+            event.at_micros(),
+            event.thread_id(),
             "resource_drop",
             kind_name,
             *resource_id,
@@ -488,7 +492,7 @@ fn build_timed_observation(
         } => {
             let context = snapshot
                 .context(*context_id)
-                .map(|context| context.context)
+                .map(|context| *context.context())
                 .unwrap_or_else(Context::root);
             let mut json = String::new();
             json.push('{');
@@ -498,11 +502,11 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_str(&mut json, "ph", "i")?;
             json.push_str(",\"s\":\"t\",");
-            write_json_field_u64(&mut json, "ts", event.at_micros)?;
+            write_json_field_u64(&mut json, "ts", event.at_micros())?;
             json.push(',');
             write_json_field_u64(&mut json, "pid", 1)?;
             json.push(',');
-            write_json_field_u64(&mut json, "tid", event.thread_id)?;
+            write_json_field_u64(&mut json, "tid", event.thread_id())?;
             json.push_str(",\"args\":{");
             write_json_field_u64(&mut json, "context_id", context_id.get())?;
             json.push_str(",\"context\":");
@@ -517,7 +521,7 @@ fn build_timed_observation(
         } => {
             let context = snapshot
                 .context(*context_id)
-                .map(|context| context.context)
+                .map(|context| *context.context())
                 .unwrap_or_else(Context::root);
             let mut json = String::new();
             json.push('{');
@@ -527,11 +531,11 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_str(&mut json, "ph", flow_phase_code(*phase))?;
             json.push_str(",\"bp\":\"e\",");
-            write_json_field_u64(&mut json, "ts", event.at_micros)?;
+            write_json_field_u64(&mut json, "ts", event.at_micros())?;
             json.push(',');
             write_json_field_u64(&mut json, "pid", 1)?;
             json.push(',');
-            write_json_field_u64(&mut json, "tid", event.thread_id)?;
+            write_json_field_u64(&mut json, "tid", event.thread_id())?;
             json.push(',');
             write_json_field_u64(&mut json, "id", flow_id.get())?;
             json.push_str(",\"args\":{");
@@ -550,7 +554,7 @@ fn build_timed_observation(
         } => {
             let context = snapshot
                 .context(*context_id)
-                .map(|context| context.context)
+                .map(|context| *context.context())
                 .unwrap_or_else(Context::root);
             let mut json = String::new();
             json.push('{');
@@ -560,11 +564,11 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_str(&mut json, "ph", "i")?;
             json.push_str(",\"s\":\"t\",");
-            write_json_field_u64(&mut json, "ts", event.at_micros)?;
+            write_json_field_u64(&mut json, "ts", event.at_micros())?;
             json.push(',');
             write_json_field_u64(&mut json, "pid", 1)?;
             json.push(',');
-            write_json_field_u64(&mut json, "tid", event.thread_id)?;
+            write_json_field_u64(&mut json, "tid", event.thread_id())?;
             json.push_str(",\"args\":{");
             write_json_field_u64(&mut json, "context_id", context_id.get())?;
             json.push(',');
@@ -595,7 +599,7 @@ fn build_resource_event(
 ) -> Result<String, fmt::Error> {
     let context = snapshot
         .context(context_id)
-        .map(|context| context.context)
+        .map(|context| *context.context())
         .unwrap_or_else(Context::root);
     let mut json = String::new();
     json.push('{');
@@ -766,7 +770,8 @@ mod tests {
         MarkerPhase, ScopeToken, Unit,
     };
     use footfall_runtime::{
-        ContextSnapshot, CounterKind, CounterSnapshot, Observation, Snapshot, TimedObservation,
+        ContextSnapshot, CounterKind, CounterSnapshot, Observation, Snapshot, SnapshotMetadata,
+        TimedObservation,
     };
 
     static FRAME: LabelKey = LabelKey::new("frame");
@@ -775,81 +780,68 @@ mod tests {
 
     #[test]
     fn exporter_emits_metadata_context_tracks_and_scope_pairing() {
-        let snapshot = Snapshot {
-            metadata: footfall_runtime::SnapshotMetadata {
-                process_name: String::from("footfall"),
-                session_name: Some(String::from("recording")),
-                session_sequence: 3,
-                wall_clock_anchor_micros: 1_700_000_000_000_000,
-            },
-            capture_start_micros: 0,
-            captured_at_micros: 30,
-            contexts: vec![
-                ContextSnapshot {
-                    id: ContextId::new(0),
-                    context: Context::root(),
+        let metadata = SnapshotMetadata::new("footfall")
+            .with_session_name("recording")
+            .with_session_sequence(3)
+            .with_wall_clock_anchor_micros(1_700_000_000_000_000);
+        let snapshot = Snapshot::builder(metadata)
+            .capture_window(0, 30)
+            .context(ContextSnapshot::new(ContextId::new(0), Context::root()))
+            .context(ContextSnapshot::new(
+                ContextId::new(1),
+                Context::root().with(&FRAME, 7_u32).with(&PASS, 1_u32),
+            ))
+            .counter(CounterSnapshot::new(
+                CounterDescId::new(1),
+                "upload_bytes",
+                Unit::Bytes,
+                ContextId::new(1),
+                CounterKind::Counter,
+                4096,
+                10,
+            ))
+            .event(TimedObservation::new(
+                20,
+                0,
+                3,
+                Observation::ScopeBegin {
+                    desc_id: footfall_core::ScopeDescId::new(2),
+                    name: "record",
+                    context_id: ContextId::new(1),
+                    token: ScopeToken::new(9),
+                    args: Args::none().with("items", 3_u32),
                 },
-                ContextSnapshot {
-                    id: ContextId::new(1),
-                    context: Context::root().with(&FRAME, 7_u32).with(&PASS, 1_u32),
+            ))
+            .event(TimedObservation::new(
+                22,
+                1,
+                3,
+                Observation::ScopeEnd {
+                    token: ScopeToken::new(9),
                 },
-            ],
-            counters: vec![CounterSnapshot {
-                desc_id: CounterDescId::new(1),
-                name: "upload_bytes",
-                unit: Unit::Bytes,
-                context_id: ContextId::new(1),
-                kind: CounterKind::Counter,
-                value: 4096,
-                updated_at_micros: 10,
-            }],
-            histograms: vec![],
-            events: vec![
-                TimedObservation {
-                    at_micros: 20,
-                    sequence: 0,
-                    thread_id: 3,
-                    observation: Observation::ScopeBegin {
-                        desc_id: footfall_core::ScopeDescId::new(2),
-                        name: "record",
-                        context_id: ContextId::new(1),
-                        token: ScopeToken::new(9),
-                        args: Args::none().with("items", 3_u32),
-                    },
+            ))
+            .event(TimedObservation::new(
+                24,
+                2,
+                3,
+                Observation::FrameMarker {
+                    kind: MarkerKind::Frame,
+                    phase: MarkerPhase::Begin,
+                    context_id: ContextId::new(1),
                 },
-                TimedObservation {
-                    at_micros: 22,
-                    sequence: 1,
-                    thread_id: 3,
-                    observation: Observation::ScopeEnd {
-                        token: ScopeToken::new(9),
-                    },
+            ))
+            .event(TimedObservation::new(
+                26,
+                3,
+                3,
+                Observation::Flow {
+                    flow_id: FlowId::new(8),
+                    phase: FlowPhase::Begin,
+                    context_id: ContextId::new(1),
                 },
-                TimedObservation {
-                    at_micros: 24,
-                    sequence: 2,
-                    thread_id: 3,
-                    observation: Observation::FrameMarker {
-                        kind: MarkerKind::Frame,
-                        phase: MarkerPhase::Begin,
-                        context_id: ContextId::new(1),
-                    },
-                },
-                TimedObservation {
-                    at_micros: 26,
-                    sequence: 3,
-                    thread_id: 3,
-                    observation: Observation::Flow {
-                        flow_id: FlowId::new(8),
-                        phase: FlowPhase::Begin,
-                        context_id: ContextId::new(1),
-                    },
-                },
-            ],
-            dropped_contexts: 1,
-            dropped_counters: 1,
-            dropped_events: 2,
-        };
+            ))
+            .dropped(1, 1, 2)
+            .build();
 
         let json = to_chrome_trace_json(&snapshot);
         assert!(json.contains("\"thread_name\""));
@@ -867,21 +859,19 @@ mod tests {
     }
 
     fn snapshot_with(counters: Vec<CounterSnapshot>, events: Vec<TimedObservation>) -> Snapshot {
-        Snapshot {
-            contexts: vec![
-                ContextSnapshot {
-                    id: ContextId::new(0),
-                    context: Context::root(),
-                },
-                ContextSnapshot {
-                    id: ContextId::new(1),
-                    context: Context::root().with(&FRAME, 7_u32),
-                },
-            ],
-            counters,
-            events,
-            ..Snapshot::default()
-        }
+        let builder = Snapshot::builder(SnapshotMetadata::default())
+            .context(ContextSnapshot::new(ContextId::new(0), Context::root()))
+            .context(ContextSnapshot::new(
+                ContextId::new(1),
+                Context::root().with(&FRAME, 7_u32),
+            ));
+        let builder = counters
+            .into_iter()
+            .fold(builder, |builder, counter| builder.counter(counter));
+        events
+            .into_iter()
+            .fold(builder, |builder, event| builder.event(event))
+            .build()
     }
 
     fn timed(
@@ -890,12 +880,7 @@ mod tests {
         thread_id: u64,
         observation: Observation,
     ) -> TimedObservation {
-        TimedObservation {
-            at_micros,
-            sequence,
-            thread_id,
-            observation,
-        }
+        TimedObservation::new(at_micros, sequence, thread_id, observation)
     }
 
     fn begin(name: &'static str, token: u64) -> Observation {
@@ -986,14 +971,16 @@ mod tests {
 
     #[test]
     fn counters_are_keyed_per_descriptor_and_context() {
-        let counter = |context_id: u64, value: u64| CounterSnapshot {
-            desc_id: CounterDescId::new(1),
-            name: "ops",
-            unit: Unit::Count,
-            context_id: ContextId::new(context_id),
-            kind: CounterKind::Counter,
-            value,
-            updated_at_micros: 10,
+        let counter = |context_id: u64, value: u64| {
+            CounterSnapshot::new(
+                CounterDescId::new(1),
+                "ops",
+                Unit::Count,
+                ContextId::new(context_id),
+                CounterKind::Counter,
+                value,
+                10,
+            )
         };
         let snapshot = snapshot_with(vec![counter(0, 5), counter(1, 9)], vec![]);
 

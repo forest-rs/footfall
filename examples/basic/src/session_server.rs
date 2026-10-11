@@ -26,7 +26,7 @@ async fn main() {
 
     println!("serving Footfall sessions over WebTransport");
     println!("server: {}", default_local_url());
-    println!("session: {}", announcement.id);
+    println!("session: {}", announcement.id());
     println!("press Ctrl-C to stop");
 
     for frame in 0_u32.. {
@@ -43,23 +43,23 @@ async fn main() {
                                 .respond_discovery(core::slice::from_ref(&announcement))
                                 .await
                                 .expect("discovery response should succeed");
-                            if let ServedRequestKind::Discovery { session_count } = served.kind {
+                            if let ServedRequestKind::Discovery { session_count } = served.kind() {
                                 println!(
                                     "served discovery with {} session(s) to {}{}",
-                                    session_count, served.authority, served.path
+                                    session_count, served.authority(), served.path()
                                 );
                             }
                         }
-                        SessionRequestKind::Snapshot { session_id } if session_id == announcement.id => {
+                        SessionRequestKind::Snapshot { session_id } if session_id == announcement.id() => {
                             let snapshot = capture.capture_frame(frame);
                             let served = request
                                 .respond_snapshot(snapshot, Chunking::new(4, 4, 4, 32))
                                 .await
                                 .expect("snapshot response should succeed");
-                            if let ServedRequestKind::Snapshot { envelope_count } = served.kind {
+                            if let ServedRequestKind::Snapshot { envelope_count } = served.kind() {
                                 println!(
                                     "served frame {} as {} envelopes to {}{}",
-                                    frame, envelope_count, served.authority, served.path
+                                    frame, envelope_count, served.authority(), served.path()
                                 );
                             }
                         }

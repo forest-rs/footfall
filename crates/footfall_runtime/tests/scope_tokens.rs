@@ -29,11 +29,12 @@ fn guard_started_before_install_does_not_end_a_later_scope() {
     drop(early);
     scope_end(later);
 
-    let events = runtime.snapshot().events;
+    let snapshot = runtime.snapshot();
+    let events = snapshot.events();
     let ends: Vec<_> = events
         .iter()
-        .filter_map(|event| match event.observation {
-            Observation::ScopeEnd { token } => Some(token),
+        .filter_map(|event| match event.observation() {
+            Observation::ScopeEnd { token } => Some(*token),
             _ => None,
         })
         .collect();

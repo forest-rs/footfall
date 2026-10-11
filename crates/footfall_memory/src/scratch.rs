@@ -9,11 +9,45 @@ use footfall_core::{ContextHandle, CounterDesc, counter_add, gauge_set};
 #[derive(Clone, Copy, Debug)]
 pub struct ScratchMetrics {
     /// Current reserved bytes.
-    pub current_bytes: &'static CounterDesc,
+    current_bytes: &'static CounterDesc,
     /// Peak reserved bytes.
-    pub peak_bytes: &'static CounterDesc,
+    peak_bytes: &'static CounterDesc,
     /// Capacity growth count.
-    pub grow_count: &'static CounterDesc,
+    grow_count: &'static CounterDesc,
+}
+
+impl ScratchMetrics {
+    /// Creates a new `ScratchMetrics`.
+    #[must_use]
+    pub const fn new(
+        current_bytes: &'static CounterDesc,
+        peak_bytes: &'static CounterDesc,
+        grow_count: &'static CounterDesc,
+    ) -> Self {
+        Self {
+            current_bytes,
+            peak_bytes,
+            grow_count,
+        }
+    }
+
+    /// Returns the current reserved bytes.
+    #[must_use]
+    pub const fn current_bytes(&self) -> &'static CounterDesc {
+        self.current_bytes
+    }
+
+    /// Returns the peak reserved bytes.
+    #[must_use]
+    pub const fn peak_bytes(&self) -> &'static CounterDesc {
+        self.peak_bytes
+    }
+
+    /// Returns the capacity growth count.
+    #[must_use]
+    pub const fn grow_count(&self) -> &'static CounterDesc {
+        self.grow_count
+    }
 }
 
 /// `Vec` wrapper that reports scratch-buffer growth and capacity.

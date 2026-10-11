@@ -59,17 +59,9 @@ fn main() {
         .install_global()
         .expect("fanout backend should install once");
     tracy.set_current_thread_name("main");
-    let scratch_metrics = ScratchMetrics {
-        current_bytes: &SCRATCH_CURRENT,
-        peak_bytes: &SCRATCH_PEAK,
-        grow_count: &SCRATCH_GROW,
-    };
-    let cache_metrics = CacheMetrics {
-        current_bytes: &CACHE_CURRENT,
-        hit_count: &CACHE_HITS,
-        miss_count: &CACHE_MISSES,
-        eviction_count: &CACHE_EVICTIONS,
-    };
+    let scratch_metrics = ScratchMetrics::new(&SCRATCH_CURRENT, &SCRATCH_PEAK, &SCRATCH_GROW);
+    let cache_metrics =
+        CacheMetrics::new(&CACHE_CURRENT, &CACHE_HITS, &CACHE_MISSES, &CACHE_EVICTIONS);
 
     println!("running Tracy live example for {FRAME_COUNT} frames");
 
@@ -171,7 +163,7 @@ impl Consumer for SummaryConsumer {
 
     fn consume(&mut self, envelope: Envelope<'_>) -> Result<(), Self::Error> {
         self.envelopes = self.envelopes.saturating_add(1);
-        match envelope.payload {
+        match envelope.payload() {
             Payload::Counters(counters) => {
                 self.counters = self.counters.saturating_add(counters.len());
             }

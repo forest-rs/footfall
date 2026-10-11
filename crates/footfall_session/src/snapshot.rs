@@ -20,13 +20,39 @@ use crate::{PROTOCOL_VERSION, ProtocolVersion};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Chunking {
     /// Maximum number of contexts in one envelope. `0` means "all remaining".
-    pub max_contexts: usize,
+    max_contexts: usize,
     /// Maximum number of counters in one envelope. `0` means "all remaining".
-    pub max_counters: usize,
+    max_counters: usize,
     /// Maximum number of histograms in one envelope. `0` means "all remaining".
-    pub max_histograms: usize,
+    max_histograms: usize,
     /// Maximum number of events in one envelope. `0` means "all remaining".
-    pub max_events: usize,
+    max_events: usize,
+}
+
+impl Chunking {
+    /// Returns the maximum number of contexts in one envelope. `0` means "all remaining".
+    #[must_use]
+    pub const fn max_contexts(&self) -> usize {
+        self.max_contexts
+    }
+
+    /// Returns the maximum number of counters in one envelope. `0` means "all remaining".
+    #[must_use]
+    pub const fn max_counters(&self) -> usize {
+        self.max_counters
+    }
+
+    /// Returns the maximum number of histograms in one envelope. `0` means "all remaining".
+    #[must_use]
+    pub const fn max_histograms(&self) -> usize {
+        self.max_histograms
+    }
+
+    /// Returns the maximum number of events in one envelope. `0` means "all remaining".
+    #[must_use]
+    pub const fn max_events(&self) -> usize {
+        self.max_events
+    }
 }
 
 impl Chunking {
@@ -57,50 +83,200 @@ impl Default for Chunking {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EnvelopeHeader {
     /// Protocol version used by this envelope.
-    pub protocol_version: ProtocolVersion,
+    protocol_version: ProtocolVersion,
     /// Monotonic session sequence copied from the runtime snapshot.
-    pub session_sequence: u64,
+    session_sequence: u64,
     /// Zero-based chunk index within the snapshot publication.
-    pub chunk_index: u64,
+    chunk_index: u64,
+}
+
+impl EnvelopeHeader {
+    /// Creates a new `EnvelopeHeader`.
+    #[must_use]
+    pub const fn new(
+        protocol_version: ProtocolVersion,
+        session_sequence: u64,
+        chunk_index: u64,
+    ) -> Self {
+        Self {
+            protocol_version,
+            session_sequence,
+            chunk_index,
+        }
+    }
+
+    /// Returns the protocol version used by this envelope.
+    #[must_use]
+    pub const fn protocol_version(&self) -> ProtocolVersion {
+        self.protocol_version
+    }
+
+    /// Returns the monotonic session sequence copied from the runtime snapshot.
+    #[must_use]
+    pub const fn session_sequence(&self) -> u64 {
+        self.session_sequence
+    }
+
+    /// Returns the zero-based chunk index within the snapshot publication.
+    #[must_use]
+    pub const fn chunk_index(&self) -> u64 {
+        self.chunk_index
+    }
 }
 
 /// Borrowed description of one snapshot window.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SnapshotSummary<'a> {
     /// Snapshot metadata identifying the process and session.
-    pub metadata: &'a SnapshotMetadata,
+    metadata: &'a SnapshotMetadata,
     /// Snapshot start time relative to runtime creation.
-    pub capture_start_micros: u64,
+    capture_start_micros: u64,
     /// Snapshot end time relative to runtime creation.
-    pub captured_at_micros: u64,
+    captured_at_micros: u64,
     /// Number of canonical contexts in the snapshot.
-    pub context_count: usize,
+    context_count: usize,
     /// Number of counters in the snapshot.
-    pub counter_count: usize,
+    counter_count: usize,
     /// Number of histograms in the snapshot.
-    pub histogram_count: usize,
+    histogram_count: usize,
     /// Number of timestamped events in the snapshot.
-    pub event_count: usize,
+    event_count: usize,
+}
+
+impl<'a> SnapshotSummary<'a> {
+    /// Creates a new `SnapshotSummary`.
+    #[must_use]
+    pub const fn new(
+        metadata: &'a SnapshotMetadata,
+        capture_start_micros: u64,
+        captured_at_micros: u64,
+        context_count: usize,
+        counter_count: usize,
+        histogram_count: usize,
+        event_count: usize,
+    ) -> Self {
+        Self {
+            metadata,
+            capture_start_micros,
+            captured_at_micros,
+            context_count,
+            counter_count,
+            histogram_count,
+            event_count,
+        }
+    }
+
+    /// Returns the snapshot metadata identifying the process and session.
+    #[must_use]
+    pub const fn metadata(&self) -> &'a SnapshotMetadata {
+        self.metadata
+    }
+
+    /// Returns the snapshot start time relative to runtime creation.
+    #[must_use]
+    pub const fn capture_start_micros(&self) -> u64 {
+        self.capture_start_micros
+    }
+
+    /// Returns the snapshot end time relative to runtime creation.
+    #[must_use]
+    pub const fn captured_at_micros(&self) -> u64 {
+        self.captured_at_micros
+    }
+
+    /// Returns the number of canonical contexts in the snapshot.
+    #[must_use]
+    pub const fn context_count(&self) -> usize {
+        self.context_count
+    }
+
+    /// Returns the number of counters in the snapshot.
+    #[must_use]
+    pub const fn counter_count(&self) -> usize {
+        self.counter_count
+    }
+
+    /// Returns the number of histograms in the snapshot.
+    #[must_use]
+    pub const fn histogram_count(&self) -> usize {
+        self.histogram_count
+    }
+
+    /// Returns the number of timestamped events in the snapshot.
+    #[must_use]
+    pub const fn event_count(&self) -> usize {
+        self.event_count
+    }
 }
 
 /// Snapshot loss accounting carried at the end of publication.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DroppedSummary {
     /// Number of observations dropped because a new context could not be interned.
-    pub contexts: u64,
+    contexts: u64,
     /// Number of counter updates dropped due to counter-key capacity pressure.
-    pub counters: u64,
+    counters: u64,
     /// Number of events dropped due to event-capacity pressure.
-    pub events: u64,
+    events: u64,
+}
+
+impl DroppedSummary {
+    /// Creates a new `DroppedSummary`.
+    #[must_use]
+    pub const fn new(contexts: u64, counters: u64, events: u64) -> Self {
+        Self {
+            contexts,
+            counters,
+            events,
+        }
+    }
+
+    /// Returns the number of observations dropped because a new context could not be interned.
+    #[must_use]
+    pub const fn contexts(&self) -> u64 {
+        self.contexts
+    }
+
+    /// Returns the number of counter updates dropped due to counter-key capacity pressure.
+    #[must_use]
+    pub const fn counters(&self) -> u64 {
+        self.counters
+    }
+
+    /// Returns the number of events dropped due to event-capacity pressure.
+    #[must_use]
+    pub const fn events(&self) -> u64 {
+        self.events
+    }
 }
 
 /// One versioned session envelope delivered to a consumer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Envelope<'a> {
     /// Common envelope header.
-    pub header: EnvelopeHeader,
+    header: EnvelopeHeader,
     /// Borrowed payload for this chunk.
-    pub payload: Payload<'a>,
+    payload: Payload<'a>,
+}
+
+impl<'a> Envelope<'a> {
+    /// Creates a new `Envelope`.
+    #[must_use]
+    pub const fn new(header: EnvelopeHeader, payload: Payload<'a>) -> Self {
+        Self { header, payload }
+    }
+
+    /// Returns the common envelope header.
+    #[must_use]
+    pub const fn header(&self) -> EnvelopeHeader {
+        self.header
+    }
+
+    /// Returns the borrowed payload for this chunk.
+    #[must_use]
+    pub const fn payload(&self) -> Payload<'a> {
+        self.payload
+    }
 }
 
 /// Borrowed payload variants for snapshot publication.
@@ -134,51 +310,200 @@ pub trait Consumer {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedSnapshotMetadata {
     /// Process name used by exporters.
-    pub process_name: String,
+    process_name: String,
     /// Optional capture-session label.
-    pub session_name: Option<String>,
+    session_name: Option<String>,
     /// Monotonic sequence number of the capture session.
-    pub session_sequence: u64,
+    session_sequence: u64,
     /// Wall-clock time of runtime creation in microseconds since the Unix
     /// epoch; adding it to any snapshot timestamp yields wall-clock time.
-    pub wall_clock_anchor_micros: u64,
+    wall_clock_anchor_micros: u64,
+}
+
+impl OwnedSnapshotMetadata {
+    /// Creates a new `OwnedSnapshotMetadata`.
+    #[must_use]
+    pub const fn new(
+        process_name: String,
+        session_name: Option<String>,
+        session_sequence: u64,
+        wall_clock_anchor_micros: u64,
+    ) -> Self {
+        Self {
+            process_name,
+            session_name,
+            session_sequence,
+            wall_clock_anchor_micros,
+        }
+    }
+
+    /// Returns the process name used by exporters.
+    #[must_use]
+    pub fn process_name(&self) -> &str {
+        &self.process_name
+    }
+
+    /// Returns the optional capture-session label.
+    #[must_use]
+    pub fn session_name(&self) -> Option<&str> {
+        self.session_name.as_deref()
+    }
+
+    /// Returns the monotonic sequence number of the capture session.
+    #[must_use]
+    pub const fn session_sequence(&self) -> u64 {
+        self.session_sequence
+    }
+
+    /// Returns the wall-clock time of runtime creation in microseconds since the Unix
+    /// epoch; adding it to any snapshot timestamp yields wall-clock time.
+    #[must_use]
+    pub const fn wall_clock_anchor_micros(&self) -> u64 {
+        self.wall_clock_anchor_micros
+    }
 }
 
 /// Owned description of one snapshot window.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedSnapshotSummary {
     /// Snapshot metadata identifying the process and session.
-    pub metadata: OwnedSnapshotMetadata,
+    metadata: OwnedSnapshotMetadata,
     /// Snapshot start time relative to runtime creation.
-    pub capture_start_micros: u64,
+    capture_start_micros: u64,
     /// Snapshot end time relative to runtime creation.
-    pub captured_at_micros: u64,
+    captured_at_micros: u64,
     /// Number of canonical contexts in the snapshot.
-    pub context_count: usize,
+    context_count: usize,
     /// Number of counters in the snapshot.
-    pub counter_count: usize,
+    counter_count: usize,
     /// Number of histograms in the snapshot.
-    pub histogram_count: usize,
+    histogram_count: usize,
     /// Number of timestamped events in the snapshot.
-    pub event_count: usize,
+    event_count: usize,
+}
+
+impl OwnedSnapshotSummary {
+    /// Creates a new `OwnedSnapshotSummary`.
+    #[must_use]
+    pub const fn new(
+        metadata: OwnedSnapshotMetadata,
+        capture_start_micros: u64,
+        captured_at_micros: u64,
+        context_count: usize,
+        counter_count: usize,
+        histogram_count: usize,
+        event_count: usize,
+    ) -> Self {
+        Self {
+            metadata,
+            capture_start_micros,
+            captured_at_micros,
+            context_count,
+            counter_count,
+            histogram_count,
+            event_count,
+        }
+    }
+
+    /// Returns the snapshot metadata identifying the process and session.
+    #[must_use]
+    pub const fn metadata(&self) -> &OwnedSnapshotMetadata {
+        &self.metadata
+    }
+
+    /// Returns the snapshot start time relative to runtime creation.
+    #[must_use]
+    pub const fn capture_start_micros(&self) -> u64 {
+        self.capture_start_micros
+    }
+
+    /// Returns the snapshot end time relative to runtime creation.
+    #[must_use]
+    pub const fn captured_at_micros(&self) -> u64 {
+        self.captured_at_micros
+    }
+
+    /// Returns the number of canonical contexts in the snapshot.
+    #[must_use]
+    pub const fn context_count(&self) -> usize {
+        self.context_count
+    }
+
+    /// Returns the number of counters in the snapshot.
+    #[must_use]
+    pub const fn counter_count(&self) -> usize {
+        self.counter_count
+    }
+
+    /// Returns the number of histograms in the snapshot.
+    #[must_use]
+    pub const fn histogram_count(&self) -> usize {
+        self.histogram_count
+    }
+
+    /// Returns the number of timestamped events in the snapshot.
+    #[must_use]
+    pub const fn event_count(&self) -> usize {
+        self.event_count
+    }
 }
 
 /// Owned context row suitable for transport.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedContextSnapshot {
     /// Canonical context id.
-    pub id: ContextId,
+    id: ContextId,
     /// Explicit semantic context labels.
-    pub entries: Vec<OwnedContextEntry>,
+    entries: Vec<OwnedContextEntry>,
+}
+
+impl OwnedContextSnapshot {
+    /// Creates a new `OwnedContextSnapshot`.
+    #[must_use]
+    pub const fn new(id: ContextId, entries: Vec<OwnedContextEntry>) -> Self {
+        Self { id, entries }
+    }
+
+    /// Returns the canonical context id.
+    #[must_use]
+    pub const fn id(&self) -> ContextId {
+        self.id
+    }
+
+    /// Returns the explicit semantic context labels.
+    #[must_use]
+    pub fn entries(&self) -> &[OwnedContextEntry] {
+        &self.entries
+    }
 }
 
 /// Owned context entry suitable for transport.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedContextEntry {
     /// Semantic label key name.
-    pub key: String,
+    key: String,
     /// Semantic label value.
-    pub value: OwnedLabelValue,
+    value: OwnedLabelValue,
+}
+
+impl OwnedContextEntry {
+    /// Creates a new `OwnedContextEntry`.
+    #[must_use]
+    pub const fn new(key: String, value: OwnedLabelValue) -> Self {
+        Self { key, value }
+    }
+
+    /// Returns the semantic label key name.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Returns the semantic label value.
+    #[must_use]
+    pub const fn value(&self) -> &OwnedLabelValue {
+        &self.value
+    }
 }
 
 /// Owned label value suitable for transport.
@@ -199,64 +524,270 @@ pub enum OwnedLabelValue {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedArgEntry {
     /// Argument key.
-    pub key: String,
+    key: String,
     /// Argument value.
-    pub value: OwnedLabelValue,
+    value: OwnedLabelValue,
+}
+
+impl OwnedArgEntry {
+    /// Creates a new `OwnedArgEntry`.
+    #[must_use]
+    pub const fn new(key: String, value: OwnedLabelValue) -> Self {
+        Self { key, value }
+    }
+
+    /// Returns the argument key.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Returns the argument value.
+    #[must_use]
+    pub const fn value(&self) -> &OwnedLabelValue {
+        &self.value
+    }
 }
 
 /// Owned counter row suitable for transport.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedCounterSnapshot {
     /// Counter descriptor id.
-    pub desc_id: CounterDescId,
+    desc_id: CounterDescId,
     /// Stable descriptor name.
-    pub name: String,
+    name: String,
     /// Unit copied from the counter descriptor.
-    pub unit: Unit,
+    unit: Unit,
     /// Canonical semantic context id.
-    pub context_id: ContextId,
+    context_id: ContextId,
     /// Whether the value is additive or gauge-like.
-    pub kind: CounterKind,
+    kind: CounterKind,
     /// Aggregated value.
-    pub value: u64,
+    value: u64,
     /// Last update time relative to runtime creation.
-    pub updated_at_micros: u64,
+    updated_at_micros: u64,
+}
+
+impl OwnedCounterSnapshot {
+    /// Creates a new `OwnedCounterSnapshot`.
+    #[must_use]
+    pub const fn new(
+        desc_id: CounterDescId,
+        name: String,
+        unit: Unit,
+        context_id: ContextId,
+        kind: CounterKind,
+        value: u64,
+        updated_at_micros: u64,
+    ) -> Self {
+        Self {
+            desc_id,
+            name,
+            unit,
+            context_id,
+            kind,
+            value,
+            updated_at_micros,
+        }
+    }
+
+    /// Returns the counter descriptor id.
+    #[must_use]
+    pub const fn desc_id(&self) -> CounterDescId {
+        self.desc_id
+    }
+
+    /// Returns the stable descriptor name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the unit copied from the counter descriptor.
+    #[must_use]
+    pub const fn unit(&self) -> Unit {
+        self.unit
+    }
+
+    /// Returns the canonical semantic context id.
+    #[must_use]
+    pub const fn context_id(&self) -> ContextId {
+        self.context_id
+    }
+
+    /// Returns whether the value is additive or gauge-like.
+    #[must_use]
+    pub const fn kind(&self) -> CounterKind {
+        self.kind
+    }
+
+    /// Returns the aggregated value.
+    #[must_use]
+    pub const fn value(&self) -> u64 {
+        self.value
+    }
+
+    /// Returns the last update time relative to runtime creation.
+    #[must_use]
+    pub const fn updated_at_micros(&self) -> u64 {
+        self.updated_at_micros
+    }
 }
 
 /// Owned histogram row suitable for transport.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedHistogramSnapshot {
     /// Counter descriptor id.
-    pub desc_id: CounterDescId,
+    desc_id: CounterDescId,
     /// Stable descriptor name.
-    pub name: String,
+    name: String,
     /// Unit copied from the counter descriptor.
-    pub unit: Unit,
+    unit: Unit,
     /// Canonical semantic context id.
-    pub context_id: ContextId,
+    context_id: ContextId,
     /// Number of recorded samples.
-    pub count: u64,
+    count: u64,
     /// Saturating sum of recorded samples.
-    pub sum: u64,
+    sum: u64,
     /// Smallest recorded sample. Meaningless while `count` is zero.
-    pub min: u64,
+    min: u64,
     /// Largest recorded sample.
-    pub max: u64,
+    max: u64,
     /// Power-of-two bucket counts indexed by sample bit length.
-    pub buckets: [u64; HISTOGRAM_BUCKET_COUNT],
+    buckets: [u64; HISTOGRAM_BUCKET_COUNT],
     /// Last update time relative to runtime creation.
-    pub updated_at_micros: u64,
+    updated_at_micros: u64,
+}
+
+impl OwnedHistogramSnapshot {
+    /// Creates a new `OwnedHistogramSnapshot`.
+    #[must_use]
+    pub const fn new(
+        desc_id: CounterDescId,
+        name: String,
+        unit: Unit,
+        context_id: ContextId,
+        count: u64,
+        sum: u64,
+        min: u64,
+        max: u64,
+        buckets: [u64; HISTOGRAM_BUCKET_COUNT],
+        updated_at_micros: u64,
+    ) -> Self {
+        Self {
+            desc_id,
+            name,
+            unit,
+            context_id,
+            count,
+            sum,
+            min,
+            max,
+            buckets,
+            updated_at_micros,
+        }
+    }
+
+    /// Returns the counter descriptor id.
+    #[must_use]
+    pub const fn desc_id(&self) -> CounterDescId {
+        self.desc_id
+    }
+
+    /// Returns the stable descriptor name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the unit copied from the counter descriptor.
+    #[must_use]
+    pub const fn unit(&self) -> Unit {
+        self.unit
+    }
+
+    /// Returns the canonical semantic context id.
+    #[must_use]
+    pub const fn context_id(&self) -> ContextId {
+        self.context_id
+    }
+
+    /// Returns the number of recorded samples.
+    #[must_use]
+    pub const fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Returns the saturating sum of recorded samples.
+    #[must_use]
+    pub const fn sum(&self) -> u64 {
+        self.sum
+    }
+
+    /// Returns the smallest recorded sample. Meaningless while `count` is zero.
+    #[must_use]
+    pub const fn min(&self) -> u64 {
+        self.min
+    }
+
+    /// Returns the largest recorded sample.
+    #[must_use]
+    pub const fn max(&self) -> u64 {
+        self.max
+    }
+
+    /// Returns the power-of-two bucket counts indexed by sample bit length.
+    #[must_use]
+    pub const fn buckets(&self) -> &[u64; HISTOGRAM_BUCKET_COUNT] {
+        &self.buckets
+    }
+
+    /// Returns the last update time relative to runtime creation.
+    #[must_use]
+    pub const fn updated_at_micros(&self) -> u64 {
+        self.updated_at_micros
+    }
 }
 
 /// Owned timestamped observation suitable for transport.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedTimedObservation {
     /// Observation time in microseconds since runtime creation.
-    pub at_micros: u64,
+    at_micros: u64,
     /// Runtime-assigned id of the thread that recorded the observation.
-    pub thread_id: u64,
+    thread_id: u64,
     /// Observation payload.
-    pub observation: OwnedObservation,
+    observation: OwnedObservation,
+}
+
+impl OwnedTimedObservation {
+    /// Creates a new `OwnedTimedObservation`.
+    #[must_use]
+    pub const fn new(at_micros: u64, thread_id: u64, observation: OwnedObservation) -> Self {
+        Self {
+            at_micros,
+            thread_id,
+            observation,
+        }
+    }
+
+    /// Returns the observation time in microseconds since runtime creation.
+    #[must_use]
+    pub const fn at_micros(&self) -> u64 {
+        self.at_micros
+    }
+
+    /// Returns the runtime-assigned id of the thread that recorded the observation.
+    #[must_use]
+    pub const fn thread_id(&self) -> u64 {
+        self.thread_id
+    }
+
+    /// Returns the observation payload.
+    #[must_use]
+    pub const fn observation(&self) -> &OwnedObservation {
+        &self.observation
+    }
 }
 
 /// Owned observation payload suitable for transport.
@@ -355,9 +886,29 @@ pub enum OwnedObservation {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedSessionEnvelope {
     /// Common envelope header.
-    pub header: EnvelopeHeader,
+    header: EnvelopeHeader,
     /// Owned payload for this chunk.
-    pub payload: OwnedSessionPayload,
+    payload: OwnedSessionPayload,
+}
+
+impl OwnedSessionEnvelope {
+    /// Creates a new `OwnedSessionEnvelope`.
+    #[must_use]
+    pub const fn new(header: EnvelopeHeader, payload: OwnedSessionPayload) -> Self {
+        Self { header, payload }
+    }
+
+    /// Returns the common envelope header.
+    #[must_use]
+    pub const fn header(&self) -> EnvelopeHeader {
+        self.header
+    }
+
+    /// Returns the owned payload for this chunk.
+    #[must_use]
+    pub const fn payload(&self) -> &OwnedSessionPayload {
+        &self.payload
+    }
 }
 
 /// Owned payload variants for snapshot publication.
@@ -388,23 +939,23 @@ pub fn publish_snapshot<C: Consumer>(
     consumer.consume(Envelope {
         header: EnvelopeHeader {
             protocol_version: PROTOCOL_VERSION,
-            session_sequence: snapshot.metadata.session_sequence,
+            session_sequence: snapshot.metadata().session_sequence(),
             chunk_index,
         },
         payload: Payload::SnapshotStart(SnapshotSummary {
-            metadata: &snapshot.metadata,
-            capture_start_micros: snapshot.capture_start_micros,
-            captured_at_micros: snapshot.captured_at_micros,
-            context_count: snapshot.contexts.len(),
-            counter_count: snapshot.counters.len(),
-            histogram_count: snapshot.histograms.len(),
-            event_count: snapshot.events.len(),
+            metadata: snapshot.metadata(),
+            capture_start_micros: snapshot.capture_start_micros(),
+            captured_at_micros: snapshot.captured_at_micros(),
+            context_count: snapshot.contexts().len(),
+            counter_count: snapshot.counters().len(),
+            histogram_count: snapshot.histograms().len(),
+            event_count: snapshot.events().len(),
         }),
     })?;
     chunk_index = chunk_index.saturating_add(1);
 
     for contexts in snapshot
-        .contexts
+        .contexts()
         .chunks(normalized_chunk_size(chunking.max_contexts))
     {
         consumer.consume(Envelope {
@@ -415,7 +966,7 @@ pub fn publish_snapshot<C: Consumer>(
     }
 
     for counters in snapshot
-        .counters
+        .counters()
         .chunks(normalized_chunk_size(chunking.max_counters))
     {
         consumer.consume(Envelope {
@@ -426,7 +977,7 @@ pub fn publish_snapshot<C: Consumer>(
     }
 
     for histograms in snapshot
-        .histograms
+        .histograms()
         .chunks(normalized_chunk_size(chunking.max_histograms))
     {
         consumer.consume(Envelope {
@@ -437,7 +988,7 @@ pub fn publish_snapshot<C: Consumer>(
     }
 
     for events in snapshot
-        .events
+        .events()
         .chunks(normalized_chunk_size(chunking.max_events))
     {
         consumer.consume(Envelope {
@@ -450,9 +1001,9 @@ pub fn publish_snapshot<C: Consumer>(
     consumer.consume(Envelope {
         header: envelope_header(snapshot, chunk_index),
         payload: Payload::SnapshotEnd(DroppedSummary {
-            contexts: snapshot.dropped_contexts,
-            counters: snapshot.dropped_counters,
-            events: snapshot.dropped_events,
+            contexts: snapshot.dropped_contexts(),
+            counters: snapshot.dropped_counters(),
+            events: snapshot.dropped_events(),
         }),
     })
 }
@@ -469,7 +1020,7 @@ pub fn collect_snapshot(snapshot: &Snapshot, chunking: Chunking) -> Vec<OwnedSes
 fn envelope_header(snapshot: &Snapshot, chunk_index: u64) -> EnvelopeHeader {
     EnvelopeHeader {
         protocol_version: PROTOCOL_VERSION,
-        session_sequence: snapshot.metadata.session_sequence,
+        session_sequence: snapshot.metadata().session_sequence(),
         chunk_index,
     }
 }
@@ -492,10 +1043,10 @@ impl Envelope<'_> {
                 Payload::SnapshotStart(summary) => {
                     OwnedSessionPayload::SnapshotStart(OwnedSnapshotSummary {
                         metadata: OwnedSnapshotMetadata {
-                            process_name: summary.metadata.process_name.clone(),
-                            session_name: summary.metadata.session_name.clone(),
-                            session_sequence: summary.metadata.session_sequence,
-                            wall_clock_anchor_micros: summary.metadata.wall_clock_anchor_micros,
+                            process_name: String::from(summary.metadata.process_name()),
+                            session_name: summary.metadata.session_name().map(String::from),
+                            session_sequence: summary.metadata.session_sequence(),
+                            wall_clock_anchor_micros: summary.metadata.wall_clock_anchor_micros(),
                         },
                         capture_start_micros: summary.capture_start_micros,
                         captured_at_micros: summary.captured_at_micros,
@@ -539,9 +1090,9 @@ impl Consumer for CollectingConsumer {
 
 fn owned_context_snapshot(snapshot: &ContextSnapshot) -> OwnedContextSnapshot {
     OwnedContextSnapshot {
-        id: snapshot.id,
+        id: snapshot.id(),
         entries: snapshot
-            .context
+            .context()
             .iter()
             .map(|entry| OwnedContextEntry {
                 key: String::from(entry.key().name()),
@@ -574,36 +1125,36 @@ fn owned_label_value(value: LabelValue) -> OwnedLabelValue {
 
 fn owned_counter_snapshot(counter: &CounterSnapshot) -> OwnedCounterSnapshot {
     OwnedCounterSnapshot {
-        desc_id: counter.desc_id,
-        name: String::from(counter.name),
-        unit: counter.unit,
-        context_id: counter.context_id,
-        kind: counter.kind,
-        value: counter.value,
-        updated_at_micros: counter.updated_at_micros,
+        desc_id: counter.desc_id(),
+        name: String::from(counter.name()),
+        unit: counter.unit(),
+        context_id: counter.context_id(),
+        kind: counter.kind(),
+        value: counter.value(),
+        updated_at_micros: counter.updated_at_micros(),
     }
 }
 
 fn owned_histogram_snapshot(histogram: &HistogramSnapshot) -> OwnedHistogramSnapshot {
     OwnedHistogramSnapshot {
-        desc_id: histogram.desc_id,
-        name: String::from(histogram.name),
-        unit: histogram.unit,
-        context_id: histogram.context_id,
-        count: histogram.count,
-        sum: histogram.sum,
-        min: histogram.min,
-        max: histogram.max,
-        buckets: histogram.buckets,
-        updated_at_micros: histogram.updated_at_micros,
+        desc_id: histogram.desc_id(),
+        name: String::from(histogram.name()),
+        unit: histogram.unit(),
+        context_id: histogram.context_id(),
+        count: histogram.count(),
+        sum: histogram.sum(),
+        min: histogram.min(),
+        max: histogram.max(),
+        buckets: *histogram.buckets(),
+        updated_at_micros: histogram.updated_at_micros(),
     }
 }
 
 fn owned_timed_observation(observation: &TimedObservation) -> Option<OwnedTimedObservation> {
     Some(OwnedTimedObservation {
-        at_micros: observation.at_micros,
-        thread_id: observation.thread_id,
-        observation: owned_observation(&observation.observation)?,
+        at_micros: observation.at_micros(),
+        thread_id: observation.thread_id(),
+        observation: owned_observation(observation.observation())?,
     })
 }
 
@@ -698,7 +1249,7 @@ fn owned_observation(observation: &Observation) -> Option<OwnedObservation> {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{string::String, vec, vec::Vec};
+    use alloc::{vec, vec::Vec};
 
     use footfall_core::{Context, ContextId, CounterDescId, LabelKey, Unit};
 
@@ -713,84 +1264,62 @@ mod tests {
 
     #[test]
     fn publish_snapshot_chunks_contexts_counters_and_events() {
-        let snapshot = Snapshot {
-            metadata: SnapshotMetadata {
-                process_name: String::from("demo"),
-                session_name: Some(String::from("capture")),
-                session_sequence: 3,
-                wall_clock_anchor_micros: 1_700_000_000_000_000,
-            },
-            capture_start_micros: 10,
-            captured_at_micros: 30,
-            contexts: vec![
-                ContextSnapshot {
-                    id: ContextId::new(0),
-                    context: Context::root(),
+        let mut histogram = footfall_runtime::HistogramSnapshot::new(
+            CounterDescId::new(3),
+            "frame_micros",
+            Unit::Micros,
+            ContextId::new(1),
+        );
+        histogram.record(8, 20);
+        histogram.record(16, 21);
+        let metadata = SnapshotMetadata::new("demo")
+            .with_session_name("capture")
+            .with_session_sequence(3)
+            .with_wall_clock_anchor_micros(1_700_000_000_000_000);
+        let snapshot = Snapshot::builder(metadata)
+            .capture_window(10, 30)
+            .context(ContextSnapshot::new(ContextId::new(0), Context::root()))
+            .context(ContextSnapshot::new(
+                ContextId::new(1),
+                Context::root().with(&FRAME, 7_u32),
+            ))
+            .counter(CounterSnapshot::new(
+                CounterDescId::new(1),
+                "ops",
+                Unit::Count,
+                ContextId::new(1),
+                CounterKind::Counter,
+                5,
+                20,
+            ))
+            .counter(CounterSnapshot::new(
+                CounterDescId::new(2),
+                "bytes",
+                Unit::Bytes,
+                ContextId::new(1),
+                CounterKind::Gauge,
+                9,
+                21,
+            ))
+            .histogram(histogram)
+            .event(TimedObservation::new(
+                22,
+                0,
+                1,
+                Observation::ScopeEnd {
+                    token: footfall_core::ScopeToken::new(1),
                 },
-                ContextSnapshot {
-                    id: ContextId::new(1),
-                    context: Context::root().with(&FRAME, 7_u32),
+            ))
+            .event(TimedObservation::new(
+                23,
+                1,
+                2,
+                Observation::ScopeEnd {
+                    token: footfall_core::ScopeToken::new(2),
                 },
-            ],
-            counters: vec![
-                CounterSnapshot {
-                    desc_id: CounterDescId::new(1),
-                    name: "ops",
-                    unit: Unit::Count,
-                    context_id: ContextId::new(1),
-                    kind: CounterKind::Counter,
-                    value: 5,
-                    updated_at_micros: 20,
-                },
-                CounterSnapshot {
-                    desc_id: CounterDescId::new(2),
-                    name: "bytes",
-                    unit: Unit::Bytes,
-                    context_id: ContextId::new(1),
-                    kind: CounterKind::Gauge,
-                    value: 9,
-                    updated_at_micros: 21,
-                },
-            ],
-            histograms: vec![footfall_runtime::HistogramSnapshot {
-                desc_id: CounterDescId::new(3),
-                name: "frame_micros",
-                unit: Unit::Micros,
-                context_id: ContextId::new(1),
-                count: 2,
-                sum: 24,
-                min: 8,
-                max: 16,
-                buckets: {
-                    let mut buckets = [0; footfall_runtime::HISTOGRAM_BUCKET_COUNT];
-                    buckets[4] = 1;
-                    buckets[5] = 1;
-                    buckets
-                },
-                updated_at_micros: 21,
-            }],
-            events: vec![
-                TimedObservation {
-                    at_micros: 22,
-                    sequence: 0,
-                    thread_id: 1,
-                    observation: Observation::ScopeEnd {
-                        token: footfall_core::ScopeToken::new(1),
-                    },
-                },
-                TimedObservation {
-                    at_micros: 23,
-                    sequence: 1,
-                    thread_id: 2,
-                    observation: Observation::ScopeEnd {
-                        token: footfall_core::ScopeToken::new(2),
-                    },
-                },
-            ],
-            dropped_contexts: 1,
-            dropped_counters: 2,
-            dropped_events: 3,
-        };
+            ))
+            .dropped(1, 2, 3)
+            .build();
 
         let mut consumer = RecordingConsumer::default();
         publish_snapshot(&snapshot, Chunking::new(1, 1, 1, 1), &mut consumer)
@@ -835,7 +1364,7 @@ mod tests {
             self.protocol_version = Some(envelope.header.protocol_version);
             match envelope.payload {
                 Payload::SnapshotStart(summary) => {
-                    assert_eq!(summary.metadata.process_name, "demo");
+                    assert_eq!(summary.metadata.process_name(), "demo");
                     assert_eq!(summary.context_count, 2);
                     self.payloads.push("start");
                 }
