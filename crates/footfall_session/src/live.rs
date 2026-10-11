@@ -58,9 +58,24 @@ impl SessionStreamId {
 pub struct SessionMethod {
     /// Product or subsystem domain, such as `footfall.trace` or
     /// `overstory.inspection`.
-    pub domain: String,
+    domain: String,
     /// Method name inside the domain.
-    pub name: String,
+    name: String,
+}
+
+impl SessionMethod {
+    /// Returns the product or subsystem domain, such as `footfall.trace` or
+    /// `overstory.inspection`.
+    #[must_use]
+    pub fn domain(&self) -> &str {
+        &self.domain
+    }
+
+    /// Returns the method name inside the domain.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 impl SessionMethod {
@@ -82,11 +97,37 @@ impl SessionMethod {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionRequest<P> {
     /// Request id copied into the corresponding response.
-    pub id: SessionRequestId,
+    id: SessionRequestId,
     /// Domain-qualified method to execute.
-    pub method: SessionMethod,
+    method: SessionMethod,
     /// Domain-owned request payload.
-    pub payload: P,
+    payload: P,
+}
+
+impl<P> SessionRequest<P> {
+    /// Returns the request id copied into the corresponding response.
+    #[must_use]
+    pub const fn id(&self) -> SessionRequestId {
+        self.id
+    }
+
+    /// Returns the domain-qualified method to execute.
+    #[must_use]
+    pub const fn method(&self) -> &SessionMethod {
+        &self.method
+    }
+
+    /// Returns the domain-owned request payload.
+    #[must_use]
+    pub const fn payload(&self) -> &P {
+        &self.payload
+    }
+
+    /// Consumes this value and returns its payload.
+    #[must_use]
+    pub fn into_payload(self) -> P {
+        self.payload
+    }
 }
 
 impl<P> SessionRequest<P> {
@@ -138,9 +179,29 @@ impl<P> SessionResult<P> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionResponse<P> {
     /// Request id this response completes.
-    pub request_id: SessionRequestId,
+    request_id: SessionRequestId,
     /// Request outcome.
-    pub result: SessionResult<P>,
+    result: SessionResult<P>,
+}
+
+impl<P> SessionResponse<P> {
+    /// Returns the request id this response completes.
+    #[must_use]
+    pub const fn request_id(&self) -> SessionRequestId {
+        self.request_id
+    }
+
+    /// Returns the request outcome.
+    #[must_use]
+    pub const fn result(&self) -> &SessionResult<P> {
+        &self.result
+    }
+
+    /// Consumes this response and returns its result.
+    #[must_use]
+    pub fn into_result(self) -> SessionResult<P> {
+        self.result
+    }
 }
 
 impl<P> SessionResponse<P> {
@@ -167,9 +228,23 @@ impl<P> SessionResponse<P> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionError {
     /// Stable error classification.
-    pub code: SessionErrorCode,
+    code: SessionErrorCode,
     /// Human-readable diagnostic message.
-    pub message: String,
+    message: String,
+}
+
+impl SessionError {
+    /// Returns the stable error classification.
+    #[must_use]
+    pub const fn code(&self) -> SessionErrorCode {
+        self.code
+    }
+
+    /// Returns the human-readable diagnostic message.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 impl SessionError {
@@ -205,13 +280,45 @@ pub enum SessionErrorCode {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionStreamStart<P> {
     /// Request that opened the stream, when applicable.
-    pub request_id: Option<SessionRequestId>,
+    request_id: Option<SessionRequestId>,
     /// Stream id used by subsequent stream items and the terminal event.
-    pub stream_id: SessionStreamId,
+    stream_id: SessionStreamId,
     /// Domain-qualified stream method.
-    pub method: SessionMethod,
+    method: SessionMethod,
     /// Domain-owned stream start payload.
-    pub payload: P,
+    payload: P,
+}
+
+impl<P> SessionStreamStart<P> {
+    /// Returns the request that opened the stream, when applicable.
+    #[must_use]
+    pub const fn request_id(&self) -> &Option<SessionRequestId> {
+        &self.request_id
+    }
+
+    /// Returns the stream id used by subsequent stream items and the terminal event.
+    #[must_use]
+    pub const fn stream_id(&self) -> SessionStreamId {
+        self.stream_id
+    }
+
+    /// Returns the domain-qualified stream method.
+    #[must_use]
+    pub const fn method(&self) -> &SessionMethod {
+        &self.method
+    }
+
+    /// Returns the domain-owned stream start payload.
+    #[must_use]
+    pub const fn payload(&self) -> &P {
+        &self.payload
+    }
+
+    /// Consumes this value and returns its payload.
+    #[must_use]
+    pub fn into_payload(self) -> P {
+        self.payload
+    }
 }
 
 impl<P> SessionStreamStart<P> {
@@ -236,11 +343,37 @@ impl<P> SessionStreamStart<P> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionStreamItem<P> {
     /// Stream this item belongs to.
-    pub stream_id: SessionStreamId,
+    stream_id: SessionStreamId,
     /// Stream-local monotonically increasing sequence number.
-    pub sequence: u64,
+    sequence: u64,
     /// Domain-owned stream item payload.
-    pub payload: P,
+    payload: P,
+}
+
+impl<P> SessionStreamItem<P> {
+    /// Returns the stream this item belongs to.
+    #[must_use]
+    pub const fn stream_id(&self) -> SessionStreamId {
+        self.stream_id
+    }
+
+    /// Returns the stream-local monotonically increasing sequence number.
+    #[must_use]
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Returns the domain-owned stream item payload.
+    #[must_use]
+    pub const fn payload(&self) -> &P {
+        &self.payload
+    }
+
+    /// Consumes this value and returns its payload.
+    #[must_use]
+    pub fn into_payload(self) -> P {
+        self.payload
+    }
 }
 
 impl<P> SessionStreamItem<P> {
@@ -259,9 +392,23 @@ impl<P> SessionStreamItem<P> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionStreamEnd {
     /// Stream that ended.
-    pub stream_id: SessionStreamId,
+    stream_id: SessionStreamId,
     /// Terminal stream status.
-    pub status: SessionStreamStatus,
+    status: SessionStreamStatus,
+}
+
+impl SessionStreamEnd {
+    /// Returns the stream that ended.
+    #[must_use]
+    pub const fn stream_id(&self) -> SessionStreamId {
+        self.stream_id
+    }
+
+    /// Returns the terminal stream status.
+    #[must_use]
+    pub const fn status(&self) -> &SessionStreamStatus {
+        &self.status
+    }
 }
 
 impl SessionStreamEnd {

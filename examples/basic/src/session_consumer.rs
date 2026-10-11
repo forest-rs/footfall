@@ -34,7 +34,7 @@ async fn main() {
     let announcement = select_session(argument.as_deref())
         .await
         .unwrap_or_else(|error| panic!("{error}"));
-    let envelopes = fetch_local_session(&announcement.id)
+    let envelopes = fetch_local_session(announcement.id())
         .await
         .expect("session client should fetch one snapshot");
     let summary = summarize(&envelopes);
@@ -42,7 +42,7 @@ async fn main() {
     println!(
         "fetched {} envelopes from session {}",
         envelopes.len(),
-        announcement.id
+        announcement.id()
     );
     print_summary(&summary);
 }
@@ -63,9 +63,9 @@ async fn list_sessions() {
     for announcement in announcements {
         println!(
             "{} process={} session={}",
-            announcement.id,
-            announcement.process_name,
-            announcement.session_name.as_deref().unwrap_or("-"),
+            announcement.id(),
+            announcement.process_name(),
+            announcement.session_name().unwrap_or("-"),
         );
     }
 }
@@ -77,7 +77,7 @@ async fn select_session(requested_id: Option<&str>) -> Result<SessionAnnouncemen
     if let Some(requested_id) = requested_id {
         return announcements
             .into_iter()
-            .find(|announcement| announcement.id == requested_id)
+            .find(|announcement| announcement.id() == requested_id)
             .ok_or_else(|| format!("no discoverable session named `{requested_id}`"));
     }
 

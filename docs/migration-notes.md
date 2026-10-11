@@ -299,3 +299,36 @@ change and would come with a protocol version bump.
 Servers should answer an unknown `SessionRequestKind` with
 `respond_error`. The session encoder rejects values it has no encoding for
 with an `InvalidInput` error instead of guessing a tag.
+
+## Private Fields
+
+Public data types no longer expose their fields, so fields can be added or
+re-represented without a breaking change. Read values through accessors named
+after the old fields, for example `snapshot.events()`,
+`counter.value()`, `envelope.payload()`, and `announcement.id()`.
+`String` fields are returned as `&str`, `Option<String>` as `Option<&str>`,
+and `Vec` fields as slices.
+
+- `footfall_runtime`: `Snapshot`, `SnapshotMetadata`, `ContextSnapshot`,
+  `CounterSnapshot`, `HistogramSnapshot`, and `TimedObservation`. Build
+  snapshots by hand, for example as test fixtures, with
+  `Snapshot::builder(SnapshotMetadata::new("app"))`, which keeps contexts
+  sorted by id and events in timestamp and sequence order.
+  `SnapshotMetadata` gains `with_session_name`, `with_session_sequence`, and
+  `with_wall_clock_anchor_micros`. `HistogramSnapshot::new` creates an empty
+  row and `HistogramSnapshot::record` adds samples. `ContextSnapshot`,
+  `CounterSnapshot`, and `TimedObservation` have `new` constructors.
+- `footfall_session`: `Chunking`, `EnvelopeHeader`, `SnapshotSummary`,
+  `DroppedSummary`, `Envelope`, every `Owned*` row and envelope type, and the
+  live protocol types (`SessionMethod`, `SessionRequest`, `SessionResponse`,
+  `SessionError`, `SessionStreamStart`, `SessionStreamItem`,
+  `SessionStreamEnd`). Each has a `new` constructor taking its fields in
+  declaration order, or keeps its existing constructors. Request, stream
+  start, and stream item values gain `into_payload`, and responses gain
+  `into_result`, for taking ownership.
+- `footfall_session_wtransport`: `SessionAnnouncement`, `ServedRequest`, and
+  `SessionServerConfig`. Configure a server with
+  `SessionServerConfig::default().with_bind_address(..).with_path(..)`; the
+  default still binds to localhost.
+- `footfall_memory`: `ScratchMetrics` and `CacheMetrics` have `new`
+  constructors.

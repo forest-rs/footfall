@@ -91,38 +91,38 @@ pub(crate) fn summarize(envelopes: &[OwnedSessionEnvelope]) -> SessionSummary {
     let mut flows = Vec::<FlowSummary>::new();
 
     for envelope in envelopes {
-        match &envelope.payload {
+        match envelope.payload() {
             OwnedSessionPayload::SnapshotStart(summary) => {
-                process_name = summary.metadata.process_name.clone();
-                session_name = summary.metadata.session_name.clone();
+                process_name = summary.metadata().process_name().to_owned();
+                session_name = summary.metadata().session_name().map(String::from);
             }
             OwnedSessionPayload::Contexts(rows) => {
                 context_rows += rows.len();
                 for row in rows {
-                    contexts.insert(row.id.get(), row.entries.clone());
+                    contexts.insert(row.id().get(), row.entries().to_vec());
                 }
             }
             OwnedSessionPayload::Histograms(rows) => {
                 histogram_rows += rows.len();
                 for row in rows {
                     let context = contexts
-                        .get(&row.context_id.get())
+                        .get(&row.context_id().get())
                         .map(|entries| format_context(entries))
                         .unwrap_or_else(|| String::from("unknown"));
                     histograms.push(HistogramSummary {
-                        name: row.name.clone(),
-                        unit: row.unit.as_str().to_owned(),
+                        name: row.name().to_owned(),
+                        unit: row.unit().as_str().to_owned(),
                         context,
-                        count: row.count,
-                        min: row.min,
-                        max: row.max,
+                        count: row.count(),
+                        min: row.min(),
+                        max: row.max(),
                     });
                 }
             }
             OwnedSessionPayload::Counters(rows) => {
                 counter_rows += rows.len();
                 for row in rows {
-                    let Some(entries) = contexts.get(&row.context_id.get()) else {
+                    let Some(entries) = contexts.get(&row.context_id().get()) else {
                         continue;
                     };
                     let Some(cache_name) = context_cache_name(entries) else {
@@ -137,12 +137,12 @@ pub(crate) fn summarize(envelopes: &[OwnedSessionEnvelope]) -> SessionSummary {
                             misses: 0,
                             evictions: 0,
                         });
-                    match row.name.as_str() {
-                        "cache_current_bytes" => cache.current_bytes = row.value,
-                        "cache_hits" => cache.hits = cache.hits.saturating_add(row.value),
-                        "cache_misses" => cache.misses = cache.misses.saturating_add(row.value),
+                    match row.name() {
+                        "cache_current_bytes" => cache.current_bytes = row.value(),
+                        "cache_hits" => cache.hits = cache.hits.saturating_add(row.value()),
+                        "cache_misses" => cache.misses = cache.misses.saturating_add(row.value()),
                         "cache_evictions" => {
-                            cache.evictions = cache.evictions.saturating_add(row.value);
+                            cache.evictions = cache.evictions.saturating_add(row.value());
                         }
                         _ => {}
                     }
@@ -151,7 +151,7 @@ pub(crate) fn summarize(envelopes: &[OwnedSessionEnvelope]) -> SessionSummary {
             OwnedSessionPayload::Events(rows) => {
                 event_rows += rows.len();
                 for row in rows {
-                    match &row.observation {
+                    match row.observation() {
                         OwnedObservation::ResourceCreate {
                             kind_name,
                             resource_id,
@@ -388,8 +388,8 @@ pub(crate) fn print_summary(summary: &SessionSummary) {
 fn context_cache_name(entries: &[OwnedContextEntry]) -> Option<String> {
     entries.iter().find_map(|entry| {
         // Remote consumers see label keys by name.
-        if entry.key == "cache" {
-            match &entry.value {
+        if entry.key() == "cache" {
+            match entry.value() {
                 OwnedLabelValue::String(value) => Some(value.clone()),
                 _ => None,
             }
@@ -405,8 +405,8 @@ fn format_context(entries: &[OwnedContextEntry]) -> String {
         .map(|entry| {
             format!(
                 "{}={}",
-                entry.key.as_str(),
-                match &entry.value {
+                entry.key(),
+                match entry.value() {
                     OwnedLabelValue::Unsigned(value) => value.to_string(),
                     OwnedLabelValue::Signed(value) => value.to_string(),
                     OwnedLabelValue::Bool(value) => value.to_string(),
@@ -421,7 +421,7 @@ fn format_context(entries: &[OwnedContextEntry]) -> String {
 
 fn format_args(args: &[OwnedArgEntry]) -> String {
     args.iter()
-        .map(|entry| format!("{}={}", entry.key, format_label_value(&entry.value)))
+        .map(|entry| format!("{}={}", entry.key(), format_label_value(entry.value())))
         .collect::<Vec<_>>()
         .join(" / ")
 }
