@@ -56,12 +56,12 @@ pub struct ScopeGuard {
 
 impl ScopeGuard {
     /// Begins a new guarded scope.
-    pub fn new(desc: &ScopeDesc, context: Context) -> Self {
+    pub fn new(desc: &'static ScopeDesc, context: Context) -> Self {
         Self::with_args(desc, context, Args::none())
     }
 
     /// Begins a new guarded scope carrying per-instance arguments.
-    pub fn with_args(desc: &ScopeDesc, context: Context, args: Args) -> Self {
+    pub fn with_args(desc: &'static ScopeDesc, context: Context, args: Args) -> Self {
         Self {
             token: scope_begin_with(desc, context, args),
             active: true,
@@ -143,24 +143,24 @@ pub enum FlowPhase {
 /// [`ScopeToken::INVALID`] in `scope_end`.
 pub trait Backend: Send + Sync {
     /// Adds `value` to a counter under a semantic context.
-    fn counter_add(&self, desc: &CounterDesc, context: Context, value: u64) {
+    fn counter_add(&self, desc: &'static CounterDesc, context: Context, value: u64) {
         let _ = (desc, context, value);
     }
 
     /// Sets a gauge under a semantic context.
-    fn gauge_set(&self, desc: &CounterDesc, context: Context, value: u64) {
+    fn gauge_set(&self, desc: &'static CounterDesc, context: Context, value: u64) {
         let _ = (desc, context, value);
     }
 
     /// Records one histogram sample under a semantic context.
-    fn histogram_record(&self, desc: &CounterDesc, context: Context, value: u64) {
+    fn histogram_record(&self, desc: &'static CounterDesc, context: Context, value: u64) {
         let _ = (desc, context, value);
     }
 
     /// Begins a scope and returns the token that ends it.
     ///
     /// The default records nothing and returns [`ScopeToken::INVALID`].
-    fn scope_begin(&self, desc: &ScopeDesc, context: Context, args: Args) -> ScopeToken {
+    fn scope_begin(&self, desc: &'static ScopeDesc, context: Context, args: Args) -> ScopeToken {
         let _ = (desc, context, args);
         ScopeToken::INVALID
     }
@@ -173,7 +173,7 @@ pub trait Backend: Send + Sync {
     /// Observes the creation of a logical resource.
     fn resource_create(
         &self,
-        desc: &ResourceKindDesc,
+        desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
         context: Context,
         size: u64,
@@ -184,7 +184,7 @@ pub trait Backend: Send + Sync {
     /// Observes a size update of a logical resource.
     fn resource_update(
         &self,
-        desc: &ResourceKindDesc,
+        desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
         context: Context,
         size: u64,
@@ -193,7 +193,12 @@ pub trait Backend: Send + Sync {
     }
 
     /// Observes the drop of a logical resource.
-    fn resource_drop(&self, desc: &ResourceKindDesc, resource_id: ResourceId, context: Context) {
+    fn resource_drop(
+        &self,
+        desc: &'static ResourceKindDesc,
+        resource_id: ResourceId,
+        context: Context,
+    ) {
         let _ = (desc, resource_id, context);
     }
 
@@ -211,7 +216,7 @@ pub trait Backend: Send + Sync {
     ///
     /// The text is borrowed for the duration of the call; backends that
     /// retain messages must copy it.
-    fn message(&self, desc: &EventDesc, context: Context, text: &str, args: Args) {
+    fn message(&self, desc: &'static EventDesc, context: Context, text: &str, args: Args) {
         let _ = (desc, context, text, args);
     }
 }
@@ -232,12 +237,12 @@ impl Backend for NoopBackend {}
 pub struct InstallBackendError;
 
 /// Adds to a counter descriptor under a semantic context.
-pub fn counter_add(desc: &CounterDesc, context: Context, value: u64) {
+pub fn counter_add(desc: &'static CounterDesc, context: Context, value: u64) {
     backend().counter_add(desc, context, value);
 }
 
 /// Sets a gauge descriptor under a semantic context.
-pub fn gauge_set(desc: &CounterDesc, context: Context, value: u64) {
+pub fn gauge_set(desc: &'static CounterDesc, context: Context, value: u64) {
     backend().gauge_set(desc, context, value);
 }
 
@@ -245,19 +250,19 @@ pub fn gauge_set(desc: &CounterDesc, context: Context, value: u64) {
 ///
 /// Histograms aggregate a value distribution per descriptor and context, so
 /// consumers can derive percentiles instead of only sums and last values.
-pub fn histogram_record(desc: &CounterDesc, context: Context, value: u64) {
+pub fn histogram_record(desc: &'static CounterDesc, context: Context, value: u64) {
     backend().histogram_record(desc, context, value);
 }
 
 /// Begins a scope under a semantic context.
 #[must_use]
-pub fn scope_begin(desc: &ScopeDesc, context: Context) -> ScopeToken {
+pub fn scope_begin(desc: &'static ScopeDesc, context: Context) -> ScopeToken {
     scope_begin_with(desc, context, Args::none())
 }
 
 /// Begins a scope carrying per-instance arguments.
 #[must_use]
-pub fn scope_begin_with(desc: &ScopeDesc, context: Context, args: Args) -> ScopeToken {
+pub fn scope_begin_with(desc: &'static ScopeDesc, context: Context, args: Args) -> ScopeToken {
     backend().scope_begin(desc, context, args)
 }
 
@@ -271,18 +276,18 @@ pub fn scope_end(token: ScopeToken) {
 }
 
 /// Begins a scope and returns a guard that ends it on drop.
-pub fn scope(desc: &ScopeDesc, context: Context) -> ScopeGuard {
+pub fn scope(desc: &'static ScopeDesc, context: Context) -> ScopeGuard {
     ScopeGuard::new(desc, context)
 }
 
 /// Begins a guarded scope carrying per-instance arguments.
-pub fn scope_with(desc: &ScopeDesc, context: Context, args: Args) -> ScopeGuard {
+pub fn scope_with(desc: &'static ScopeDesc, context: Context, args: Args) -> ScopeGuard {
     ScopeGuard::with_args(desc, context, args)
 }
 
 /// Emits a resource-creation observation.
 pub fn resource_create(
-    desc: &ResourceKindDesc,
+    desc: &'static ResourceKindDesc,
     resource_id: ResourceId,
     context: Context,
     size: u64,
@@ -292,7 +297,7 @@ pub fn resource_create(
 
 /// Emits a resource-update observation.
 pub fn resource_update(
-    desc: &ResourceKindDesc,
+    desc: &'static ResourceKindDesc,
     resource_id: ResourceId,
     context: Context,
     size: u64,
@@ -301,7 +306,7 @@ pub fn resource_update(
 }
 
 /// Emits a resource-drop observation.
-pub fn resource_drop(desc: &ResourceKindDesc, resource_id: ResourceId, context: Context) {
+pub fn resource_drop(desc: &'static ResourceKindDesc, resource_id: ResourceId, context: Context) {
     backend().resource_drop(desc, resource_id, context);
 }
 
@@ -362,12 +367,12 @@ pub fn flow_end(flow_id: FlowId, context: Context) {
 /// the caller when a backend is installed and the level captures messages, so
 /// prefer emitting through a facility that already formatted the text, such
 /// as a log or tracing bridge.
-pub fn message(desc: &EventDesc, context: Context, text: &str) {
+pub fn message(desc: &'static EventDesc, context: Context, text: &str) {
     backend().message(desc, context, text, Args::none());
 }
 
 /// Emits a message event carrying per-instance arguments.
-pub fn message_with(desc: &EventDesc, context: Context, text: &str, args: Args) {
+pub fn message_with(desc: &'static EventDesc, context: Context, text: &str, args: Args) {
     backend().message(desc, context, text, args);
 }
 
@@ -400,15 +405,15 @@ mod tests {
         frame_begin, frame_end, frame_marker, pass_begin, pass_end, resource_drop, scope,
         scope_begin, scope_end, transaction_begin, transaction_end,
     };
-    use crate::{
-        Context, CounterDesc, CounterDescId, FlowId, ResourceId, ResourceKindDesc, ResourceKindId,
-        ScopeDesc, ScopeDescId,
-    };
+    use crate::{Context, CounterDesc, FlowId, ResourceId, ResourceKindDesc, ScopeDesc};
+
+    static RECORD_PASS: ScopeDesc = ScopeDesc::new("record_pass");
+    static OPS: CounterDesc = CounterDesc::count("ops");
+    static ATLAS: ResourceKindDesc = ResourceKindDesc::new("atlas");
 
     #[test]
     fn noop_scope_begin_returns_invalid_token() {
-        let desc = ScopeDesc::new(ScopeDescId::new(9), "record_pass");
-        let token = scope_begin(&desc, Context::root());
+        let token = scope_begin(&RECORD_PASS, Context::root());
         assert_eq!(token, ScopeToken::INVALID);
         assert!(!token.is_valid());
         scope_end(token);
@@ -416,8 +421,7 @@ mod tests {
 
     #[test]
     fn scope_guard_exposes_token_and_can_end_early() {
-        let desc = ScopeDesc::new(ScopeDescId::new(10), "record_pass");
-        let guard = scope(&desc, Context::root());
+        let guard = scope(&RECORD_PASS, Context::root());
         assert_eq!(guard.token(), ScopeToken::INVALID);
         guard.end();
     }
@@ -430,12 +434,10 @@ mod tests {
 
     #[test]
     fn noop_emission_surface_accepts_all_primitives() {
-        let counter = CounterDesc::count(CounterDescId::new(1), "ops");
-        let resource = ResourceKindDesc::new(ResourceKindId::new(2), "atlas");
         let context = Context::root();
 
-        counter_add(&counter, context, 5);
-        resource_drop(&resource, ResourceId::new(7), context);
+        counter_add(&OPS, context, 5);
+        resource_drop(&ATLAS, ResourceId::new(7), context);
         frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
         frame_begin(context);
         frame_end(context);

@@ -115,3 +115,25 @@ let runtime: &'static Runtime = Box::leak(Box::new(Runtime::new(512, 4096)));
 let tracy: &'static TracyBackend = Box::leak(Box::new(TracyBackend::new()));
 Fanout::new(runtime, tracy).install_global()?;
 ```
+
+## Descriptor Identity
+
+Descriptor identity is now the descriptor's address instead of a hand-picked
+id, so two crates can no longer collide by choosing the same number.
+
+- `ScopeDesc::new`, `ScopeDesc::with_location`, `CounterDesc::new`, `count`,
+  `bytes`, `EventDesc::new`, and `ResourceKindDesc::new` drop their id
+  argument. The `scope_desc!`, `counter_desc!`, `event_desc!`, and
+  `resource_kind_desc!` macros drop it too, for example
+  `scope_desc!("record_frame")` and `counter_desc!(count, "draw_ops")`.
+- Emission functions, `ScopeGuard`, and `Backend` methods take
+  `&'static` descriptors. Declare descriptors as `static` items. A `const`
+  descriptor no longer compiles where a `&'static` one is required, because
+  every use of a `const` would be a different descriptor.
+- `id()` derives an opaque id from the address. Ids are unique among live
+  descriptors within one process run and are not stable across runs. The
+  `*DescId` and `ResourceKindId` types stay as opaque ids in snapshots and on
+  the wire.
+- Descriptors are no longer `Copy` or `Clone`, and `==` compares identity.
+- `footfall_tracing` leaks one descriptor per callsite instead of allocating
+  ids from a reserved range; `TRACING_DESC_ID_BASE` is removed.

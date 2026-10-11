@@ -108,11 +108,11 @@ fn bytes_for_capacity<T>(capacity: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{ScratchMetrics, TrackedScratchVec};
-    use footfall_core::{Context, CounterDesc, CounterDescId};
+    use footfall_core::{Context, CounterDesc};
 
-    static CURRENT: CounterDesc = CounterDesc::bytes(CounterDescId::new(100), "scratch_current");
-    static PEAK: CounterDesc = CounterDesc::bytes(CounterDescId::new(101), "scratch_peak");
-    static GROW: CounterDesc = CounterDesc::count(CounterDescId::new(102), "scratch_grow");
+    static CURRENT: CounterDesc = CounterDesc::bytes("scratch_current");
+    static PEAK: CounterDesc = CounterDesc::bytes("scratch_peak");
+    static GROW: CounterDesc = CounterDesc::count("scratch_grow");
 
     #[test]
     fn tracked_scratch_vec_reports_capacity_locally() {

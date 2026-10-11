@@ -15,9 +15,10 @@
 //!
 //! Descriptors are interned per callsite. `tracing` callsite metadata is
 //! `&'static`, so descriptor names and source locations come straight from
-//! the callsite. Descriptor ids are allocated from a dedicated high range so
-//! they cannot collide with hand-assigned Footfall descriptor ids; they are
-//! stable within one process run but not across runs.
+//! the callsite. Each layer leaks one descriptor per callsite it sees, so
+//! memory is bounded by the number of callsites. Footfall descriptor identity
+//! is the descriptor's address, so these descriptors never collide with
+//! application descriptors or with those of another layer.
 //!
 //! ```no_run
 //! use tracing_subscriber::layer::SubscriberExt as _;
@@ -28,18 +29,8 @@
 //!     .expect("subscriber should install once");
 //! ```
 
-use footfall_core::{
-    Args, EventDesc, EventDescId, LabelValue, ScopeDesc, ScopeDescId, ScopeToken, SourceLocation,
-};
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    fmt::Write as _,
-    sync::{
-        Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use footfall_core::{Args, EventDesc, LabelValue, ScopeDesc, ScopeToken, SourceLocation};
+use std::{cell::RefCell, collections::HashMap, fmt::Write as _, sync::Mutex};
 use tracing_core::{
     Event, Level, Metadata, Subscriber,
     field::{Field, Visit},
@@ -47,15 +38,9 @@ use tracing_core::{
 };
 use tracing_subscriber::{layer::Context as LayerContext, registry::LookupSpan};
 
-/// First descriptor id allocated for tracing callsites.
-///
-/// Hand-assigned Footfall descriptor ids should stay below this range.
-pub const TRACING_DESC_ID_BASE: u64 = 1 << 48;
-
 /// `tracing_subscriber` layer that forwards spans and events into Footfall.
 #[derive(Debug)]
 pub struct FootfallLayer {
-    next_desc_id: AtomicU64,
     scope_descs: Mutex<HashMap<CallsiteId, &'static ScopeDesc>>,
     event_descs: Mutex<HashMap<CallsiteId, &'static EventDesc>>,
 }
@@ -67,14 +52,9 @@ impl FootfallLayer {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            next_desc_id: AtomicU64::new(TRACING_DESC_ID_BASE),
             scope_descs: Mutex::new(HashMap::new()),
             event_descs: Mutex::new(HashMap::new()),
         }
-    }
-
-    fn next_desc_id(&self) -> u64 {
-        self.next_desc_id.fetch_add(1, Ordering::Relaxed)
     }
 
     fn scope_desc(&self, metadata: &'static Metadata<'static>) -> &'static ScopeDesc {
@@ -84,7 +64,7 @@ impl FootfallLayer {
             .expect("scope descriptor mutex should not be poisoned");
         descs
             .entry(metadata.callsite())
-            .or_insert_with(|| Box::leak(Box::new(build_scope_desc(self.next_desc_id(), metadata))))
+            .or_insert_with(|| Box::leak(Box::new(build_scope_desc(metadata))))
     }
 
     fn event_desc(&self, metadata: &'static Metadata<'static>) -> &'static EventDesc {
@@ -92,12 +72,9 @@ impl FootfallLayer {
             .event_descs
             .lock()
             .expect("event descriptor mutex should not be poisoned");
-        descs.entry(metadata.callsite()).or_insert_with(|| {
-            Box::leak(Box::new(EventDesc::new(
-                EventDescId::new(self.next_desc_id()),
-                metadata.target(),
-            )))
-        })
+        descs
+            .entry(metadata.callsite())
+            .or_insert_with(|| Box::leak(Box::new(EventDesc::new(metadata.target()))))
     }
 }
 
@@ -107,15 +84,13 @@ impl Default for FootfallLayer {
     }
 }
 
-fn build_scope_desc(raw_id: u64, metadata: &'static Metadata<'static>) -> ScopeDesc {
-    let id = ScopeDescId::new(raw_id);
+fn build_scope_desc(metadata: &'static Metadata<'static>) -> ScopeDesc {
     match (metadata.file(), metadata.line()) {
         (Some(file), Some(line)) => ScopeDesc::with_location(
-            id,
             metadata.name(),
             SourceLocation::new(metadata.target(), file, line),
         ),
-        _ => ScopeDesc::new(id, metadata.name()),
+        _ => ScopeDesc::new(metadata.name()),
     }
 }
 

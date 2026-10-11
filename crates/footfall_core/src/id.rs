@@ -30,12 +30,18 @@ define_id!(
 );
 
 define_id!(
-    /// Stable id for one scope descriptor.
+    /// Opaque id for one scope descriptor.
+    ///
+    /// Derived from the descriptor's address: unique among live descriptors
+    /// within one process run, not stable across runs.
     ScopeDescId
 );
 
 define_id!(
-    /// Stable id for one counter descriptor.
+    /// Opaque id for one counter descriptor.
+    ///
+    /// Derived from the descriptor's address: unique among live descriptors
+    /// within one process run, not stable across runs.
     CounterDescId
 );
 
@@ -45,7 +51,10 @@ define_id!(
 );
 
 define_id!(
-    /// Stable id for one logical resource kind.
+    /// Opaque id for one logical resource kind.
+    ///
+    /// Derived from the descriptor's address: unique among live descriptors
+    /// within one process run, not stable across runs.
     ResourceKindId
 );
 
@@ -55,7 +64,10 @@ define_id!(
 );
 
 define_id!(
-    /// Stable id for one point-event descriptor.
+    /// Opaque id for one point-event descriptor.
+    ///
+    /// Derived from the descriptor's address: unique among live descriptors
+    /// within one process run, not stable across runs.
     EventDescId
 );
 

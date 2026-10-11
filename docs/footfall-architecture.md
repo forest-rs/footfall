@@ -256,13 +256,19 @@ Owns:
 
 Start with a deliberately small vocabulary:
 
-- ids: `ContextId`, `ScopeDescId`, `CounterDescId`, `ResourceId`, `ResourceKindId`
-- descriptors: `ScopeDesc`, `CounterDesc`, `ResourceKindDesc`
+- ids: `ContextId`, `ScopeDescId`, `CounterDescId`, `ResourceId`, `ResourceKindId`, `EventDescId`
+- descriptors: `ScopeDesc`, `CounterDesc`, `ResourceKindDesc`, `EventDesc`
+
+Descriptors are `static` items whose identity is their address. Their ids are
+derived from that address, so independent crates cannot collide by picking the
+same number. Descriptor types are deliberately not `const`-promotable: using a
+`const` where a `&'static` descriptor is required is a compile error, because
+each use of a `const` would otherwise be a different descriptor.
 - units: `Bytes`, `Count`, `Nanos`, `Micros`, `Ratio`, `Items`, plus a small extension path
 - operations: `counter_add`, `gauge_set`, `scope_begin`, `scope_end`, `resource_create`, `resource_update`, `resource_drop`, `frame_marker`, and causal flow helpers
 
-Reserve `EventDescId`, `EventDesc`, `SpanId`, and point events for later phases
-once a real subsystem proves they are needed.
+`EventDesc` backs message events. Reserve `SpanId` and other point events for
+later phases once a real subsystem proves they are needed.
 
 Anything beyond that should need a concrete proving-ground use case before joining the core.
 
@@ -414,10 +420,10 @@ This enables lifetime views, memory-by-kind summaries, upload ownership reports,
 The exact names can change, but the core should feel roughly like this:
 
 ```rust
-static RECORD_PASS: ScopeDesc = ScopeDesc::new(ScopeDescId::new(1), "record_pass");
-static UPLOAD_BYTES: CounterDesc = CounterDesc::bytes(CounterDescId::new(7), "upload_bytes");
+static RECORD_PASS: ScopeDesc = ScopeDesc::new("record_pass");
+static UPLOAD_BYTES: CounterDesc = CounterDesc::bytes("upload_bytes");
 static ATLAS: ResourceKindDesc =
-    ResourceKindDesc::new(ResourceKindId::new(2), "atlas");
+    ResourceKindDesc::new("atlas");
 
 let ctx = Context::root()
     .with(LabelKey::Frame, frame_id.into())

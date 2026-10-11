@@ -67,12 +67,12 @@ impl CacheStats {
 #[cfg(test)]
 mod tests {
     use super::{CacheMetrics, CacheStats};
-    use footfall_core::{Context, CounterDesc, CounterDescId};
+    use footfall_core::{Context, CounterDesc};
 
-    static CURRENT: CounterDesc = CounterDesc::bytes(CounterDescId::new(200), "cache_current");
-    static HITS: CounterDesc = CounterDesc::count(CounterDescId::new(201), "cache_hits");
-    static MISSES: CounterDesc = CounterDesc::count(CounterDescId::new(202), "cache_misses");
-    static EVICTIONS: CounterDesc = CounterDesc::count(CounterDescId::new(203), "cache_evictions");
+    static CURRENT: CounterDesc = CounterDesc::bytes("cache_current");
+    static HITS: CounterDesc = CounterDesc::count("cache_hits");
+    static MISSES: CounterDesc = CounterDesc::count("cache_misses");
+    static EVICTIONS: CounterDesc = CounterDesc::count("cache_evictions");
 
     #[test]
     fn cache_stats_updates_local_resident_bytes() {

@@ -4,9 +4,9 @@
 //! Live Tracy example for Footfall.
 
 use footfall::{
-    Context, CounterDesc, CounterDescId, LabelKey, MarkerKind, MarkerPhase, ResourceId,
-    ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, SourceLocation, counter_add,
-    frame_marker, resource_create, resource_drop, resource_update, scope_begin, scope_end,
+    Context, CounterDesc, LabelKey, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc,
+    ScopeDesc, SourceLocation, counter_add, frame_marker, resource_create, resource_drop,
+    resource_update, scope_begin, scope_end,
 };
 use footfall_fanout::Fanout;
 use footfall_memory::{CacheMetrics, CacheStats, ScratchMetrics, TrackedScratchVec};
@@ -16,34 +16,29 @@ use footfall_tracy::TracyBackend;
 use std::{thread::sleep, time::Duration};
 
 static RECORD_FRAME: ScopeDesc = ScopeDesc::with_location(
-    ScopeDescId::new(1),
     "record_frame",
     SourceLocation::new("tracy_live::run_frame", file!(), 95),
 );
 static TESSELLATE_NODE: ScopeDesc = ScopeDesc::with_location(
-    ScopeDescId::new(2),
     "tessellate_node",
     SourceLocation::new("tracy_live::run_frame", file!(), 96),
 );
 static UPLOAD_ATLAS: ScopeDesc = ScopeDesc::with_location(
-    ScopeDescId::new(3),
     "upload_atlas",
     SourceLocation::new("tracy_live::run_frame", file!(), 121),
 );
 
-static DRAW_OPS: CounterDesc = CounterDesc::count(CounterDescId::new(10), "draw_ops");
-static UPLOAD_BYTES: CounterDesc = CounterDesc::bytes(CounterDescId::new(11), "upload_bytes");
-static CACHE_CURRENT: CounterDesc =
-    CounterDesc::bytes(CounterDescId::new(12), "cache_current_bytes");
-static CACHE_HITS: CounterDesc = CounterDesc::count(CounterDescId::new(13), "cache_hits");
-static CACHE_MISSES: CounterDesc = CounterDesc::count(CounterDescId::new(14), "cache_misses");
-static CACHE_EVICTIONS: CounterDesc = CounterDesc::count(CounterDescId::new(15), "cache_evictions");
-static SCRATCH_CURRENT: CounterDesc =
-    CounterDesc::bytes(CounterDescId::new(16), "scratch_current_bytes");
-static SCRATCH_PEAK: CounterDesc = CounterDesc::bytes(CounterDescId::new(17), "scratch_peak_bytes");
-static SCRATCH_GROW: CounterDesc = CounterDesc::count(CounterDescId::new(18), "scratch_grow");
+static DRAW_OPS: CounterDesc = CounterDesc::count("draw_ops");
+static UPLOAD_BYTES: CounterDesc = CounterDesc::bytes("upload_bytes");
+static CACHE_CURRENT: CounterDesc = CounterDesc::bytes("cache_current_bytes");
+static CACHE_HITS: CounterDesc = CounterDesc::count("cache_hits");
+static CACHE_MISSES: CounterDesc = CounterDesc::count("cache_misses");
+static CACHE_EVICTIONS: CounterDesc = CounterDesc::count("cache_evictions");
+static SCRATCH_CURRENT: CounterDesc = CounterDesc::bytes("scratch_current_bytes");
+static SCRATCH_PEAK: CounterDesc = CounterDesc::bytes("scratch_peak_bytes");
+static SCRATCH_GROW: CounterDesc = CounterDesc::count("scratch_grow");
 
-static ATLAS: ResourceKindDesc = ResourceKindDesc::new(ResourceKindId::new(20), "atlas");
+static ATLAS: ResourceKindDesc = ResourceKindDesc::new("atlas");
 static ATLAS_ID: ResourceId = ResourceId::new(9);
 
 const FRAME_COUNT: u32 = 300;

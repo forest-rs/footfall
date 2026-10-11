@@ -280,17 +280,29 @@ impl Runtime {
         }
     }
 
-    fn counter_add_at(&self, desc: &CounterDesc, context: Context, value: u64, at_micros: u64) {
+    fn counter_add_at(
+        &self,
+        desc: &'static CounterDesc,
+        context: Context,
+        value: u64,
+        at_micros: u64,
+    ) {
         self.counter_update_at(desc, context, value, at_micros, CounterKind::Counter);
     }
 
-    fn gauge_set_at(&self, desc: &CounterDesc, context: Context, value: u64, at_micros: u64) {
+    fn gauge_set_at(
+        &self,
+        desc: &'static CounterDesc,
+        context: Context,
+        value: u64,
+        at_micros: u64,
+    ) {
         self.counter_update_at(desc, context, value, at_micros, CounterKind::Gauge);
     }
 
     fn histogram_record_at(
         &self,
-        desc: &CounterDesc,
+        desc: &'static CounterDesc,
         context: Context,
         value: u64,
         at_micros: u64,
@@ -324,7 +336,7 @@ impl Runtime {
 
     fn counter_update_at(
         &self,
-        desc: &CounterDesc,
+        desc: &'static CounterDesc,
         context: Context,
         value: u64,
         at_micros: u64,
@@ -565,7 +577,7 @@ pub struct HistogramSnapshot {
 }
 
 impl HistogramSnapshot {
-    fn new(desc: &CounterDesc, context_id: ContextId) -> Self {
+    fn new(desc: &'static CounterDesc, context_id: ContextId) -> Self {
         Self {
             desc_id: desc.id(),
             name: desc.name(),
@@ -830,7 +842,7 @@ impl CounterKey {
 }
 
 impl Backend for Runtime {
-    fn counter_add(&self, desc: &CounterDesc, context: Context, value: u64) {
+    fn counter_add(&self, desc: &'static CounterDesc, context: Context, value: u64) {
         if !self.level().captures_counters() {
             return;
         }
@@ -838,7 +850,7 @@ impl Backend for Runtime {
         self.counter_add_at(desc, context, value, at_micros);
     }
 
-    fn gauge_set(&self, desc: &CounterDesc, context: Context, value: u64) {
+    fn gauge_set(&self, desc: &'static CounterDesc, context: Context, value: u64) {
         if !self.level().captures_counters() {
             return;
         }
@@ -846,7 +858,7 @@ impl Backend for Runtime {
         self.gauge_set_at(desc, context, value, at_micros);
     }
 
-    fn histogram_record(&self, desc: &CounterDesc, context: Context, value: u64) {
+    fn histogram_record(&self, desc: &'static CounterDesc, context: Context, value: u64) {
         if !self.level().captures_counters() {
             return;
         }
@@ -854,7 +866,7 @@ impl Backend for Runtime {
         self.histogram_record_at(desc, context, value, at_micros);
     }
 
-    fn scope_begin(&self, desc: &ScopeDesc, context: Context, args: Args) -> ScopeToken {
+    fn scope_begin(&self, desc: &'static ScopeDesc, context: Context, args: Args) -> ScopeToken {
         if !self.level().captures_scopes() {
             return ScopeToken::INVALID;
         }
@@ -890,7 +902,7 @@ impl Backend for Runtime {
 
     fn resource_create(
         &self,
-        desc: &ResourceKindDesc,
+        desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
         context: Context,
         size: u64,
@@ -917,7 +929,7 @@ impl Backend for Runtime {
 
     fn resource_update(
         &self,
-        desc: &ResourceKindDesc,
+        desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
         context: Context,
         size: u64,
@@ -942,7 +954,12 @@ impl Backend for Runtime {
         );
     }
 
-    fn resource_drop(&self, desc: &ResourceKindDesc, resource_id: ResourceId, context: Context) {
+    fn resource_drop(
+        &self,
+        desc: &'static ResourceKindDesc,
+        resource_id: ResourceId,
+        context: Context,
+    ) {
         if !self.level().captures_resources() {
             return;
         }
@@ -1000,7 +1017,7 @@ impl Backend for Runtime {
         );
     }
 
-    fn message(&self, desc: &EventDesc, context: Context, text: &str, args: Args) {
+    fn message(&self, desc: &'static EventDesc, context: Context, text: &str, args: Args) {
         if !self.level().captures_messages() {
             return;
         }
@@ -1132,15 +1149,15 @@ const fn level_from_u8(level: u8) -> InstrumentationLevel {
 mod tests {
     use super::{CounterKind, Observation, Runtime};
     use footfall_core::{
-        Args, Backend as _, Context, ContextId, CounterDesc, CounterDescId, FlowId, FlowPhase,
-        InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc,
-        ResourceKindId, ScopeDesc, ScopeDescId, ScopeToken, Unit,
+        Args, Backend as _, Context, ContextId, CounterDesc, FlowId, FlowPhase,
+        InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ScopeDesc,
+        ScopeToken, Unit,
     };
 
     #[test]
     fn messages_are_captured_with_truncated_text() {
         let runtime = Runtime::new(8, 8);
-        let channel = footfall_core::EventDesc::new(footfall_core::EventDescId::new(21), "app_log");
+        static CHANNEL: footfall_core::EventDesc = footfall_core::EventDesc::new("app_log");
         let context_id = runtime
             .context_id(Context::root())
             .expect("root context should exist");
@@ -1148,8 +1165,8 @@ mod tests {
         let long_text = "x".repeat(super::MESSAGE_TEXT_MAX_BYTES + 64);
         runtime.push_event_at(
             Observation::Message {
-                desc_id: channel.id(),
-                name: channel.name(),
+                desc_id: CHANNEL.id(),
+                name: CHANNEL.name(),
                 context_id,
                 text: super::truncate_message_text(&long_text),
                 args: Args::none().with("level", "warn"),
@@ -1181,13 +1198,13 @@ mod tests {
     #[test]
     fn histograms_aggregate_bucketed_distributions() {
         let runtime = Runtime::new(8, 8);
-        let latency = CounterDesc::new(CounterDescId::new(9), "frame_micros", Unit::Micros);
+        static LATENCY: CounterDesc = CounterDesc::new("frame_micros", Unit::Micros);
         let context = Context::root().with(footfall_core::LabelKey::Pass, 1_u32);
 
-        runtime.histogram_record_at(&latency, context, 0, 1);
-        runtime.histogram_record_at(&latency, context, 1, 2);
-        runtime.histogram_record_at(&latency, context, 3, 3);
-        runtime.histogram_record_at(&latency, context, 1000, 4);
+        runtime.histogram_record_at(&LATENCY, context, 0, 1);
+        runtime.histogram_record_at(&LATENCY, context, 1, 2);
+        runtime.histogram_record_at(&LATENCY, context, 3, 3);
+        runtime.histogram_record_at(&LATENCY, context, 1000, 4);
 
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.histograms.len(), 1);
@@ -1227,11 +1244,11 @@ mod tests {
         const UPDATES: u64 = 1000;
 
         let runtime = Runtime::new(64, 64);
-        let counter = CounterDesc::count(CounterDescId::new(1), "ops");
+        static OPS: CounterDesc = CounterDesc::count("ops");
         std::thread::scope(|scope| {
             for thread in 0..THREADS {
                 let runtime = &runtime;
-                let counter = &counter;
+
                 scope.spawn(move || {
                     let shared = Context::root().with(footfall_core::LabelKey::Pass, 1_u32);
                     let distinct = Context::root().with(
@@ -1239,8 +1256,8 @@ mod tests {
                         u32::try_from(thread).expect("thread index fits"),
                     );
                     for update in 0..UPDATES {
-                        runtime.counter_add_at(counter, shared, 1, update);
-                        runtime.counter_add_at(counter, distinct, 1, update);
+                        runtime.counter_add_at(&OPS, shared, 1, update);
+                        runtime.counter_add_at(&OPS, distinct, 1, update);
                     }
                 });
             }
@@ -1296,10 +1313,10 @@ mod tests {
     fn context_table_exhaustion_is_accounted() {
         // Context capacity is counter_capacity + event_capacity + 1 = 5.
         let runtime = Runtime::new(2, 2);
-        let counter = CounterDesc::count(CounterDescId::new(1), "ops");
+        static OPS: CounterDesc = CounterDesc::count("ops");
         for node in 0..32_u32 {
             let context = Context::root().with(footfall_core::LabelKey::Node, node);
-            runtime.counter_add_at(&counter, context, 1, u64::from(node));
+            runtime.counter_add_at(&OPS, context, 1, u64::from(node));
         }
 
         let snapshot = runtime.snapshot();
@@ -1343,19 +1360,19 @@ mod tests {
     #[test]
     fn runtime_collects_context_table_and_timestamped_records() {
         let runtime = Runtime::new(16, 16);
-        let counter = CounterDesc::count(CounterDescId::new(1), "ops");
-        let resource = ResourceKindDesc::new(ResourceKindId::new(2), "atlas");
-        let scope = ScopeDesc::new(ScopeDescId::new(3), "record");
+        static OPS: CounterDesc = CounterDesc::count("ops");
+        static ATLAS: ResourceKindDesc = ResourceKindDesc::new("atlas");
+        static RECORD: ScopeDesc = ScopeDesc::new("record");
         let context = Context::root().with(footfall_core::LabelKey::Pass, 1_u32);
 
-        runtime.counter_add_at(&counter, context, 5, 10);
-        runtime.gauge_set_at(&counter, context, 9, 11);
+        runtime.counter_add_at(&OPS, context, 5, 10);
+        runtime.gauge_set_at(&OPS, context, 9, 11);
         let token = runtime.next_scope_token();
         let context_id = runtime.context_id(context).expect("context should intern");
         runtime.push_event_at(
             Observation::ScopeBegin {
-                desc_id: scope.id(),
-                name: scope.name(),
+                desc_id: RECORD.id(),
+                name: RECORD.name(),
                 context_id,
                 token,
                 args: Args::none().with("items", 3_u32),
@@ -1365,8 +1382,8 @@ mod tests {
         runtime.push_event_at(Observation::ScopeEnd { token }, 13);
         runtime.push_event_at(
             Observation::ResourceCreate {
-                kind_id: resource.id(),
-                kind_name: resource.name(),
+                kind_id: ATLAS.id(),
+                kind_name: ATLAS.name(),
                 resource_id: ResourceId::new(7),
                 context_id,
                 size: 64,
@@ -1419,13 +1436,13 @@ mod tests {
     #[test]
     fn sequential_scopes_in_one_microsecond_keep_program_order() {
         let runtime = Runtime::new(8, 8);
-        let first = ScopeDesc::new(ScopeDescId::new(1), "first");
-        let second = ScopeDesc::new(ScopeDescId::new(2), "second");
+        static FIRST: ScopeDesc = ScopeDesc::new("first");
+        static SECOND: ScopeDesc = ScopeDesc::new("second");
         let context_id = runtime
             .context_id(Context::root().with(footfall_core::LabelKey::Pass, 1_u32))
             .expect("context should intern");
 
-        for desc in [&first, &second] {
+        for desc in [&FIRST, &SECOND] {
             let token = runtime.next_scope_token();
             runtime.push_event_at(
                 Observation::ScopeBegin {
@@ -1568,11 +1585,11 @@ mod tests {
     fn runtime_enforces_counter_capacity_across_shards() {
         let runtime = Runtime::new(1, 4);
         let context = Context::root().with(footfall_core::LabelKey::Frame, 1_u32);
-        let first = CounterDesc::count(CounterDescId::new(31), "first");
-        let second = CounterDesc::count(CounterDescId::new(32), "second");
+        static FIRST: CounterDesc = CounterDesc::count("first");
+        static SECOND: CounterDesc = CounterDesc::count("second");
 
-        runtime.counter_add_at(&first, context, 1, 1);
-        runtime.counter_add_at(&second, context, 1, 2);
+        runtime.counter_add_at(&FIRST, context, 1, 1);
+        runtime.counter_add_at(&SECOND, context, 1, 2);
 
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.counters.len(), 1);
@@ -1581,9 +1598,9 @@ mod tests {
 
     #[test]
     fn backend_respects_runtime_capture_level() {
-        static COUNTER: CounterDesc = CounterDesc::count(CounterDescId::new(11), "ops");
-        static SCOPE: ScopeDesc = ScopeDesc::new(ScopeDescId::new(12), "record");
-        static RESOURCE: ResourceKindDesc = ResourceKindDesc::new(ResourceKindId::new(13), "atlas");
+        static COUNTER: CounterDesc = CounterDesc::count("ops");
+        static SCOPE: ScopeDesc = ScopeDesc::new("record");
+        static RESOURCE: ResourceKindDesc = ResourceKindDesc::new("atlas");
 
         let runtime = Runtime::with_level(16, 16, InstrumentationLevel::Counters);
 

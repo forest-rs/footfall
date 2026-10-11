@@ -16,9 +16,9 @@
 //! Run them with `cargo bench -p footfall_benchmarks`.
 
 use footfall::{
-    Context, CounterDesc, CounterDescId, EventDesc, EventDescId, LabelKey, MarkerKind, MarkerPhase,
-    ResourceId, ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, counter_add,
-    frame_marker, resource_update, scope_begin, scope_end,
+    Context, CounterDesc, EventDesc, LabelKey, MarkerKind, MarkerPhase, ResourceId,
+    ResourceKindDesc, ScopeDesc, counter_add, frame_marker, resource_update, scope_begin,
+    scope_end,
 };
 use std::{
     hint::black_box,
@@ -28,17 +28,17 @@ use std::{
 };
 
 /// Counter updated by the counter cases.
-pub static OPS: CounterDesc = CounterDesc::count(CounterDescId::new(1), "ops");
+pub static OPS: CounterDesc = CounterDesc::count("ops");
 /// Gauge set by the gauge case.
-pub static QUEUE_DEPTH: CounterDesc = CounterDesc::count(CounterDescId::new(2), "queue_depth");
+pub static QUEUE_DEPTH: CounterDesc = CounterDesc::count("queue_depth");
 /// Histogram recorded by the histogram case.
-pub static LATENCY: CounterDesc = CounterDesc::count(CounterDescId::new(3), "latency");
+pub static LATENCY: CounterDesc = CounterDesc::count("latency");
 /// Scope begun and ended by the scope cases.
-pub static RECORD: ScopeDesc = ScopeDesc::new(ScopeDescId::new(4), "record");
+pub static RECORD: ScopeDesc = ScopeDesc::new("record");
 /// Resource kind updated by the resource case.
-pub static ATLAS: ResourceKindDesc = ResourceKindDesc::new(ResourceKindId::new(5), "atlas");
+pub static ATLAS: ResourceKindDesc = ResourceKindDesc::new("atlas");
 /// Event descriptor for the message cases.
-pub static LOG: EventDesc = EventDesc::new(EventDescId::new(6), "log");
+pub static LOG: EventDesc = EventDesc::new("log");
 /// Resource instance updated by the resource case.
 pub static ATLAS_ID: ResourceId = ResourceId::new(7);
 

@@ -6,9 +6,9 @@
 
 use footfall::{CounterDesc, LabelKey, ResourceKindDesc, ScopeDesc, Unit};
 
-static SCOPE: ScopeDesc = footfall::scope_desc!(1, "record_frame", "facade::tests");
-static COUNTER: CounterDesc = footfall::counter_desc!(bytes, 2, "upload_bytes");
-static RESOURCE: ResourceKindDesc = footfall::resource_kind_desc!(3, "atlas");
+static SCOPE: ScopeDesc = footfall::scope_desc!("record_frame", "facade::tests");
+static COUNTER: CounterDesc = footfall::counter_desc!(bytes, "upload_bytes");
+static RESOURCE: ResourceKindDesc = footfall::resource_kind_desc!("atlas");
 
 #[test]
 fn facade_exposes_call_site_macros() {
