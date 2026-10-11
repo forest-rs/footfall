@@ -27,6 +27,25 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Label key for frame numbers.
+pub static FRAME: LabelKey = LabelKey::new("frame");
+/// Label key for transactions.
+pub static TRANSACTION: LabelKey = LabelKey::new("transaction");
+/// Label key for pass numbers.
+pub static PASS: LabelKey = LabelKey::new("pass");
+/// Label key for subsystems.
+pub static SUBSYSTEM: LabelKey = LabelKey::new("subsystem");
+/// Label key for scene nodes.
+pub static NODE: LabelKey = LabelKey::new("node");
+/// Label key for widgets.
+pub static WIDGET: LabelKey = LabelKey::new("widget");
+/// Label key for layers.
+pub static LAYER: LabelKey = LabelKey::new("layer");
+/// Label key for resources.
+pub static RESOURCE: LabelKey = LabelKey::new("resource");
+/// Label key for caches.
+pub static CACHE: LabelKey = LabelKey::new("cache");
+
 /// Counter updated by the counter cases.
 pub static OPS: CounterDesc = CounterDesc::count("ops");
 /// Gauge set by the gauge case.
@@ -65,24 +84,24 @@ pub const THREAD_COUNTS: [usize; 4] = [1, 2, 4, 8];
 /// Frames in the seeded capture used by the snapshot and export cases.
 pub const SEEDED_FRAMES: u32 = 128;
 
-const LABEL_KEYS: [LabelKey; 8] = [
-    LabelKey::Frame,
-    LabelKey::Transaction,
-    LabelKey::Pass,
-    LabelKey::Subsystem,
-    LabelKey::Node,
-    LabelKey::Widget,
-    LabelKey::Layer,
-    LabelKey::Resource,
+static LABEL_KEYS: [&LabelKey; 8] = [
+    &FRAME,
+    &TRANSACTION,
+    &PASS,
+    &SUBSYSTEM,
+    &NODE,
+    &WIDGET,
+    &LAYER,
+    &RESOURCE,
 ];
 
 /// Returns the three-label context used by most cases.
 #[must_use]
 pub fn sample_context() -> Context {
     Context::root()
-        .with(LabelKey::Frame, 1_u32)
-        .with(LabelKey::Pass, 1_u32)
-        .with(LabelKey::Cache, "atlas")
+        .with(&FRAME, 1_u32)
+        .with(&PASS, 1_u32)
+        .with(&CACHE, "atlas")
 }
 
 /// Builds a context carrying `labels` labels, at most eight.
@@ -99,14 +118,14 @@ pub fn build_context(labels: usize) -> Context {
 #[must_use]
 pub fn rotating_contexts(base: Context) -> Vec<Context> {
     (0..ROTATING_CONTEXTS)
-        .map(|index| base.with(LabelKey::Node, u64::try_from(index).unwrap_or(u64::MAX)))
+        .map(|index| base.with(&NODE, u64::try_from(index).unwrap_or(u64::MAX)))
         .collect()
 }
 
 /// Emits a fixed [`SEEDED_FRAMES`]-frame capture through the installed backend.
 pub fn seed_snapshot(context: Context) {
     for frame in 0..SEEDED_FRAMES {
-        let frame_context = context.with(LabelKey::Frame, frame);
+        let frame_context = context.with(&FRAME, frame);
         frame_marker(MarkerKind::Frame, MarkerPhase::Begin, frame_context);
         counter_add(&OPS, frame_context, u64::from(frame));
         let token = scope_begin(&RECORD, frame_context);
@@ -156,11 +175,8 @@ pub fn time_parallel_counter_add(threads: usize, iters: u64) -> Duration {
             let finish_line = &finish_line;
             scope.spawn(move || {
                 let context = Context::root()
-                    .with(
-                        LabelKey::Frame,
-                        u64::try_from(thread_index).unwrap_or(u64::MAX),
-                    )
-                    .with(LabelKey::Pass, 1_u32);
+                    .with(&FRAME, u64::try_from(thread_index).unwrap_or(u64::MAX))
+                    .with(&PASS, 1_u32);
                 start_line.wait();
                 for _ in 0..iters {
                     counter_add(black_box(&OPS), black_box(context), black_box(1));

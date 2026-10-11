@@ -186,6 +186,8 @@ mod tests {
     };
     use std::sync::Mutex;
 
+    static FRAME: LabelKey = LabelKey::new("frame");
+
     static COUNTER: CounterDesc = CounterDesc::count("ops");
     static SCOPE: ScopeDesc = ScopeDesc::new("record");
     static NOOP: NoopBackend = NoopBackend;
@@ -276,7 +278,7 @@ mod tests {
             Recorder::leak("primary", 11, log),
             Recorder::leak("secondary", 22, log),
         );
-        let context = Context::root().with(LabelKey::Frame, 1_u32);
+        let context = Context::root().with(&FRAME, 1_u32);
 
         fanout.counter_add(&COUNTER, context, 3);
         let token = fanout.scope_begin(&SCOPE, context, Args::none());

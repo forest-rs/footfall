@@ -272,22 +272,18 @@ later phases once a real subsystem proves they are needed.
 
 Anything beyond that should need a concrete proving-ground use case before joining the core.
 
-### Initial Label Vocabulary
+### Label Keys
 
-The core should begin with a small shared label-key set:
+Footfall core ships no label vocabulary. Applications and libraries declare
+the keys they attribute work by as static `LabelKey` items, for example
+`static FRAME: LabelKey = LabelKey::new("frame");`. Like descriptors, a key's
+identity is its address, so independent crates cannot collide in process.
+Consumers outside the process see keys by name, so a library should prefix
+its key names with its own name.
 
-- `Frame`
-- `Transaction`
-- `Pass`
-- `Subsystem`
-- `Node`
-- `Widget`
-- `Layer`
-- `Resource`
-- `Cache`
-- `Reason`
-
-The rule is strict: new label keys must buy real aggregation value across at least one proving-ground subsystem. Product-specific concepts should enter as descriptor names or typed values first, not as a rapidly growing core key enum.
+The discipline moves from the core enum to each subsystem: a key should buy
+real aggregation value. Product-specific concepts should enter as descriptor
+names or typed values first, not as a rapidly growing set of keys.
 
 ### Context Model
 
@@ -296,7 +292,7 @@ Callers should work with an explicit `Context` value, not hidden thread-local st
 - `Context` is a small owned caller-facing semantic token that is copied and passed explicitly
 - `ContextId` is the canonical integer handle used inside runtime storage, snapshots, and exports
 - a context is formed by extending a parent context with one typed label
-- labels are key/value pairs where keys come from a shared small vocabulary and values are compact typed ids or integers
+- labels are key/value pairs where keys are static `LabelKey` items declared by the instrumented code and values are compact typed ids or integers
 
 This implies a logical shape like:
 
@@ -425,10 +421,14 @@ static UPLOAD_BYTES: CounterDesc = CounterDesc::bytes("upload_bytes");
 static ATLAS: ResourceKindDesc =
     ResourceKindDesc::new("atlas");
 
+static FRAME: LabelKey = LabelKey::new("frame");
+static PASS: LabelKey = LabelKey::new("pass");
+static NODE: LabelKey = LabelKey::new("node");
+
 let ctx = Context::root()
-    .with(LabelKey::Frame, frame_id.into())
-    .with(LabelKey::Pass, pass_id.into())
-    .with(LabelKey::Node, node_id.into());
+    .with(&FRAME, frame_id)
+    .with(&PASS, pass_id)
+    .with(&NODE, node_id);
 
 let scope = footfall::scope_begin(&RECORD_PASS, ctx);
 footfall::counter_add(&UPLOAD_BYTES, ctx, upload_len as u64);

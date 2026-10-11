@@ -12,6 +12,14 @@ use footfall_export::to_chrome_trace_json;
 use footfall_memory::{CacheMetrics, CacheStats, ScratchMetrics, TrackedScratchVec};
 use footfall_runtime::Runtime;
 
+static FRAME: LabelKey = LabelKey::new("frame");
+static TRANSACTION: LabelKey = LabelKey::new("transaction");
+static PASS: LabelKey = LabelKey::new("pass");
+static NODE: LabelKey = LabelKey::new("node");
+static RESOURCE: LabelKey = LabelKey::new("resource");
+static CACHE: LabelKey = LabelKey::new("cache");
+static REASON: LabelKey = LabelKey::new("reason");
+
 static RECORD_FRAME: ScopeDesc = footfall::scope_desc!("record_frame", "basic::main");
 static TESSELLATE_NODE: ScopeDesc = footfall::scope_desc!("tessellate_node", "basic::main");
 static UPLOAD_ATLAS: ScopeDesc = footfall::scope_desc!("upload_atlas", "basic::main");
@@ -39,15 +47,11 @@ fn main() {
         .install_global()
         .expect("global runtime should install once");
 
-    let frame_context = footfall::context!(Frame = 7_u32, Transaction = 1_u32);
-    let record_context = frame_context
-        .with(LabelKey::Pass, 1_u32)
-        .with(LabelKey::Node, 42_u32);
-    let cache_context = frame_context
-        .with(LabelKey::Pass, 1_u32)
-        .with(LabelKey::Cache, "glyph_atlas");
-    let atlas_context = cache_context.with(LabelKey::Resource, ATLAS_ID);
-    let invalidate_context = frame_context.with(LabelKey::Reason, "layout_invalidation");
+    let frame_context = footfall::context!(FRAME = 7_u32, TRANSACTION = 1_u32);
+    let record_context = frame_context.with(&PASS, 1_u32).with(&NODE, 42_u32);
+    let cache_context = frame_context.with(&PASS, 1_u32).with(&CACHE, "glyph_atlas");
+    let atlas_context = cache_context.with(&RESOURCE, ATLAS_ID);
+    let invalidate_context = frame_context.with(&REASON, "layout_invalidation");
 
     let scratch_metrics = ScratchMetrics {
         current_bytes: &SCRATCH_CURRENT,

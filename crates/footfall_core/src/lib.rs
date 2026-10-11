@@ -17,12 +17,13 @@
 //!
 //! # Descriptors
 //!
-//! A descriptor's identity is its address. Declare descriptors as `static`
-//! items, never `const`: every use of a `const` would create a fresh value at
-//! a fresh address. Each descriptor type carries a private zero-sized marker
-//! with a `Drop` impl, which stops the compiler from promoting `&CONST` to
-//! `'static`, so passing a `const` where a `&'static` descriptor is required
-//! is a compile error rather than a silent identity bug:
+//! A descriptor's identity is its address, and so is a [`LabelKey`]'s.
+//! Declare them as `static` items, never `const`: every use of a `const`
+//! would create a fresh value at a fresh address. Each of these types carries
+//! a private zero-sized marker with a `Drop` impl, which stops the compiler
+//! from promoting `&CONST` to `'static`, so passing a `const` where a
+//! `&'static` descriptor or key is required is a compile error rather than a
+//! silent identity bug:
 //!
 //! ```compile_fail,E0716
 //! use footfall_core::{Context, ScopeDesc, scope};
@@ -77,10 +78,17 @@ pub use unit::Unit;
 
 /// Builds a [`Context`] from label-key assignments.
 ///
+/// Each key is a path to a `static` [`LabelKey`].
+///
 /// # Examples
 ///
 /// ```
-/// let context = footfall_core::context!(Frame = 7_u32, Pass = 1_u32);
+/// use footfall_core::LabelKey;
+///
+/// static FRAME: LabelKey = LabelKey::new("frame");
+/// static PASS: LabelKey = LabelKey::new("pass");
+///
+/// let context = footfall_core::context!(FRAME = 7_u32, PASS = 1_u32);
 /// assert_eq!(context.len(), 2);
 /// ```
 #[macro_export]
@@ -88,10 +96,10 @@ macro_rules! context {
     () => {
         $crate::Context::root()
     };
-    ($($key:ident = $value:expr),+ $(,)?) => {{
+    ($($key:path = $value:expr),+ $(,)?) => {{
         let context = $crate::Context::root();
         $(
-            let context = context.with($crate::LabelKey::$key, $value);
+            let context = context.with(&$key, $value);
         )+
         context
     }};
@@ -198,22 +206,23 @@ macro_rules! resource_kind_desc {
 mod tests {
     use crate::{CounterDesc, LabelKey, ResourceKindDesc, ScopeDesc, Unit};
 
+    static FRAME: LabelKey = LabelKey::new("frame");
+    static PASS: LabelKey = LabelKey::new("pass");
+
     static SCOPE: ScopeDesc = crate::scope_desc!("record_frame", "footfall_core::tests");
     static COUNTER: CounterDesc = crate::counter_desc!(bytes, "upload_bytes");
     static RESOURCE: ResourceKindDesc = crate::resource_kind_desc!("atlas");
 
     #[test]
     fn macros_build_common_call_site_values() {
-        let context = crate::context!(Frame = 7_u32, Pass = 1_u32);
+        let context = crate::context!(FRAME = 7_u32, PASS = 1_u32);
 
         assert_eq!(SCOPE.name(), "record_frame");
         assert!(SCOPE.location().is_some());
         assert_eq!(COUNTER.unit(), Unit::Bytes);
         assert_eq!(RESOURCE.name(), "atlas");
         assert_eq!(
-            context
-                .get(LabelKey::Frame)
-                .and_then(|value| value.as_unsigned()),
+            context.get(&FRAME).and_then(|value| value.as_unsigned()),
             Some(7)
         );
     }

@@ -6,8 +6,8 @@
 use alloc::{string::String, vec::Vec};
 
 use footfall_core::{
-    ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, LabelKey, LabelValue, MarkerKind,
-    MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, Unit,
+    ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, LabelValue, MarkerKind, MarkerPhase,
+    ResourceId, ResourceKindId, ScopeDescId, ScopeToken, Unit,
 };
 use footfall_runtime::{
     ContextSnapshot, CounterKind, CounterSnapshot, HISTOGRAM_BUCKET_COUNT, HistogramSnapshot,
@@ -174,8 +174,8 @@ pub struct OwnedContextSnapshot {
 /// Owned context entry suitable for transport.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedContextEntry {
-    /// Semantic label key.
-    pub key: LabelKey,
+    /// Semantic label key name.
+    pub key: String,
     /// Semantic label value.
     pub value: OwnedLabelValue,
 }
@@ -540,7 +540,7 @@ fn owned_context_snapshot(snapshot: &ContextSnapshot) -> OwnedContextSnapshot {
             .context
             .iter()
             .map(|entry| OwnedContextEntry {
-                key: entry.key(),
+                key: String::from(entry.key().name()),
                 value: owned_label_value(entry.value()),
             })
             .collect(),
@@ -692,6 +692,8 @@ mod tests {
     use alloc::{string::String, vec, vec::Vec};
 
     use footfall_core::{Context, ContextId, CounterDescId, LabelKey, Unit};
+
+    static FRAME: LabelKey = LabelKey::new("frame");
     use footfall_runtime::{
         ContextSnapshot, CounterKind, CounterSnapshot, Observation, Snapshot, SnapshotMetadata,
         TimedObservation,
@@ -718,7 +720,7 @@ mod tests {
                 },
                 ContextSnapshot {
                     id: ContextId::new(1),
-                    context: Context::root().with(LabelKey::Frame, 7_u32),
+                    context: Context::root().with(&FRAME, 7_u32),
                 },
             ],
             counters: vec![

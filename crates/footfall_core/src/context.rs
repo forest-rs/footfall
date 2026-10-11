@@ -1,13 +1,17 @@
 // Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use crate::{LabelKey, LabelValue};
-use core::fmt;
+use crate::{LabelKey, LabelValue, label::EMPTY_LABEL_KEY};
+use core::{fmt, ptr};
 
 /// Maximum number of inline labels stored in a [`Context`].
 pub const CONTEXT_INLINE_CAPACITY: usize = 8;
 
 /// An explicit semantic attribution value passed through instrumented code.
+///
+/// A context is a small, copyable set of labels keyed by static [`LabelKey`]s.
+/// Labels keep their append order; setting an existing key replaces its value
+/// in place.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Context {
     entries: [ContextEntry; CONTEXT_INLINE_CAPACITY],
@@ -43,7 +47,7 @@ impl Context {
     /// Panics when the inline capacity is exhausted. Hot paths that cannot
     /// tolerate panics should use [`Context::try_with`] instead.
     #[must_use]
-    pub fn with<V>(self, key: LabelKey, value: V) -> Self
+    pub fn with<V>(self, key: &'static LabelKey, value: V) -> Self
     where
         V: Into<LabelValue>,
     {
@@ -54,24 +58,28 @@ impl Context {
     }
 
     /// Tries to insert or replace one label in the context.
-    pub fn try_with<V>(mut self, key: LabelKey, value: V) -> Result<Self, ContextCapacityError>
+    pub fn try_with<V>(
+        mut self,
+        key: &'static LabelKey,
+        value: V,
+    ) -> Result<Self, ContextCapacityError>
     where
         V: Into<LabelValue>,
     {
-        let value = value.into();
-        for entry in &mut self.entries[..usize::from(self.len)] {
-            if entry.key == key {
-                *entry = ContextEntry::new(key, value);
+        let entry = ContextEntry::new(key, value.into());
+        let len = usize::from(self.len);
+        for existing in &mut self.entries[..len] {
+            if ptr::eq(existing.key(), key) {
+                *existing = entry;
                 return Ok(self);
             }
         }
 
-        let len = usize::from(self.len);
         if len == CONTEXT_INLINE_CAPACITY {
             return Err(ContextCapacityError);
         }
 
-        self.entries[len] = ContextEntry::new(key, value);
+        self.entries[len] = entry;
         self.len += 1;
         Ok(self)
     }
@@ -91,16 +99,16 @@ impl Context {
 
     /// Returns `true` when this context contains the given key.
     #[must_use]
-    pub fn contains(&self, key: LabelKey) -> bool {
+    pub fn contains(&self, key: &'static LabelKey) -> bool {
         self.get(key).is_some()
     }
 
     /// Returns the value associated with the given key.
     #[must_use]
-    pub fn get(&self, key: LabelKey) -> Option<LabelValue> {
+    pub fn get(&self, key: &'static LabelKey) -> Option<LabelValue> {
         self.as_slice()
             .iter()
-            .find(|entry| entry.key == key)
+            .find(|entry| ptr::eq(entry.key(), key))
             .map(|entry| entry.value)
     }
 }
@@ -114,26 +122,34 @@ impl Default for Context {
 /// One semantic label stored in a [`Context`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ContextEntry {
-    key: LabelKey,
+    // `None` only in unused slots, which keeps an empty context all-zero so
+    // `Context::root` compiles to a plain fill.
+    key: Option<&'static LabelKey>,
     value: LabelValue,
 }
 
 impl ContextEntry {
     const EMPTY: Self = Self {
-        key: LabelKey::Frame,
+        key: None,
         value: LabelValue::Unsigned(0),
     };
 
     /// Creates a new context entry.
     #[must_use]
-    pub const fn new(key: LabelKey, value: LabelValue) -> Self {
-        Self { key, value }
+    pub const fn new(key: &'static LabelKey, value: LabelValue) -> Self {
+        Self {
+            key: Some(key),
+            value,
+        }
     }
 
     /// Returns the label key.
     #[must_use]
-    pub const fn key(self) -> LabelKey {
-        self.key
+    pub const fn key(self) -> &'static LabelKey {
+        match self.key {
+            Some(key) => key,
+            None => &EMPTY_LABEL_KEY,
+        }
     }
 
     /// Returns the label value.
@@ -158,6 +174,22 @@ mod tests {
     use super::{CONTEXT_INLINE_CAPACITY, Context, ContextCapacityError};
     use crate::LabelKey;
 
+    static FRAME: LabelKey = LabelKey::new("frame");
+    static PASS: LabelKey = LabelKey::new("pass");
+    static NODE: LabelKey = LabelKey::new("node");
+    static REASON: LabelKey = LabelKey::new("reason");
+    static CACHE: LabelKey = LabelKey::new("cache");
+    static FILLER: [LabelKey; CONTEXT_INLINE_CAPACITY] = [
+        LabelKey::new("k0"),
+        LabelKey::new("k1"),
+        LabelKey::new("k2"),
+        LabelKey::new("k3"),
+        LabelKey::new("k4"),
+        LabelKey::new("k5"),
+        LabelKey::new("k6"),
+        LabelKey::new("k7"),
+    ];
+
     #[test]
     fn root_context_is_empty() {
         let context = Context::root();
@@ -167,27 +199,22 @@ mod tests {
 
     #[test]
     fn appended_labels_preserve_order() {
-        let context = Context::root()
-            .with(LabelKey::Frame, 7_u32)
-            .with(LabelKey::Pass, 3_u64);
+        let context = Context::root().with(&FRAME, 7_u32).with(&PASS, 3_u64);
 
         let entries = context.as_slice();
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].key(), LabelKey::Frame);
-        assert_eq!(entries[1].key(), LabelKey::Pass);
+        assert_eq!(entries[0].key(), &FRAME);
+        assert_eq!(entries[0].key().name(), "frame");
+        assert_eq!(entries[1].key(), &PASS);
     }
 
     #[test]
     fn duplicate_key_replaces_existing_value() {
-        let context = Context::root()
-            .with(LabelKey::Frame, 7_u32)
-            .with(LabelKey::Frame, 11_u32);
+        let context = Context::root().with(&FRAME, 7_u32).with(&FRAME, 11_u32);
 
         assert_eq!(context.len(), 1);
         assert_eq!(
-            context
-                .get(LabelKey::Frame)
-                .and_then(|value| value.as_unsigned()),
+            context.get(&FRAME).and_then(|value| value.as_unsigned()),
             Some(11)
         );
     }
@@ -195,34 +222,29 @@ mod tests {
     #[test]
     fn contains_and_get_follow_inserted_labels() {
         let context = Context::root()
-            .with(LabelKey::Node, 42_u32)
-            .with(LabelKey::Reason, "invalidate");
+            .with(&NODE, 42_u32)
+            .with(&REASON, "invalidate");
 
-        assert!(context.contains(LabelKey::Node));
+        assert!(context.contains(&NODE));
         assert_eq!(
-            context
-                .get(LabelKey::Reason)
-                .and_then(|value| value.as_static_str()),
+            context.get(&REASON).and_then(|value| value.as_static_str()),
             Some("invalidate")
         );
-        assert!(!context.contains(LabelKey::Cache));
+        assert!(!context.contains(&CACHE));
+    }
+
+    #[test]
+    fn contexts_with_equal_labels_are_equal() {
+        let first = Context::root().with(&FRAME, 1_u32).with(&PASS, 2_u32);
+        let second = Context::root().with(&FRAME, 1_u32).with(&PASS, 2_u32);
+        assert_eq!(first, second);
+        assert_ne!(first, Context::root().with(&FRAME, 1_u32));
     }
 
     #[test]
     fn try_with_reports_capacity() {
         let mut context = Context::root();
-        let keys = [
-            LabelKey::Frame,
-            LabelKey::Transaction,
-            LabelKey::Pass,
-            LabelKey::Subsystem,
-            LabelKey::Node,
-            LabelKey::Widget,
-            LabelKey::Layer,
-            LabelKey::Resource,
-        ];
-
-        for (index, key) in keys.into_iter().enumerate().take(CONTEXT_INLINE_CAPACITY) {
+        for (index, key) in FILLER.iter().enumerate() {
             context = context
                 .try_with(
                     key,
@@ -231,7 +253,7 @@ mod tests {
                 .expect("context entry should fit");
         }
 
-        let result = context.try_with(LabelKey::Cache, 99_u32);
+        let result = context.try_with(&CACHE, 99_u32);
         assert_eq!(result, Err(ContextCapacityError));
     }
 }

@@ -1,49 +1,86 @@
 // Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use crate::ResourceId;
+use crate::{ResourceId, descriptor::StaticOnly};
+use core::{
+    fmt,
+    hash::{Hash, Hasher},
+    ptr,
+};
 
-/// Shared label keys used to attribute work and counters.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum LabelKey {
-    /// A frame boundary or frame-local owner.
-    Frame,
-    /// A transaction boundary or transaction-local owner.
-    Transaction,
-    /// A pass boundary or pass-local owner.
-    Pass,
-    /// A broad subsystem identifier.
-    Subsystem,
-    /// A display or scene node identifier.
-    Node,
-    /// A widget identifier.
-    Widget,
-    /// A layer identifier.
-    Layer,
-    /// A logical resource identifier.
-    Resource,
-    /// A cache identifier.
-    Cache,
-    /// A causal or invalidation reason.
-    Reason,
+/// Static key for one semantic label, such as a frame or pass number.
+///
+/// Footfall ships no label vocabulary of its own; applications and libraries
+/// declare the keys they attribute work by:
+///
+/// ```
+/// use footfall_core::{Context, LabelKey};
+///
+/// static FRAME: LabelKey = LabelKey::new("frame");
+/// static PASS: LabelKey = LabelKey::new("pass");
+///
+/// let context = Context::root().with(&FRAME, 7_u32).with(&PASS, 1_u32);
+/// assert_eq!(context.get(&FRAME).and_then(|value| value.as_unsigned()), Some(7));
+/// ```
+///
+/// Like descriptors, a key's identity is its address: declare keys as
+/// `static` items (see the [crate docs](crate#descriptors)). A `const` key is
+/// rejected where a `&'static` key is required:
+///
+/// ```compile_fail,E0716
+/// use footfall_core::{Context, LabelKey};
+///
+/// const FRAME: LabelKey = LabelKey::new("frame");
+/// let _context = Context::root().with(&FRAME, 7_u32);
+/// ```
+///
+/// Two keys with the same name are different keys in process, but consumers
+/// that only see names, such as exporters and remote sessions, cannot tell
+/// them apart, so give keys distinct names, for example by prefixing a
+/// library's keys with its name.
+pub struct LabelKey {
+    name: &'static str,
+    _static_only: StaticOnly,
 }
 
+/// Empty key used for unused [`Context`](crate::Context) slots.
+pub(crate) static EMPTY_LABEL_KEY: LabelKey = LabelKey::new("");
+
 impl LabelKey {
-    /// Returns the stable string name for this label key.
+    /// Creates a new label key.
     #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Frame => "frame",
-            Self::Transaction => "transaction",
-            Self::Pass => "pass",
-            Self::Subsystem => "subsystem",
-            Self::Node => "node",
-            Self::Widget => "widget",
-            Self::Layer => "layer",
-            Self::Resource => "resource",
-            Self::Cache => "cache",
-            Self::Reason => "reason",
+    pub const fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            _static_only: StaticOnly,
         }
+    }
+
+    /// Returns the name consumers see for this key.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+impl PartialEq for LabelKey {
+    /// Keys are equal only when they are the same key.
+    fn eq(&self, other: &Self) -> bool {
+        ptr::eq(self, other)
+    }
+}
+
+impl Eq for LabelKey {}
+
+impl Hash for LabelKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        ptr::from_ref(self).hash(state);
+    }
+}
+
+impl fmt::Debug for LabelKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_tuple("LabelKey").field(&self.name).finish()
     }
 }
 
@@ -169,10 +206,14 @@ mod tests {
     use super::{LabelKey, LabelValue};
     use crate::ResourceId;
 
+    static FRAME: LabelKey = LabelKey::new("frame");
+    static OTHER_FRAME: LabelKey = LabelKey::new("frame");
+
     #[test]
-    fn label_key_names_are_stable() {
-        assert_eq!(LabelKey::Frame.as_str(), "frame");
-        assert_eq!(LabelKey::Reason.as_str(), "reason");
+    fn label_keys_expose_names_and_compare_by_identity() {
+        assert_eq!(FRAME.name(), "frame");
+        assert_eq!(FRAME, FRAME);
+        assert_ne!(FRAME, OTHER_FRAME, "same name, different key");
     }
 
     #[test]

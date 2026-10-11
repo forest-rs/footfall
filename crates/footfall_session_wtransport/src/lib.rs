@@ -7,8 +7,8 @@
 //! over a single WebTransport stream; it does not participate in hot-path instrumentation.
 
 use footfall_core::{
-    ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, LabelKey, MarkerKind, MarkerPhase,
-    ResourceId, ResourceKindId, ScopeDescId, ScopeToken, Unit,
+    ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, MarkerKind, MarkerPhase, ResourceId,
+    ResourceKindId, ScopeDescId, ScopeToken, Unit,
 };
 use footfall_runtime::{CounterKind, Snapshot};
 use footfall_session::{
@@ -34,7 +34,7 @@ const DEFAULT_PATH: &str = "/footfall/session";
 const DEFAULT_LOCAL_PORT: u16 = 43_091;
 const DISCOVER_MAGIC: &[u8; 8] = b"FFALLD01";
 const SNAPSHOT_MAGIC: &[u8; 8] = b"FFALLS01";
-const CODEC_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
+const CODEC_VERSION: ProtocolVersion = ProtocolVersion::new(2, 0);
 const RESPONSE_DISCOVERY: u8 = 0;
 const RESPONSE_SNAPSHOT: u8 = 1;
 const RESPONSE_ERROR: u8 = 2;
@@ -1034,7 +1034,7 @@ fn encode_contexts(bytes: &mut Vec<u8>, contexts: &[OwnedContextSnapshot]) -> io
         encode_u64(bytes, context.id.get());
         encode_len(bytes, context.entries.len())?;
         for entry in &context.entries {
-            encode_u8(bytes, encode_label_key(entry.key));
+            encode_string(bytes, &entry.key)?;
             encode_label_value(bytes, &entry.value)?;
         }
     }
@@ -1050,7 +1050,7 @@ fn encode_borrowed_contexts(
         encode_u64(bytes, context.id.get());
         encode_len(bytes, context.context.len())?;
         for entry in context.context.iter() {
-            encode_u8(bytes, encode_label_key(entry.key()));
+            encode_string(bytes, entry.key().name())?;
             encode_borrowed_label_value(bytes, entry.value())?;
         }
     }
@@ -1067,7 +1067,7 @@ fn decode_contexts(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedContextSnapsh
         let mut entries = Vec::with_capacity(entry_len);
         for _ in 0..entry_len {
             entries.push(OwnedContextEntry {
-                key: decode_label_key(decode_u8(cursor)?)?,
+                key: decode_string(cursor)?,
                 value: decode_label_value(cursor)?,
             });
         }
@@ -1629,40 +1629,6 @@ fn decode_observation(cursor: &mut Cursor<'_>) -> io::Result<OwnedObservation> {
     }
 }
 
-fn encode_label_key(key: LabelKey) -> u8 {
-    match key {
-        LabelKey::Frame => 0,
-        LabelKey::Transaction => 1,
-        LabelKey::Pass => 2,
-        LabelKey::Subsystem => 3,
-        LabelKey::Node => 4,
-        LabelKey::Widget => 5,
-        LabelKey::Layer => 6,
-        LabelKey::Resource => 7,
-        LabelKey::Cache => 8,
-        LabelKey::Reason => 9,
-    }
-}
-
-fn decode_label_key(tag: u8) -> io::Result<LabelKey> {
-    match tag {
-        0 => Ok(LabelKey::Frame),
-        1 => Ok(LabelKey::Transaction),
-        2 => Ok(LabelKey::Pass),
-        3 => Ok(LabelKey::Subsystem),
-        4 => Ok(LabelKey::Node),
-        5 => Ok(LabelKey::Widget),
-        6 => Ok(LabelKey::Layer),
-        7 => Ok(LabelKey::Resource),
-        8 => Ok(LabelKey::Cache),
-        9 => Ok(LabelKey::Reason),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unknown label key tag: {tag}"),
-        )),
-    }
-}
-
 fn encode_counter_kind(kind: CounterKind) -> u8 {
     match kind {
         CounterKind::Counter => 0,
@@ -1969,7 +1935,8 @@ mod tests {
     use super::{
         MAX_CONTEXT_ENTRIES_PER_CONTEXT, MAX_ROWS_PER_ENVELOPE, MAX_SESSION_ENVELOPE_BYTES,
         MAX_SESSION_STRING_BYTES, SessionAnnouncement, SessionRequestKind, decode_envelope,
-        encode_envelope, encode_header, encode_u8, encode_u32, encode_u64, map_finish_error,
+        encode_borrowed_envelope, encode_envelope, encode_header, encode_u8, encode_u32,
+        encode_u64, map_finish_error,
     };
     use footfall_core::{
         Context, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, LabelKey, MarkerKind,
@@ -1977,12 +1944,15 @@ mod tests {
     };
     use footfall_runtime::{CounterKind, Snapshot, SnapshotMetadata};
     use footfall_session::{
-        Chunking, EnvelopeHeader, OwnedArgEntry, OwnedCounterSnapshot, OwnedLabelValue,
-        OwnedObservation, OwnedSessionEnvelope, OwnedSessionPayload, OwnedTimedObservation,
-        PROTOCOL_VERSION, collect_snapshot,
+        Chunking, Envelope, EnvelopeHeader, OwnedArgEntry, OwnedContextEntry, OwnedContextSnapshot,
+        OwnedCounterSnapshot, OwnedLabelValue, OwnedObservation, OwnedSessionEnvelope,
+        OwnedSessionPayload, OwnedTimedObservation, PROTOCOL_VERSION, Payload, collect_snapshot,
     };
     use std::io::ErrorKind;
     use wtransport::{VarInt, error::StreamWriteError};
+
+    static FRAME: LabelKey = LabelKey::new("frame");
+    static REASON: LabelKey = LabelKey::new("reason");
 
     #[test]
     fn identity_renewal_tracks_certificate_validity() {
@@ -2039,7 +2009,7 @@ mod tests {
         let encoded = encode_envelope(&counters).expect("encoding should succeed");
         assert_eq!(
             to_hex(&encoded),
-            "010000000400000000000000020000000000000002010000000300000000000000030000\
+            "020000000400000000000000020000000000000002010000000300000000000000030000\
              006f70730101000000000000000007000000000000000e00000000000000"
         );
 
@@ -2067,10 +2037,52 @@ mod tests {
         let encoded = encode_envelope(&events).expect("encoding should succeed");
         assert_eq!(
             to_hex(&encoded),
-            "010000000400000000000000030000000000000003010000000f0000000000000002000000\
+            "020000000400000000000000030000000000000003010000000f0000000000000002000000\
              00000000000500000000000000060000007265636f7264010000000000000009000000000000\
              0001050000006974656d73000300000000000000"
         );
+
+        // Context rows carry label keys by name. The production encoder for
+        // borrowed runtime snapshots must produce the same bytes.
+        let header = EnvelopeHeader {
+            protocol_version: PROTOCOL_VERSION,
+            session_sequence: 4,
+            chunk_index: 1,
+        };
+        let contexts = OwnedSessionEnvelope {
+            header,
+            payload: OwnedSessionPayload::Contexts(vec![OwnedContextSnapshot {
+                id: ContextId::new(1),
+                entries: vec![
+                    OwnedContextEntry {
+                        key: String::from("frame"),
+                        value: OwnedLabelValue::Unsigned(7),
+                    },
+                    OwnedContextEntry {
+                        key: String::from("reason"),
+                        value: OwnedLabelValue::String(String::from("invalidate")),
+                    },
+                ],
+            }]),
+        };
+        let expected = "02000000040000000000000001000000000000000101000000010000000000000002000000\
+                        050000006672616d6500070000000000000006000000726561736f6e030a000000696e76\
+                        616c6964617465";
+        let encoded = encode_envelope(&contexts).expect("encoding should succeed");
+        assert_eq!(to_hex(&encoded), expected.replace(' ', ""));
+
+        let borrowed = [footfall_runtime::ContextSnapshot {
+            id: ContextId::new(1),
+            context: Context::root()
+                .with(&FRAME, 7_u32)
+                .with(&REASON, "invalidate"),
+        }];
+        let encoded = encode_borrowed_envelope(Envelope {
+            header,
+            payload: Payload::Contexts(&borrowed),
+        })
+        .expect("encoding should succeed");
+        assert_eq!(to_hex(&encoded), expected.replace(' ', ""));
     }
 
     #[test]
@@ -2087,8 +2099,8 @@ mod tests {
             contexts: vec![footfall_runtime::ContextSnapshot {
                 id: ContextId::new(0),
                 context: Context::root()
-                    .with(LabelKey::Frame, 9_u32)
-                    .with(LabelKey::Reason, "invalidate"),
+                    .with(&FRAME, 9_u32)
+                    .with(&REASON, "invalidate"),
             }],
             counters: vec![footfall_runtime::CounterSnapshot {
                 desc_id: CounterDescId::new(3),
@@ -2314,7 +2326,7 @@ mod tests {
 
         // The frame starts with little-endian u16 major and u16 minor.
         let mut different_major = encoded.clone();
-        different_major[0..2].copy_from_slice(&2_u16.to_le_bytes());
+        different_major[0..2].copy_from_slice(&(crate::CODEC_VERSION.major() + 1).to_le_bytes());
         let error = decode_envelope(&different_major)
             .expect_err("decoder should reject a different major version");
         assert_eq!(error.kind(), ErrorKind::InvalidData);

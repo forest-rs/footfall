@@ -1150,9 +1150,13 @@ mod tests {
     use super::{CounterKind, Observation, Runtime};
     use footfall_core::{
         Args, Backend as _, Context, ContextId, CounterDesc, FlowId, FlowPhase,
-        InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ScopeDesc,
-        ScopeToken, Unit,
+        InstrumentationLevel, LabelKey, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc,
+        ScopeDesc, ScopeToken, Unit,
     };
+
+    static FRAME: LabelKey = LabelKey::new("frame");
+    static PASS: LabelKey = LabelKey::new("pass");
+    static NODE: LabelKey = LabelKey::new("node");
 
     #[test]
     fn messages_are_captured_with_truncated_text() {
@@ -1199,7 +1203,7 @@ mod tests {
     fn histograms_aggregate_bucketed_distributions() {
         let runtime = Runtime::new(8, 8);
         static LATENCY: CounterDesc = CounterDesc::new("frame_micros", Unit::Micros);
-        let context = Context::root().with(footfall_core::LabelKey::Pass, 1_u32);
+        let context = Context::root().with(&PASS, 1_u32);
 
         runtime.histogram_record_at(&LATENCY, context, 0, 1);
         runtime.histogram_record_at(&LATENCY, context, 1, 2);
@@ -1250,11 +1254,9 @@ mod tests {
                 let runtime = &runtime;
 
                 scope.spawn(move || {
-                    let shared = Context::root().with(footfall_core::LabelKey::Pass, 1_u32);
-                    let distinct = Context::root().with(
-                        footfall_core::LabelKey::Node,
-                        u32::try_from(thread).expect("thread index fits"),
-                    );
+                    let shared = Context::root().with(&PASS, 1_u32);
+                    let distinct = Context::root()
+                        .with(&NODE, u32::try_from(thread).expect("thread index fits"));
                     for update in 0..UPDATES {
                         runtime.counter_add_at(&OPS, shared, 1, update);
                         runtime.counter_add_at(&OPS, distinct, 1, update);
@@ -1315,7 +1317,7 @@ mod tests {
         let runtime = Runtime::new(2, 2);
         static OPS: CounterDesc = CounterDesc::count("ops");
         for node in 0..32_u32 {
-            let context = Context::root().with(footfall_core::LabelKey::Node, node);
+            let context = Context::root().with(&NODE, node);
             runtime.counter_add_at(&OPS, context, 1, u64::from(node));
         }
 
@@ -1363,7 +1365,7 @@ mod tests {
         static OPS: CounterDesc = CounterDesc::count("ops");
         static ATLAS: ResourceKindDesc = ResourceKindDesc::new("atlas");
         static RECORD: ScopeDesc = ScopeDesc::new("record");
-        let context = Context::root().with(footfall_core::LabelKey::Pass, 1_u32);
+        let context = Context::root().with(&PASS, 1_u32);
 
         runtime.counter_add_at(&OPS, context, 5, 10);
         runtime.gauge_set_at(&OPS, context, 9, 11);
@@ -1439,7 +1441,7 @@ mod tests {
         static FIRST: ScopeDesc = ScopeDesc::new("first");
         static SECOND: ScopeDesc = ScopeDesc::new("second");
         let context_id = runtime
-            .context_id(Context::root().with(footfall_core::LabelKey::Pass, 1_u32))
+            .context_id(Context::root().with(&PASS, 1_u32))
             .expect("context should intern");
 
         for desc in [&FIRST, &SECOND] {
@@ -1494,7 +1496,7 @@ mod tests {
         runtime.set_session_name("recording");
 
         let context_id = runtime
-            .context_id(Context::root().with(footfall_core::LabelKey::Frame, 1_u32))
+            .context_id(Context::root().with(&FRAME, 1_u32))
             .expect("context should intern");
         runtime.push_event_at(
             Observation::FrameMarker {
@@ -1584,7 +1586,7 @@ mod tests {
     #[test]
     fn runtime_enforces_counter_capacity_across_shards() {
         let runtime = Runtime::new(1, 4);
-        let context = Context::root().with(footfall_core::LabelKey::Frame, 1_u32);
+        let context = Context::root().with(&FRAME, 1_u32);
         static FIRST: CounterDesc = CounterDesc::count("first");
         static SECOND: CounterDesc = CounterDesc::count("second");
 
@@ -1604,7 +1606,7 @@ mod tests {
 
         let runtime = Runtime::with_level(16, 16, InstrumentationLevel::Counters);
 
-        let context = Context::root().with(footfall_core::LabelKey::Frame, 3_u32);
+        let context = Context::root().with(&FRAME, 3_u32);
         runtime.counter_add(&COUNTER, context, 1);
         let token = runtime.scope_begin(&SCOPE, context, Args::none());
         assert_eq!(token, ScopeToken::INVALID);
