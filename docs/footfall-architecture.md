@@ -475,6 +475,9 @@ A custom viewer should wait until the exported traces expose stable pain points 
 
 Footfall should be measured, not merely described as "lightweight."
 
+The Criterion benchmarks and current numbers live in
+[Performance](performance.md).
+
 At minimum, benchmarks should report:
 
 - disabled-call overhead
