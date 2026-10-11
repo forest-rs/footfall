@@ -18,7 +18,7 @@ The workspace currently contains:
 - `footfall_fanout`: backend composition for feeding multiple sinks at once
 - `footfall_tracing`: a `tracing` subscriber layer that forwards spans and
   events into Footfall
-- `footfall_benchmarks`: top-level benchmark wind tunnel for substrate overhead
+- `footfall_benchmarks`: Criterion benchmarks for substrate overhead
 - `examples/basic`: a top-level example crate to avoid spreading dev
   dependencies through core packages
 
@@ -36,6 +36,7 @@ Start here:
 - [Session Consumer Contract](docs/session-consumer-contract.md)
 - [WebTransport Session Wire Format](docs/session-wire-format.md)
 - [Migration Notes](docs/migration-notes.md)
+- [Performance](docs/performance.md)
 
 ## Local Attach
 
