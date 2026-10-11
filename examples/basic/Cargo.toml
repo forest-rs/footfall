@@ -11,18 +11,18 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 publish = false
-description = "Top-level examples for the Spoor workspace."
+description = "Top-level examples for the Footfall workspace."
 
 [dependencies]
-spoor = { features = ["std"], workspace = true }
-spoor_export.workspace = true
-spoor_fanout.workspace = true
-spoor_memory = { features = ["std"], workspace = true }
-spoor_runtime.workspace = true
-spoor_session = { features = ["std"], workspace = true }
-spoor_session_wtransport.workspace = true
-spoor_tracing.workspace = true
-spoor_tracy.workspace = true
+footfall = { features = ["std"], workspace = true }
+footfall_export.workspace = true
+footfall_fanout.workspace = true
+footfall_memory = { features = ["std"], workspace = true }
+footfall_runtime.workspace = true
+footfall_session = { features = ["std"], workspace = true }
+footfall_session_wtransport.workspace = true
+footfall_tracing.workspace = true
+footfall_tracy.workspace = true
 tokio = { features = ["macros", "rt-multi-thread", "signal", "time"], version = "1.51.1" }
 tracing = "0.1.41"
 tracing-subscriber = { default-features = false, features = ["registry", "std"], version = "0.3.20" }

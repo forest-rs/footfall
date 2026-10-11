@@ -1,18 +1,18 @@
-// Copyright 2026 the Spoor Authors
+// Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! End-to-end WebTransport session demo for Spoor.
+//! End-to-end WebTransport session demo for Footfall.
 
 mod session_demo;
 mod session_summary;
 
-use session_demo::DemoCapture;
-use session_summary::{print_summary, summarize};
-use spoor_session::Chunking;
-use spoor_session_wtransport::{
+use footfall_session::Chunking;
+use footfall_session_wtransport::{
     ServedRequestKind, SessionAnnouncement, SessionIdentity, SessionRequestKind, SessionServer,
     SessionServerConfig, default_local_url, discover_local_sessions, fetch_local_session,
 };
+use session_demo::DemoCapture;
+use session_summary::{print_summary, summarize};
 
 #[tokio::main]
 async fn main() {

@@ -1,17 +1,17 @@
 # Migration Notes
 
-This document records public behavior changes while Spoor is still pre-1.0.
+This document records public behavior changes while Footfall is still pre-1.0.
 
 ## Current Workspace Baseline
 
 The workspace is now a small crate family rather than the original two-crate
 seed:
 
-- `spoor_core` and `spoor` define the call-site surface.
-- `spoor_runtime` collects bounded in-process snapshots.
-- `spoor_session` defines the transport-neutral consumer contract.
-- `spoor_session_wtransport` provides a localhost WebTransport attach path.
-- `spoor_export`, `spoor_tracy`, `spoor_fanout`, and `spoor_memory` stay
+- `footfall_core` and `footfall` define the call-site surface.
+- `footfall_runtime` collects bounded in-process snapshots.
+- `footfall_session` defines the transport-neutral consumer contract.
+- `footfall_session_wtransport` provides a localhost WebTransport attach path.
+- `footfall_export`, `footfall_tracy`, `footfall_fanout`, and `footfall_memory` stay
   downstream of the core seam.
 
 ## Runtime Capture Levels
@@ -34,8 +34,8 @@ ordered by timestamp during snapshot extraction.
 
 ## Session Wire Format
 
-The transport-neutral envelope model remains in `spoor_session`. The
-WebTransport codec is an implementation detail of `spoor_session_wtransport`,
+The transport-neutral envelope model remains in `footfall_session`. The
+WebTransport codec is an implementation detail of `footfall_session_wtransport`,
 but it is now documented in
 [WebTransport Session Wire Format](session-wire-format.md) and bounded so
 consumer bugs fail predictably instead of allocating from untrusted lengths.

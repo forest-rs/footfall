@@ -1,16 +1,16 @@
 [workspace]
 members = [
     "benchmarks/substrate",
-    "crates/spoor",
-    "crates/spoor_core",
-    "crates/spoor_export",
-    "crates/spoor_fanout",
-    "crates/spoor_memory",
-    "crates/spoor_runtime",
-    "crates/spoor_session",
-    "crates/spoor_session_wtransport",
-    "crates/spoor_tracing",
-    "crates/spoor_tracy",
+    "crates/footfall",
+    "crates/footfall_core",
+    "crates/footfall_export",
+    "crates/footfall_fanout",
+    "crates/footfall_memory",
+    "crates/footfall_runtime",
+    "crates/footfall_session",
+    "crates/footfall_session_wtransport",
+    "crates/footfall_tracing",
+    "crates/footfall_tracy",
     "examples/basic",
 ]
 resolver = "2"
@@ -19,26 +19,26 @@ resolver = "2"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88.0"
-authors = ["Spoor Contributors"]
+authors = ["Footfall Contributors"]
 license = "Apache-2.0 OR MIT"
-repository = "https://github.com/forest-rs/spoor"
-homepage = "https://github.com/forest-rs/spoor"
+repository = "https://github.com/forest-rs/footfall"
+homepage = "https://github.com/forest-rs/footfall"
 readme = "README.md"
 keywords = ["instrumentation", "observability", "profiling", "tracing"]
 categories = ["development-tools::debugging", "development-tools::profiling"]
 
 [workspace.dependencies]
 # Internal crate dependencies
-spoor = { default-features = false, path = "crates/spoor" }
-spoor_core = { default-features = false, path = "crates/spoor_core" }
-spoor_export = { default-features = false, path = "crates/spoor_export" }
-spoor_fanout = { default-features = false, path = "crates/spoor_fanout" }
-spoor_memory = { default-features = false, path = "crates/spoor_memory" }
-spoor_runtime = { default-features = false, path = "crates/spoor_runtime" }
-spoor_session = { default-features = false, path = "crates/spoor_session" }
-spoor_session_wtransport = { default-features = false, path = "crates/spoor_session_wtransport" }
-spoor_tracing = { default-features = false, path = "crates/spoor_tracing" }
-spoor_tracy = { default-features = false, path = "crates/spoor_tracy" }
+footfall = { default-features = false, path = "crates/footfall" }
+footfall_core = { default-features = false, path = "crates/footfall_core" }
+footfall_export = { default-features = false, path = "crates/footfall_export" }
+footfall_fanout = { default-features = false, path = "crates/footfall_fanout" }
+footfall_memory = { default-features = false, path = "crates/footfall_memory" }
+footfall_runtime = { default-features = false, path = "crates/footfall_runtime" }
+footfall_session = { default-features = false, path = "crates/footfall_session" }
+footfall_session_wtransport = { default-features = false, path = "crates/footfall_session_wtransport" }
+footfall_tracing = { default-features = false, path = "crates/footfall_tracing" }
+footfall_tracy = { default-features = false, path = "crates/footfall_tracy" }
 tracy-client = { default-features = false, version = "0.18.4" }
 
 [workspace.lints]

@@ -1,0 +1,22 @@
+[package]
+name = "footfall_runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Bounded runtime collection for the Footfall observability family."
+
+[dependencies]
+footfall_core = { features = ["std"], workspace = true }
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true

@@ -1,12 +1,14 @@
-// Copyright 2026 the Spoor Authors
+// Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! WebTransport session consumer demo for Spoor.
+//! WebTransport session consumer demo for Footfall.
 
 mod session_summary;
 
+use footfall_session_wtransport::{
+    SessionAnnouncement, discover_local_sessions, fetch_local_session,
+};
 use session_summary::{print_summary, summarize};
-use spoor_session_wtransport::{SessionAnnouncement, discover_local_sessions, fetch_local_session};
 use std::{env, process};
 
 #[tokio::main]

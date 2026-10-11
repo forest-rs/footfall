@@ -1,34 +1,34 @@
-# Spoor
+# Footfall
 
-Spoor is a family of Rust crates for low-overhead instrumentation, semantic
+Footfall is a family of Rust crates for low-overhead instrumentation, semantic
 tracing, counters, memory observation, and downstream projection into existing
 profiling and visualization tools.
 
 The workspace currently contains:
 
-- `spoor_core`: foundational ids, descriptors, context, levels, and emission
+- `footfall_core`: foundational ids, descriptors, context, levels, and emission
   primitives
-- `spoor`: a thin facade over `spoor_core`
-- `spoor_runtime`: bounded in-process collection and snapshot extraction
-- `spoor_memory`: scratch and cache helpers layered over core counters
-- `spoor_session`: transport-neutral snapshot envelopes for downstream
+- `footfall`: a thin facade over `footfall_core`
+- `footfall_runtime`: bounded in-process collection and snapshot extraction
+- `footfall_memory`: scratch and cache helpers layered over core counters
+- `footfall_session`: transport-neutral snapshot envelopes for downstream
   consumers
-- `spoor_session_wtransport`: local attach path for discovery and snapshot
+- `footfall_session_wtransport`: local attach path for discovery and snapshot
   fetch over WebTransport
-- `spoor_fanout`: backend composition for feeding multiple sinks at once
-- `spoor_tracing`: a `tracing` subscriber layer that forwards spans and
-  events into Spoor
-- `spoor_benchmarks`: top-level benchmark wind tunnel for substrate overhead
+- `footfall_fanout`: backend composition for feeding multiple sinks at once
+- `footfall_tracing`: a `tracing` subscriber layer that forwards spans and
+  events into Footfall
+- `footfall_benchmarks`: top-level benchmark wind tunnel for substrate overhead
 - `examples/basic`: a top-level example crate to avoid spreading dev
   dependencies through core packages
 
 ## External Use
 
-Spoor is intended to be usable from outside this repo in two directions:
+Footfall is intended to be usable from outside this repo in two directions:
 
-- instrument your own application with `spoor`, `spoor_runtime`, and related
-  helper crates
-- build a separate consumer or UI that attaches to a running Spoor session
+- instrument your own application with `footfall`, `footfall_runtime`, and
+  related helper crates
+- build a separate consumer or UI that attaches to a running Footfall session
 
 Start here:
 
@@ -41,8 +41,8 @@ Start here:
 
 The current local attach workflow is:
 
-1. your process installs `spoor_runtime`
-2. your process serves sessions through `spoor_session_wtransport`
+1. your process installs `footfall_runtime`
+2. your process serves sessions through `footfall_session_wtransport`
 3. a consumer connects to the fixed local server and discovers active sessions
 
 The examples show that flow directly:
@@ -52,8 +52,8 @@ The examples show that flow directly:
 - `cargo run -p basic --bin session_server`
 - `cargo run -p basic --bin session_consumer`
 
-The session examples include direct Spoor instrumentation plus `tracing`
-spans/events bridged through `spoor_tracing`. For a compact Chrome Trace JSON
+The session examples include direct Footfall instrumentation plus `tracing`
+spans/events bridged through `footfall_tracing`. For a compact Chrome Trace JSON
 view of just the tracing bridge:
 
-- `cargo run -p basic --bin tracing_demo > /tmp/spoor-tracing.json`
+- `cargo run -p basic --bin tracing_demo > /tmp/footfall-tracing.json`

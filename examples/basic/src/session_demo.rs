@@ -1,47 +1,47 @@
-// Copyright 2026 the Spoor Authors
+// Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use spoor::{
+use footfall::{
     Context, CounterDesc, EventDesc, FlowId, LabelKey, ResourceId, ResourceKindDesc, ScopeDesc,
     counter_add, flow_begin, flow_end, flow_step, frame_begin, frame_end, histogram_record,
     message_with, pass_begin, pass_end, resource_create, resource_drop, resource_update, scope,
     scope_with,
 };
-use spoor_memory::{CacheMetrics, CacheStats, ScratchMetrics, TrackedScratchVec};
-use spoor_runtime::{Runtime, Snapshot};
-use spoor_tracing::SpoorLayer;
+use footfall_memory::{CacheMetrics, CacheStats, ScratchMetrics, TrackedScratchVec};
+use footfall_runtime::{Runtime, Snapshot};
+use footfall_tracing::FootfallLayer;
 use tracing_subscriber::layer::SubscriberExt as _;
 
-static RECORD_FRAME: ScopeDesc = spoor::scope_desc!(
+static RECORD_FRAME: ScopeDesc = footfall::scope_desc!(
     1,
     "record_frame",
     "session_demo::DemoCapture::capture_frame"
 );
-static TESSELLATE_NODE: ScopeDesc = spoor::scope_desc!(
+static TESSELLATE_NODE: ScopeDesc = footfall::scope_desc!(
     2,
     "tessellate_node",
     "session_demo::DemoCapture::capture_frame",
 );
-static UPLOAD_ATLAS: ScopeDesc = spoor::scope_desc!(
+static UPLOAD_ATLAS: ScopeDesc = footfall::scope_desc!(
     3,
     "upload_atlas",
     "session_demo::DemoCapture::capture_frame"
 );
 
-static DRAW_OPS: CounterDesc = spoor::counter_desc!(count, 10, "draw_ops");
-static UPLOAD_BYTES: CounterDesc = spoor::counter_desc!(bytes, 11, "upload_bytes");
-static CACHE_CURRENT: CounterDesc = spoor::counter_desc!(bytes, 12, "cache_current_bytes");
-static CACHE_HITS: CounterDesc = spoor::counter_desc!(count, 13, "cache_hits");
-static CACHE_MISSES: CounterDesc = spoor::counter_desc!(count, 14, "cache_misses");
-static CACHE_EVICTIONS: CounterDesc = spoor::counter_desc!(count, 15, "cache_evictions");
-static SCRATCH_CURRENT: CounterDesc = spoor::counter_desc!(bytes, 16, "scratch_current_bytes");
-static SCRATCH_PEAK: CounterDesc = spoor::counter_desc!(bytes, 17, "scratch_peak_bytes");
-static SCRATCH_GROW: CounterDesc = spoor::counter_desc!(count, 18, "scratch_grow");
+static DRAW_OPS: CounterDesc = footfall::counter_desc!(count, 10, "draw_ops");
+static UPLOAD_BYTES: CounterDesc = footfall::counter_desc!(bytes, 11, "upload_bytes");
+static CACHE_CURRENT: CounterDesc = footfall::counter_desc!(bytes, 12, "cache_current_bytes");
+static CACHE_HITS: CounterDesc = footfall::counter_desc!(count, 13, "cache_hits");
+static CACHE_MISSES: CounterDesc = footfall::counter_desc!(count, 14, "cache_misses");
+static CACHE_EVICTIONS: CounterDesc = footfall::counter_desc!(count, 15, "cache_evictions");
+static SCRATCH_CURRENT: CounterDesc = footfall::counter_desc!(bytes, 16, "scratch_current_bytes");
+static SCRATCH_PEAK: CounterDesc = footfall::counter_desc!(bytes, 17, "scratch_peak_bytes");
+static SCRATCH_GROW: CounterDesc = footfall::counter_desc!(count, 18, "scratch_grow");
 static TESSELLATE_MICROS: CounterDesc =
-    spoor::counter_desc!(19, "tessellate_micros", spoor::Unit::Micros);
-static APP_LOG: EventDesc = spoor::event_desc!(21, "app_log");
+    footfall::counter_desc!(19, "tessellate_micros", footfall::Unit::Micros);
+static APP_LOG: EventDesc = footfall::event_desc!(21, "app_log");
 
-static ATLAS: ResourceKindDesc = spoor::resource_kind_desc!(20, "atlas");
+static ATLAS: ResourceKindDesc = footfall::resource_kind_desc!(20, "atlas");
 static ATLAS_ID: ResourceId = ResourceId::new(9);
 static INVALIDATION_FLOW: FlowId = FlowId::new(1);
 
@@ -59,7 +59,7 @@ impl DemoCapture {
     }
 
     pub(crate) fn capture_frame(&self, frame: u32) -> Snapshot {
-        let subscriber = tracing_subscriber::registry().with(SpoorLayer::default());
+        let subscriber = tracing_subscriber::registry().with(FootfallLayer::default());
         tracing::subscriber::with_default(subscriber, || self.capture_frame_with_tracing(frame))
     }
 
@@ -107,7 +107,7 @@ impl DemoCapture {
                 let _tessellate_scope = scope_with(
                     &TESSELLATE_NODE,
                     record_context,
-                    spoor::args!("scratch_items" => scratch_items),
+                    footfall::args!("scratch_items" => scratch_items),
                 );
                 let tracing_tessellate =
                     tracing::debug_span!("session_tessellate", paths = u64::from(scratch_items));
@@ -126,7 +126,7 @@ impl DemoCapture {
                     &APP_LOG,
                     record_context,
                     "tessellation finished",
-                    spoor::args!("items" => scratch_items, "level" => "info"),
+                    footfall::args!("items" => scratch_items, "level" => "info"),
                 );
                 tracing::debug!(
                     scratch_items = u64::from(scratch_items),
