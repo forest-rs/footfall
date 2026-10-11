@@ -8,11 +8,11 @@ use footfall::{
     ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, SourceLocation, counter_add,
     frame_marker, resource_create, resource_drop, resource_update, scope_begin, scope_end,
 };
-use footfall_fanout::{Fanout, install_global as install_fanout};
+use footfall_fanout::Fanout;
 use footfall_memory::{CacheMetrics, CacheStats, ScratchMetrics, TrackedScratchVec};
-use footfall_runtime::{Runtime, backend as runtime_backend, register_global as register_runtime};
+use footfall_runtime::Runtime;
 use footfall_session::{Chunking, Consumer, Envelope, Payload, publish_snapshot};
-use footfall_tracy::{Tracy, backend as tracy_backend, register_global as register_tracy};
+use footfall_tracy::TracyBackend;
 use std::{thread::sleep, time::Duration};
 
 static RECORD_FRAME: ScopeDesc = ScopeDesc::with_location(
@@ -52,11 +52,10 @@ fn main() {
     let runtime = Box::leak(Box::new(
         Runtime::named("tracy_live", 512, 2048).with_session_name("tracy_live"),
     ));
-    let tracy = Box::leak(Box::new(Tracy::new()));
-    register_runtime(runtime).expect("global runtime should register once");
-    register_tracy(tracy).expect("global Tracy backend should register once");
-    let fanout = Box::leak(Box::new(Fanout::new(runtime_backend(), tracy_backend())));
-    install_fanout(fanout).expect("fanout backend should install once");
+    let tracy: &'static TracyBackend = Box::leak(Box::new(TracyBackend::new()));
+    Fanout::new(runtime, tracy)
+        .install_global()
+        .expect("fanout backend should install once");
     tracy.set_current_thread_name("main");
     let scratch_metrics = ScratchMetrics {
         current_bytes: &SCRATCH_CURRENT,

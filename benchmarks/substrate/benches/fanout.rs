@@ -8,7 +8,7 @@
 //! adds on top of the runtime-direct cases in the `runtime` target.
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use footfall::{Backend, InstrumentationLevel, counter_add, scope_begin, scope_end};
+use footfall::{InstrumentationLevel, NoopBackend, counter_add, scope_begin, scope_end};
 use footfall_benchmarks::{
     COUNTER_CAPACITY, EVENT_CAPACITY, MEASUREMENT, OPS, RECORD, WARM_UP, sample_context,
     time_chunked,
@@ -27,13 +27,8 @@ fn runtime() -> &'static Runtime {
             EVENT_CAPACITY,
             InstrumentationLevel::Off,
         )));
-        footfall_runtime::register_global(runtime)
-            .expect("benchmark runtime should register once per process");
-        let fanout: &'static Fanout = Box::leak(Box::new(Fanout::new(
-            footfall_runtime::backend(),
-            Backend::NOOP,
-        )));
-        footfall_fanout::install_global(fanout)
+        Fanout::new(runtime, &NoopBackend)
+            .install_global()
             .expect("benchmark fanout should install once per process");
         runtime
     })
