@@ -123,6 +123,13 @@ Counter rows carry a `u8` unit tag after the descriptor name:
 - `4`: ratio
 - `5`: items
 
+Descriptor ids in counter, histogram, scope-begin, message, and resource
+rows are opaque, session-scoped `u64` values: dense integers from `1`, shared
+across descriptor kinds, assigned by the producer in first-seen order and
+reset when the capture session resets. They are never memory addresses.
+Consumers may use them to group rows within one session but must not compare
+them across sessions; the descriptor name travels next to every id.
+
 Event rows carry a `u64` runtime-assigned thread id after the timestamp. Ids
 are small integers assigned in first-emission order within one process
 lifetime; they are not OS thread ids.

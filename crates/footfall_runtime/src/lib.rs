@@ -200,7 +200,7 @@ impl Runtime {
     }
 
     fn snapshot_at(&self, captured_at_micros: u64) -> Snapshot {
-        let session = self
+        let mut session = self
             .session
             .lock()
             .expect("runtime session mutex should not be poisoned");
@@ -230,6 +230,19 @@ impl Runtime {
             );
         }
         events.sort_by_key(event_sort_key);
+        // Counter maps iterate in arbitrary order; sort so snapshots, and
+        // the dense descriptor ids assigned below, are deterministic.
+        counters.sort_by_key(|counter| {
+            (
+                counter.name,
+                counter.context_id,
+                counter_kind_discriminant(counter.kind),
+            )
+        });
+        histograms.sort_by_key(|histogram| (histogram.name, histogram.context_id));
+        session
+            .descriptor_ids
+            .remap(&mut events, &mut counters, &mut histograms);
 
         Snapshot {
             metadata: self.metadata(&session),
@@ -252,6 +265,7 @@ impl Runtime {
             .expect("runtime session mutex should not be poisoned");
         session.capture_start_micros = capture_start_micros;
         session.session_sequence = session.session_sequence.saturating_add(1);
+        session.descriptor_ids.clear();
 
         // Scope tokens stay monotonic across session resets so a scope that
         // straddles a drain cannot collide with tokens issued afterwards.
@@ -452,6 +466,14 @@ impl Runtime {
 }
 
 /// Snapshot of counters, canonical contexts, and events retained by a [`Runtime`].
+///
+/// Descriptor ids in a snapshot ([`ScopeDescId`], [`CounterDescId`],
+/// [`EventDescId`], and [`ResourceKindId`]) are opaque and session-scoped:
+/// dense integers from `1`, shared across descriptor kinds, assigned in
+/// first-seen order (events, then counters, then histograms). They stay fixed
+/// for the rest of a capture session, so repeated snapshots agree, and start
+/// over when the session resets. The address-derived identity that
+/// descriptors have inside the process never appears in a snapshot.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Snapshot {
     /// Snapshot metadata identifying the process and capture session.
@@ -518,7 +540,7 @@ pub struct ContextSnapshot {
 /// One aggregated counter or gauge value.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CounterSnapshot {
-    /// Counter descriptor id.
+    /// Session-scoped counter descriptor id; see [`Snapshot`].
     pub desc_id: CounterDescId,
     /// Stable descriptor name.
     pub name: &'static str,
@@ -554,7 +576,7 @@ pub const HISTOGRAM_BUCKET_COUNT: usize = 64;
 /// runtime counter capacity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HistogramSnapshot {
-    /// Counter descriptor id.
+    /// Session-scoped counter descriptor id; see [`Snapshot`].
     pub desc_id: CounterDescId,
     /// Stable descriptor name.
     pub name: &'static str,
@@ -640,7 +662,7 @@ pub struct TimedObservation {
 pub enum Observation {
     /// Scope begin event.
     ScopeBegin {
-        /// Descriptor id for the scope.
+        /// Session-scoped descriptor id for the scope; see [`Snapshot`].
         desc_id: ScopeDescId,
         /// Stable descriptor name.
         name: &'static str,
@@ -658,7 +680,7 @@ pub enum Observation {
     },
     /// Resource creation event.
     ResourceCreate {
-        /// Resource kind id.
+        /// Session-scoped resource kind id; see [`Snapshot`].
         kind_id: ResourceKindId,
         /// Stable resource kind name.
         kind_name: &'static str,
@@ -671,7 +693,7 @@ pub enum Observation {
     },
     /// Resource update event.
     ResourceUpdate {
-        /// Resource kind id.
+        /// Session-scoped resource kind id; see [`Snapshot`].
         kind_id: ResourceKindId,
         /// Stable resource kind name.
         kind_name: &'static str,
@@ -684,7 +706,7 @@ pub enum Observation {
     },
     /// Resource drop event.
     ResourceDrop {
-        /// Resource kind id.
+        /// Session-scoped resource kind id; see [`Snapshot`].
         kind_id: ResourceKindId,
         /// Stable resource kind name.
         kind_name: &'static str,
@@ -713,7 +735,8 @@ pub enum Observation {
     },
     /// Message event with bounded text.
     Message {
-        /// Descriptor id for the message channel.
+        /// Session-scoped descriptor id for the message channel; see
+        /// [`Snapshot`].
         desc_id: EventDescId,
         /// Stable descriptor name.
         name: &'static str,
@@ -748,6 +771,67 @@ struct SessionState {
     capture_start_micros: u64,
     session_sequence: u64,
     session_name: Option<String>,
+    descriptor_ids: DescriptorIds,
+}
+
+/// Maps descriptor addresses to dense, session-scoped snapshot ids.
+///
+/// Descriptor identity inside the process is the descriptor's address, which
+/// must never reach a snapshot consumer: it would reveal the process memory
+/// layout to anything that can attach to a session. Snapshots therefore carry
+/// dense ids from one id space shared by every descriptor kind (scope,
+/// counter, event, and resource kind), assigned from `1` in first-seen order:
+/// events in snapshot order, then counters, then histograms. Assignments stay
+/// fixed for the rest of the session, so repeated snapshots agree, and start
+/// over when the session resets.
+#[derive(Clone, Debug, Default)]
+struct DescriptorIds {
+    dense: HashMap<u64, u64>,
+}
+
+impl DescriptorIds {
+    fn clear(&mut self) {
+        self.dense.clear();
+    }
+
+    fn dense(&mut self, address_id: u64) -> u64 {
+        let next = u64::try_from(self.dense.len())
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        *self.dense.entry(address_id).or_insert(next)
+    }
+
+    fn remap(
+        &mut self,
+        events: &mut [TimedObservation],
+        counters: &mut [CounterSnapshot],
+        histograms: &mut [HistogramSnapshot],
+    ) {
+        for event in events {
+            match &mut event.observation {
+                Observation::ScopeBegin { desc_id, .. } => {
+                    *desc_id = ScopeDescId::new(self.dense(desc_id.get()));
+                }
+                Observation::Message { desc_id, .. } => {
+                    *desc_id = EventDescId::new(self.dense(desc_id.get()));
+                }
+                Observation::ResourceCreate { kind_id, .. }
+                | Observation::ResourceUpdate { kind_id, .. }
+                | Observation::ResourceDrop { kind_id, .. } => {
+                    *kind_id = ResourceKindId::new(self.dense(kind_id.get()));
+                }
+                Observation::ScopeEnd { .. }
+                | Observation::FrameMarker { .. }
+                | Observation::Flow { .. } => {}
+            }
+        }
+        for counter in counters {
+            counter.desc_id = CounterDescId::new(self.dense(counter.desc_id.get()));
+        }
+        for histogram in histograms {
+            histogram.desc_id = CounterDescId::new(self.dense(histogram.desc_id.get()));
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1637,5 +1721,84 @@ mod tests {
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.counters.len(), 1);
         assert_eq!(snapshot.events.len(), 5);
+    }
+
+    #[test]
+    fn snapshots_carry_dense_descriptor_ids_instead_of_addresses() {
+        static OPS: CounterDesc = CounterDesc::count("ops");
+        static LATENCY: CounterDesc = CounterDesc::new("latency", Unit::Nanos);
+        static RECORD: ScopeDesc = ScopeDesc::new("record");
+        static ATLAS: ResourceKindDesc = ResourceKindDesc::new("atlas");
+        static LOG: footfall_core::EventDesc = footfall_core::EventDesc::new("log");
+
+        let runtime = Runtime::with_level(16, 16, InstrumentationLevel::Trace);
+        let context = Context::root().with(&FRAME, 1_u32);
+        for _ in 0..2 {
+            let token = runtime.scope_begin(&RECORD, context, Args::none());
+            runtime.scope_end(token);
+        }
+        runtime.resource_create(&ATLAS, ResourceId::new(1), context, 64);
+        runtime.message(&LOG, context, "hello", Args::none());
+        runtime.counter_add(&OPS, context, 1);
+        runtime.counter_add(&OPS, Context::root(), 1);
+        runtime.histogram_record(&OPS, context, 5);
+        runtime.histogram_record(&LATENCY, context, 7);
+
+        let snapshot = runtime.snapshot();
+        let scope_ids: Vec<u64> = snapshot
+            .events
+            .iter()
+            .filter_map(|event| match &event.observation {
+                Observation::ScopeBegin { desc_id, .. } => Some(desc_id.get()),
+                _ => None,
+            })
+            .collect();
+        let kind_id = snapshot
+            .events
+            .iter()
+            .find_map(|event| match &event.observation {
+                Observation::ResourceCreate { kind_id, .. } => Some(kind_id.get()),
+                _ => None,
+            })
+            .expect("resource event should be recorded");
+        let message_id = snapshot
+            .events
+            .iter()
+            .find_map(|event| match &event.observation {
+                Observation::Message { desc_id, .. } => Some(desc_id.get()),
+                _ => None,
+            })
+            .expect("message event should be recorded");
+        let ops_counter_ids: Vec<u64> = snapshot
+            .counters
+            .iter()
+            .map(|counter| counter.desc_id.get())
+            .collect();
+        let histogram_id = |name: &str| {
+            snapshot
+                .histograms
+                .iter()
+                .find(|histogram| histogram.name == name)
+                .map(|histogram| histogram.desc_id.get())
+                .expect("histogram should be recorded")
+        };
+
+        // Events come first in assignment order, then counters and
+        // histograms; one id space covers every descriptor kind.
+        assert_eq!(scope_ids, [1, 1], "one scope descriptor, one id");
+        assert_eq!(kind_id, 2);
+        assert_eq!(message_id, 3);
+        assert_eq!(ops_counter_ids, [4, 4], "same descriptor in two contexts");
+        assert_eq!(histogram_id("ops"), 4, "counters and histograms agree");
+        assert_eq!(histogram_id("latency"), 5);
+        assert_ne!(RECORD.id().get(), 1, "the address id stays in process");
+
+        // Ids stay fixed for the rest of the session and restart after a
+        // reset.
+        let again = runtime.drain_snapshot();
+        assert_eq!(again.counters[0].desc_id.get(), 4);
+        runtime.histogram_record(&LATENCY, context, 7);
+        let fresh = runtime.snapshot();
+        assert_eq!(fresh.histograms[0].desc_id.get(), 1);
     }
 }

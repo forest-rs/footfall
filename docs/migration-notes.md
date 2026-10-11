@@ -132,8 +132,12 @@ id, so two crates can no longer collide by choosing the same number.
   every use of a `const` would be a different descriptor.
 - `id()` derives an opaque id from the address. Ids are unique among live
   descriptors within one process run and are not stable across runs. The
-  `*DescId` and `ResourceKindId` types stay as opaque ids in snapshots and on
-  the wire.
+  address never leaves the process: snapshots, exports, and the session wire
+  carry dense, session-scoped ids from `1` instead, shared across descriptor
+  kinds and assigned in first-seen order. Compare descriptor ids only within
+  one capture session, and never against `desc.id()` in the producer.
+- Snapshot counters and histograms are now sorted by name and context id
+  instead of arriving in hash-map order.
 - Descriptors are no longer `Copy` or `Clone`, and `==` compares identity.
 - `footfall_tracing` leaks one descriptor per callsite instead of allocating
   ids from a reserved range; `TRACING_DESC_ID_BASE` is removed.

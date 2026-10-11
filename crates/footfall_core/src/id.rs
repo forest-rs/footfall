@@ -32,16 +32,20 @@ define_id!(
 define_id!(
     /// Opaque id for one scope descriptor.
     ///
-    /// Derived from the descriptor's address: unique among live descriptors
-    /// within one process run, not stable across runs.
+    /// Inside the process the id is derived from the descriptor's address:
+    /// unique among live descriptors within one process run, not stable
+    /// across runs. Runtimes must not expose that value; snapshots carry
+    /// dense, session-scoped ids instead.
     ScopeDescId
 );
 
 define_id!(
     /// Opaque id for one counter descriptor.
     ///
-    /// Derived from the descriptor's address: unique among live descriptors
-    /// within one process run, not stable across runs.
+    /// Inside the process the id is derived from the descriptor's address:
+    /// unique among live descriptors within one process run, not stable
+    /// across runs. Runtimes must not expose that value; snapshots carry
+    /// dense, session-scoped ids instead.
     CounterDescId
 );
 
@@ -53,8 +57,10 @@ define_id!(
 define_id!(
     /// Opaque id for one logical resource kind.
     ///
-    /// Derived from the descriptor's address: unique among live descriptors
-    /// within one process run, not stable across runs.
+    /// Inside the process the id is derived from the descriptor's address:
+    /// unique among live descriptors within one process run, not stable
+    /// across runs. Runtimes must not expose that value; snapshots carry
+    /// dense, session-scoped ids instead.
     ResourceKindId
 );
 
@@ -66,8 +72,10 @@ define_id!(
 define_id!(
     /// Opaque id for one point-event descriptor.
     ///
-    /// Derived from the descriptor's address: unique among live descriptors
-    /// within one process run, not stable across runs.
+    /// Inside the process the id is derived from the descriptor's address:
+    /// unique among live descriptors within one process run, not stable
+    /// across runs. Runtimes must not expose that value; snapshots carry
+    /// dense, session-scoped ids instead.
     EventDescId
 );
 
