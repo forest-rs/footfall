@@ -3,18 +3,26 @@
 
 use crate::{
     Args, Context, CounterDesc, EventDesc, FlowId, ResourceId, ResourceKindDesc, ScopeDesc,
-    ScopeDescId,
 };
 #[cfg(feature = "std")]
 use std::sync::OnceLock;
 
 /// Opaque token returned by [`scope_begin`] and consumed by [`scope_end`].
+///
+/// The raw value `0` is reserved as [`ScopeToken::INVALID`]. It is returned
+/// when no scope was recorded, for example before a backend is installed or
+/// while the capture level excludes scopes, and backends ignore it in
+/// `scope_end`. Backends must issue tokens starting at `1`. The
+/// [`Default`] token is [`ScopeToken::INVALID`].
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct ScopeToken {
     raw: u64,
 }
 
 impl ScopeToken {
+    /// Token returned when no scope was recorded; ending it is a no-op.
+    pub const INVALID: Self = Self { raw: 0 };
+
     /// Creates a scope token from its raw representation.
     #[must_use]
     pub const fn new(raw: u64) -> Self {
@@ -25,6 +33,12 @@ impl ScopeToken {
     #[must_use]
     pub const fn get(self) -> u64 {
         self.raw
+    }
+
+    /// Returns `true` unless this is [`ScopeToken::INVALID`].
+    #[must_use]
+    pub const fn is_valid(self) -> bool {
+        self.raw != Self::INVALID.raw
     }
 }
 
@@ -190,8 +204,12 @@ pub fn scope_begin_with(desc: &ScopeDesc, context: Context, args: Args) -> Scope
 }
 
 /// Ends a previously-begun scope.
+///
+/// Ending [`ScopeToken::INVALID`] does nothing.
 pub fn scope_end(token: ScopeToken) {
-    (backend().scope_end)(token);
+    if token.is_valid() {
+        (backend().scope_end)(token);
+    }
 }
 
 /// Begins a scope and returns a guard that ends it on drop.
@@ -319,8 +337,8 @@ fn noop_gauge_set(_desc: &CounterDesc, _context: Context, _value: u64) {}
 
 fn noop_histogram_record(_desc: &CounterDesc, _context: Context, _value: u64) {}
 
-fn noop_scope_begin(desc: &ScopeDesc, _context: Context, _args: Args) -> ScopeToken {
-    ScopeToken::new(scope_desc_raw(desc.id()))
+fn noop_scope_begin(_desc: &ScopeDesc, _context: Context, _args: Args) -> ScopeToken {
+    ScopeToken::INVALID
 }
 
 fn noop_scope_end(_token: ScopeToken) {}
@@ -349,16 +367,12 @@ fn noop_flow(_flow_id: FlowId, _phase: FlowPhase, _context: Context) {}
 
 fn noop_message(_desc: &EventDesc, _context: Context, _text: &str, _args: Args) {}
 
-const fn scope_desc_raw(id: ScopeDescId) -> u64 {
-    id.get()
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        MarkerKind, MarkerPhase, counter_add, flow_begin, flow_end, flow_step, frame_begin,
-        frame_end, frame_marker, pass_begin, pass_end, resource_drop, scope, scope_begin,
-        scope_end, transaction_begin, transaction_end,
+        MarkerKind, MarkerPhase, ScopeToken, counter_add, flow_begin, flow_end, flow_step,
+        frame_begin, frame_end, frame_marker, pass_begin, pass_end, resource_drop, scope,
+        scope_begin, scope_end, transaction_begin, transaction_end,
     };
     use crate::{
         Context, CounterDesc, CounterDescId, FlowId, ResourceId, ResourceKindDesc, ResourceKindId,
@@ -366,10 +380,11 @@ mod tests {
     };
 
     #[test]
-    fn noop_scope_token_round_trips_descriptor_id() {
+    fn noop_scope_begin_returns_invalid_token() {
         let desc = ScopeDesc::new(ScopeDescId::new(9), "record_pass");
         let token = scope_begin(&desc, Context::root());
-        assert_eq!(token.get(), 9);
+        assert_eq!(token, ScopeToken::INVALID);
+        assert!(!token.is_valid());
         scope_end(token);
     }
 
@@ -377,8 +392,14 @@ mod tests {
     fn scope_guard_exposes_token_and_can_end_early() {
         let desc = ScopeDesc::new(ScopeDescId::new(10), "record_pass");
         let guard = scope(&desc, Context::root());
-        assert_eq!(guard.token().get(), 10);
+        assert_eq!(guard.token(), ScopeToken::INVALID);
         guard.end();
+    }
+
+    #[test]
+    fn default_token_is_invalid_and_issued_tokens_are_valid() {
+        assert_eq!(ScopeToken::default(), ScopeToken::INVALID);
+        assert!(ScopeToken::new(1).is_valid());
     }
 
     #[test]

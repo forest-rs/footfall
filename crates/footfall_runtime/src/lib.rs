@@ -929,14 +929,14 @@ fn backend_histogram_record(desc: &CounterDesc, context: Context, value: u64) {
 fn backend_scope_begin(desc: &ScopeDesc, context: Context, args: Args) -> ScopeToken {
     with_runtime(|runtime| {
         if !runtime.level().captures_scopes() {
-            return ScopeToken::new(desc.id().get());
+            return ScopeToken::INVALID;
         }
         let at_micros = runtime.now_micros();
-        let token = runtime.next_scope_token();
         let Some(context_id) = runtime.context_id(context) else {
             runtime.dropped_events.fetch_add(1, Ordering::Relaxed);
-            return token;
+            return ScopeToken::INVALID;
         };
+        let token = runtime.next_scope_token();
         runtime.push_event_at(
             Observation::ScopeBegin {
                 desc_id: desc.id(),
@@ -949,10 +949,13 @@ fn backend_scope_begin(desc: &ScopeDesc, context: Context, args: Args) -> ScopeT
         );
         token
     })
-    .unwrap_or_else(|| ScopeToken::new(desc.id().get()))
+    .unwrap_or(ScopeToken::INVALID)
 }
 
 fn backend_scope_end(token: ScopeToken) {
+    if !token.is_valid() {
+        return;
+    }
     with_runtime(|runtime| {
         if !runtime.level().captures_scopes() {
             return;
@@ -1221,7 +1224,7 @@ mod tests {
     use footfall_core::{
         Args, Context, ContextId, CounterDesc, CounterDescId, FlowId, FlowPhase,
         InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc,
-        ResourceKindId, ScopeDesc, ScopeDescId, Unit,
+        ResourceKindId, ScopeDesc, ScopeDescId, ScopeToken, Unit,
     };
 
     #[test]
@@ -1684,6 +1687,7 @@ mod tests {
         let context = Context::root().with(footfall_core::LabelKey::Frame, 3_u32);
         super::backend_counter_add(&COUNTER, context, 1);
         let token = super::backend_scope_begin(&SCOPE, context, Args::none());
+        assert_eq!(token, ScopeToken::INVALID);
         super::backend_scope_end(token);
         super::backend_resource_create(&RESOURCE, ResourceId::new(7), context, 64);
         super::backend_frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
@@ -1693,7 +1697,13 @@ mod tests {
         assert_eq!(snapshot.counters.len(), 1);
         assert_eq!(snapshot.events.len(), 0);
 
+        // A scope begun while scopes were excluded must not record an end
+        // after the level is raised.
+        let excluded = super::backend_scope_begin(&SCOPE, context, Args::none());
         runtime.set_level(InstrumentationLevel::Trace);
+        super::backend_scope_end(excluded);
+        assert!(runtime.snapshot().events.is_empty());
+
         runtime.reset();
         super::backend_counter_add(&COUNTER, context, 1);
         let token = super::backend_scope_begin(&SCOPE, context, Args::none());

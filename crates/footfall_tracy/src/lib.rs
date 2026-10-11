@@ -194,6 +194,9 @@ impl Tracy {
     }
 
     fn end_scope(&self, token: ScopeToken) {
+        if !token.is_valid() {
+            return;
+        }
         OPEN_SPANS.with(|spans| {
             spans.borrow_mut().remove(&token.get());
         });

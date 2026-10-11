@@ -71,3 +71,13 @@ instead of by semantic context:
   context, named `name [context labels]`, with a single numeric series named
   after the descriptor unit. Aggregates and capture metadata live on track
   `0`.
+
+## Reserved Scope Token
+
+`ScopeToken::INVALID` (raw value `0`) is returned when no scope was recorded:
+before a backend is installed, while the capture level excludes scopes, or
+when the runtime cannot intern the scope's context. `scope_end` ignores it, and
+the runtime, Tracy, and fan-out backends ignore it too. Backends issue tokens
+starting at `1`. Previously the no-op paths returned the descriptor id, so a
+guard started before backend installation could end an unrelated scope that
+happened to receive the same token.
