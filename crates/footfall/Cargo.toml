@@ -7,7 +7,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-readme.workspace = true
+readme = "README.md"
 keywords.workspace = true
 categories.workspace = true
 description = "Calm user-facing facade for the Footfall observability family."
@@ -19,6 +19,10 @@ std = ["alloc", "footfall_core/std"]
 
 [dependencies]
 footfall_core.workspace = true
+
+[dev-dependencies]
+footfall_export.workspace = true
+footfall_runtime.workspace = true
 
 [lib]
 path = "src/lib.rs"

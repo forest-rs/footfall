@@ -1,3 +1,8 @@
+> **Historical document.** This is the design brief Footfall started from.
+> It proposes crates and APIs that were never built or have since changed. For
+> the current design, see [Footfall Architecture](../footfall-architecture.md);
+> for usage, start with the [`footfall` crate](../../crates/footfall/README.md).
+
 # Footfall — Detailed Handoff for a Family of Instrumentation and Observability Crates
 
 ## Purpose

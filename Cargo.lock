@@ -359,6 +359,8 @@ name = "footfall"
 version = "0.1.0"
 dependencies = [
  "footfall_core",
+ "footfall_export",
+ "footfall_runtime",
 ]
 
 [[package]]
