@@ -101,7 +101,7 @@ async fn discovery_and_snapshot_fetch_round_trip() {
         }
     });
 
-    let sessions = discover_sessions(&url, certificate_hash.clone())
+    let sessions = discover_sessions(&url, certificate_hash)
         .await
         .expect("discovery should succeed");
     assert_eq!(sessions.len(), 1);
@@ -109,7 +109,7 @@ async fn discovery_and_snapshot_fetch_round_trip() {
     assert_eq!(sessions[0].process_name(), "attach_test");
     assert_eq!(sessions[0].session_name(), Some("e2e"));
 
-    let envelopes = fetch_named_session(&url, certificate_hash.clone(), "e2e")
+    let envelopes = fetch_named_session(&url, certificate_hash, "e2e")
         .await
         .expect("snapshot fetch should succeed");
 

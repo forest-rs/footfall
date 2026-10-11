@@ -347,3 +347,22 @@ errors compose with `?`, `Box<dyn Error>`, and error-reporting crates:
 - Installing a second backend through `install_backend`,
   `Runtime::install_global`, `Fanout::install_global`, or
   `TracyBackend::install_global` reports the same `InstallBackendError`.
+
+## Certificate Hashes
+
+`footfall_session_wtransport` no longer re-exports
+`wtransport::tls::Sha256Digest`, so a `wtransport` upgrade is no longer a
+breaking change for its users. Certificate pinning uses the crate's own
+`CertificateHash`, a `Copy` wrapper around the 32 hash bytes that displays as
+64 lowercase hex digits:
+
+- `SessionIdentity::certificate_hash` and
+  `SessionIdentity::load_localhost_certificate_hash` return a
+  `CertificateHash`, and `fetch_session`, `discover_sessions`, and
+  `fetch_named_session` take one.
+- Build one from raw bytes with `CertificateHash::from_bytes` and read them
+  back with `as_bytes`.
+
+The crate's `tokio` dependency now enables only the `fs` feature it uses; the
+runtime and macro features moved to `dev-dependencies`. Applications bring
+their own runtime, as `examples/basic` does.
