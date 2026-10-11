@@ -1,0 +1,23 @@
+[package]
+name = "footfall_export"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Export bridges for the Footfall observability family."
+
+[dependencies]
+footfall_core = { features = ["std"], workspace = true }
+footfall_runtime.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true

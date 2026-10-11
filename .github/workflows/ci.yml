@@ -12,39 +12,39 @@ env:
   # List of packages that will be checked with the minimum supported Rust version.
   # This should be limited to packages that are intended for publishing.
   RUST_MIN_VER_PKGS: >-
-    -p spoor
-    -p spoor_core
-    -p spoor_export
-    -p spoor_fanout
-    -p spoor_memory
-    -p spoor_runtime
-    -p spoor_session
-    -p spoor_session_wtransport
-    -p spoor_tracing
-    -p spoor_tracy
+    -p footfall
+    -p footfall_core
+    -p footfall_export
+    -p footfall_fanout
+    -p footfall_memory
+    -p footfall_runtime
+    -p footfall_session
+    -p footfall_session_wtransport
+    -p footfall_tracing
+    -p footfall_tracy
   # List of packages that don't support `no_std`.
   RUST_STD_ONLY_PKGS: >-
-    --exclude spoor
-    --exclude spoor_benchmarks
-    --exclude spoor_export
-    --exclude spoor_fanout
-    --exclude spoor_runtime
-    --exclude spoor_session
-    --exclude spoor_session_wtransport
-    --exclude spoor_tracing
-    --exclude spoor_tracy
+    --exclude footfall
+    --exclude footfall_benchmarks
+    --exclude footfall_export
+    --exclude footfall_fanout
+    --exclude footfall_runtime
+    --exclude footfall_session
+    --exclude footfall_session_wtransport
+    --exclude footfall_tracing
+    --exclude footfall_tracy
     --exclude basic
   # List of packages that don't support wasip1
   RUST_NO_WASIP1_PKGS: >-
-    --exclude spoor_benchmarks
-    --exclude spoor_session_wtransport
-    --exclude spoor_tracy
+    --exclude footfall_benchmarks
+    --exclude footfall_session_wtransport
+    --exclude footfall_tracy
     --exclude basic
   # List of packages that don't support wasm32
   RUST_NO_WASM_PKGS: >-
-    --exclude spoor_benchmarks
-    --exclude spoor_session_wtransport
-    --exclude spoor_tracy
+    --exclude footfall_benchmarks
+    --exclude footfall_session_wtransport
+    --exclude footfall_tracy
     --exclude basic
   # List of features that depend on the standard library and will be excluded from no_std checks.
   FEATURES_DEPENDING_ON_STD: "std,default"

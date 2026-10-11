@@ -1,8 +1,8 @@
-# Spoor — Detailed Handoff for a Family of Instrumentation and Observability Crates
+# Footfall — Detailed Handoff for a Family of Instrumentation and Observability Crates
 
 ## Purpose
 
-`spoor` is a family of Rust crates for low-overhead instrumentation, semantic tracing, counters, memory observation, and downstream projection into profiling/debugging/visualization tools.
+`footfall` is a family of Rust crates for low-overhead instrumentation, semantic tracing, counters, memory observation, and downstream projection into profiling/debugging/visualization tools.
 
 The goal is **not** to build “yet another profiler” in the narrow sense. The goal is to build a **slim instrumentation seam** with a **semantic context model** that can support:
 
@@ -24,7 +24,7 @@ This should fit our normal tenets:
 * low allocation and low overhead in hot paths
 * replaceable backends and sinks
 
-The core differentiator is that Spoor should make it possible to say not merely **that** work happened, but **what semantic owner or context it happened under**.
+The core differentiator is that Footfall should make it possible to say not merely **that** work happened, but **what semantic owner or context it happened under**.
 
 Examples:
 
@@ -40,7 +40,7 @@ That semantic layer is the gap in most existing tools. Existing tools are strong
 
 ## Prior Art and Positioning
 
-Spoor should borrow aggressively, but not imitate blindly.
+Footfall should borrow aggressively, but not imitate blindly.
 
 Relevant traditions:
 
@@ -66,7 +66,7 @@ That last item is what makes this ours.
 
 ## High-Level Goals
 
-Spoor should make these possible:
+Footfall should make these possible:
 
 1. **Very slim instrumentation seam**
 
@@ -110,7 +110,7 @@ Spoor should make these possible:
 
 ## Non-Goals
 
-Spoor should **not** initially be:
+Footfall should **not** initially be:
 
 * a giant monolithic tracing framework
 * a replacement for every OS/system tracing facility
@@ -119,7 +119,7 @@ Spoor should **not** initially be:
 * a universal heap-profiler-first system
 * a dependency magnet dragged through every low-level crate
 
-Spoor should complement other tools, not try to swallow everything at once.
+Footfall should complement other tools, not try to swallow everything at once.
 
 ---
 
@@ -150,7 +150,7 @@ Examples:
 * generated vertices/path segments
 * damaged rect count
 
-A good Spoor design should make counters first-class, not force everything into per-event traces.
+A good Footfall design should make counters first-class, not force everything into per-event traces.
 
 ### 3. Semantic context is the real differentiator
 
@@ -199,7 +199,7 @@ We should get value quickly by exporting into known timeline/trace ecosystems. T
 
 This section proposes a crate family. Names can shift, but the split matters.
 
-### `spoor_core`
+### `footfall_core`
 
 The tiny core substrate.
 
@@ -222,7 +222,7 @@ Constraints:
 * no allocator hooks
 * no UI assumptions
 
-### `spoor_runtime`
+### `footfall_runtime`
 
 Practical collection/runtime support.
 
@@ -243,7 +243,7 @@ Constraints:
 * clear overflow/drop semantics
 * replaceable sink strategy
 
-### `spoor_memory`
+### `footfall_memory`
 
 Memory-specific helpers and wrappers.
 
@@ -257,7 +257,7 @@ Responsibilities:
 
 This crate should make it easy for subsystems to expose memory data without each one inventing ad hoc counters and taxonomies.
 
-### `spoor_export`
+### `footfall_export`
 
 Projection/export bridge.
 
@@ -265,11 +265,11 @@ Responsibilities:
 
 * export to an existing trace/timeline ecosystem
 * possibly snapshot export for counters/resources/memory
-* trace-model lowering from Spoor’s internal representation
+* trace-model lowering from Footfall’s internal representation
 
 This should appear early because it gives us leverage without requiring a custom viewer.
 
-### `spoor_macros`
+### `footfall_macros`
 
 Optional ergonomic macro front-end.
 
@@ -283,7 +283,7 @@ This crate should remain thin and not become the real architecture.
 
 ### Possible later crates
 
-#### `spoor_alloc`
+#### `footfall_alloc`
 
 Allocator instrumentation, if we decide it deserves its own isolation boundary.
 
@@ -294,7 +294,7 @@ Responsibilities:
 * optional sampled attribution
 * maybe later full event emission for debugging
 
-#### `spoor_view` or domain-specific viewers later
+#### `footfall_view` or domain-specific viewers later
 
 Not phase 1. This is where a custom viewer could eventually live if we outgrow export-only workflows.
 
@@ -445,7 +445,7 @@ We should keep the representation generic enough to add domain labels later with
 
 ### Explicit context vs scoped context
 
-Spoor should likely support both:
+Footfall should likely support both:
 
 1. **Explicit context passing**
 
@@ -579,7 +579,7 @@ What matters is that the common call path remains tiny and predictable.
 
 Buffers will fill sometimes. That is fine.
 
-Spoor should:
+Footfall should:
 
 * drop gracefully when necessary
 * maintain explicit dropped-event counters
@@ -589,7 +589,7 @@ Spoor should:
 
 ## Runtime Collection Design
 
-`spoor_runtime` should be intentionally modest in its first cut.
+`footfall_runtime` should be intentionally modest in its first cut.
 
 ### Phase-1 runtime pieces
 
@@ -623,7 +623,7 @@ The main requirement is that we do not accidentally insert lock contention into 
 
 ## Memory Observation Model
 
-Spoor needs a disciplined memory story, but not an overcomplicated one.
+Footfall needs a disciplined memory story, but not an overcomplicated one.
 
 ### Memory categories
 
@@ -692,7 +692,7 @@ And it should be isolated enough not to distort the simpler, lower-overhead path
 
 ## Resource Model
 
-Spoor should treat resources as first-class because a lot of rendering/system debugging is really resource debugging.
+Footfall should treat resources as first-class because a lot of rendering/system debugging is really resource debugging.
 
 Examples:
 
@@ -797,7 +797,7 @@ We should target an existing ecosystem early.
 
 ### Desired early output forms
 
-Spoor should be able to project into something that supports:
+Footfall should be able to project into something that supports:
 
 * nested slices/scopes
 * counters/gauges over time
@@ -838,7 +838,7 @@ It should cover:
 
 This handoff can seed that design note.
 
-### Phase 1 — `spoor_core`
+### Phase 1 — `footfall_core`
 
 Build the small core:
 
@@ -857,7 +857,7 @@ Success criteria:
 * disabled mode compiles away cleanly
 * no_std-friendly core
 
-### Phase 2 — `spoor_runtime`
+### Phase 2 — `footfall_runtime`
 
 Build a minimal runtime:
 
@@ -901,7 +901,7 @@ Success criteria:
 
 ### Phase 5 — memory helpers expansion
 
-Broaden `spoor_memory` wrappers:
+Broaden `footfall_memory` wrappers:
 
 * more cache types
 * scratch helper types
@@ -948,7 +948,7 @@ Recommendation: a lot. Counters and gauges should be first-class and sufficient 
 
 ### 4. What level of `no_std` do we want?
 
-Recommendation: `spoor_core` should be `no_std`-friendly. Runtime/export/view layers can be looser.
+Recommendation: `footfall_core` should be `no_std`-friendly. Runtime/export/view layers can be looser.
 
 ### 5. What external trace/projection format do we target first?
 
@@ -958,7 +958,7 @@ Recommendation: choose early so the internal event model is checked against real
 
 Recommendation: optional static source-location capture via macros/descriptors, not mandatory at every emission point.
 
-### 7. How much should Spoor know about domain labels up front?
+### 7. How much should Footfall know about domain labels up front?
 
 Recommendation: core remains generic, but we should define a small shared vocabulary and conventions for common labels used in rendering/UI domains.
 
@@ -989,7 +989,7 @@ The mental model should be closer to tracepoints + counters + resource/accountin
 
 ## Testing and Validation
 
-Spoor needs validation at several levels.
+Footfall needs validation at several levels.
 
 ### Correctness tests
 
@@ -1050,7 +1050,7 @@ Public APIs should be documented from the start.
 
 ## Example Usage Scenarios We Want to Enable
 
-These are the kinds of workflows Spoor should eventually support.
+These are the kinds of workflows Footfall should eventually support.
 
 ### Rendering / imaging
 
@@ -1103,9 +1103,9 @@ The first implementation should be small, opinionated, and grounded.
 
 A good first handoff-to-implementation target would be:
 
-1. `spoor_core` skeleton with docs and tests
-2. `spoor_runtime` minimal counter bank + ring buffer
-3. one or two macros in `spoor_macros`
+1. `footfall_core` skeleton with docs and tests
+2. `footfall_runtime` minimal counter bank + ring buffer
+3. one or two macros in `footfall_macros`
 4. a tiny example that emits counters/scopes/resources
 5. instrumentation of one real subsystem in imaging
 6. one export path to an existing trace/timeline ecosystem
@@ -1117,7 +1117,7 @@ That is enough to create a feedback loop.
 
 ## Closing Direction
 
-Spoor should be treated as a **family of small, composable observability crates** whose foundation is a low-overhead instrumentation seam and whose real power comes from semantic context.
+Footfall should be treated as a **family of small, composable observability crates** whose foundation is a low-overhead instrumentation seam and whose real power comes from semantic context.
 
 If we get the core right, this becomes useful far beyond “profiling”:
 

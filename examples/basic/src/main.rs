@@ -1,35 +1,35 @@
-// Copyright 2026 the Spoor Authors
+// Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Small proving-ground capture for Spoor.
+//! Small proving-ground capture for Footfall.
 
-use spoor::{
+use footfall::{
     CounterDesc, FlowId, LabelKey, ResourceId, ResourceKindDesc, ScopeDesc, counter_add,
     flow_begin, flow_end, flow_step, frame_begin, frame_end, pass_begin, pass_end, resource_create,
     resource_drop, resource_update, scope,
 };
-use spoor_export::to_chrome_trace_json;
-use spoor_memory::{CacheMetrics, CacheStats, ScratchMetrics, TrackedScratchVec};
-use spoor_runtime::Runtime;
+use footfall_export::to_chrome_trace_json;
+use footfall_memory::{CacheMetrics, CacheStats, ScratchMetrics, TrackedScratchVec};
+use footfall_runtime::Runtime;
 
-static RECORD_FRAME: ScopeDesc = spoor::scope_desc!(1, "record_frame", "basic::main");
-static TESSELLATE_NODE: ScopeDesc = spoor::scope_desc!(2, "tessellate_node", "basic::main");
-static UPLOAD_ATLAS: ScopeDesc = spoor::scope_desc!(3, "upload_atlas", "basic::main");
+static RECORD_FRAME: ScopeDesc = footfall::scope_desc!(1, "record_frame", "basic::main");
+static TESSELLATE_NODE: ScopeDesc = footfall::scope_desc!(2, "tessellate_node", "basic::main");
+static UPLOAD_ATLAS: ScopeDesc = footfall::scope_desc!(3, "upload_atlas", "basic::main");
 
-static DRAW_OPS: CounterDesc = spoor::counter_desc!(count, 10, "draw_ops");
-static UPLOAD_BYTES: CounterDesc = spoor::counter_desc!(bytes, 11, "upload_bytes");
-static CACHE_CURRENT: CounterDesc = spoor::counter_desc!(bytes, 12, "cache_current_bytes");
-static CACHE_HITS: CounterDesc = spoor::counter_desc!(count, 13, "cache_hits");
-static CACHE_MISSES: CounterDesc = spoor::counter_desc!(count, 14, "cache_misses");
-static CACHE_EVICTIONS: CounterDesc = spoor::counter_desc!(count, 15, "cache_evictions");
-static SCRATCH_CURRENT: CounterDesc = spoor::counter_desc!(bytes, 16, "scratch_current_bytes");
-static SCRATCH_PEAK: CounterDesc = spoor::counter_desc!(bytes, 17, "scratch_peak_bytes");
+static DRAW_OPS: CounterDesc = footfall::counter_desc!(count, 10, "draw_ops");
+static UPLOAD_BYTES: CounterDesc = footfall::counter_desc!(bytes, 11, "upload_bytes");
+static CACHE_CURRENT: CounterDesc = footfall::counter_desc!(bytes, 12, "cache_current_bytes");
+static CACHE_HITS: CounterDesc = footfall::counter_desc!(count, 13, "cache_hits");
+static CACHE_MISSES: CounterDesc = footfall::counter_desc!(count, 14, "cache_misses");
+static CACHE_EVICTIONS: CounterDesc = footfall::counter_desc!(count, 15, "cache_evictions");
+static SCRATCH_CURRENT: CounterDesc = footfall::counter_desc!(bytes, 16, "scratch_current_bytes");
+static SCRATCH_PEAK: CounterDesc = footfall::counter_desc!(bytes, 17, "scratch_peak_bytes");
 static TESSELLATE_MICROS: CounterDesc =
-    spoor::counter_desc!(19, "tessellate_micros", spoor::Unit::Micros);
-static APP_LOG: spoor::EventDesc = spoor::event_desc!(20, "app_log");
-static SCRATCH_GROW: CounterDesc = spoor::counter_desc!(count, 18, "scratch_grow");
+    footfall::counter_desc!(19, "tessellate_micros", footfall::Unit::Micros);
+static APP_LOG: footfall::EventDesc = footfall::event_desc!(20, "app_log");
+static SCRATCH_GROW: CounterDesc = footfall::counter_desc!(count, 18, "scratch_grow");
 
-static ATLAS: ResourceKindDesc = spoor::resource_kind_desc!(20, "atlas");
+static ATLAS: ResourceKindDesc = footfall::resource_kind_desc!(20, "atlas");
 static ATLAS_ID: ResourceId = ResourceId::new(9);
 static INVALIDATION_FLOW: FlowId = FlowId::new(1);
 
@@ -39,7 +39,7 @@ fn main() {
         .install_global()
         .expect("global runtime should install once");
 
-    let frame_context = spoor::context!(Frame = 7_u32, Transaction = 1_u32);
+    let frame_context = footfall::context!(Frame = 7_u32, Transaction = 1_u32);
     let record_context = frame_context
         .with(LabelKey::Pass, 1_u32)
         .with(LabelKey::Node, 42_u32);
@@ -68,10 +68,10 @@ fn main() {
     {
         let _frame_scope = scope(&RECORD_FRAME, frame_context);
         {
-            let _tessellate_scope = spoor::scope_with(
+            let _tessellate_scope = footfall::scope_with(
                 &TESSELLATE_NODE,
                 record_context,
-                spoor::args!("reserved" => 32_u32),
+                footfall::args!("reserved" => 32_u32),
             );
             let mut scratch = TrackedScratchVec::<u32>::new(scratch_metrics, record_context);
             scratch.reserve(32);
@@ -80,13 +80,13 @@ fn main() {
             }
             counter_add(&DRAW_OPS, record_context, scratch.len() as u64);
             for sample in [180_u64, 220, 210, 950] {
-                spoor::histogram_record(&TESSELLATE_MICROS, record_context, sample);
+                footfall::histogram_record(&TESSELLATE_MICROS, record_context, sample);
             }
-            spoor::message_with(
+            footfall::message_with(
                 &APP_LOG,
                 record_context,
                 "tessellation finished",
-                spoor::args!("level" => "info"),
+                footfall::args!("level" => "info"),
             );
             flow_step(INVALIDATION_FLOW, record_context);
         }

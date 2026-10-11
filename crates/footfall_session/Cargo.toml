@@ -1,0 +1,27 @@
+[package]
+name = "footfall_session"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Transport-neutral session envelopes for the Footfall observability family."
+
+[features]
+default = ["std"]
+std = ["footfall_core/std", "dep:footfall_runtime"]
+
+[dependencies]
+footfall_core.workspace = true
+footfall_runtime = { optional = true, workspace = true }
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true

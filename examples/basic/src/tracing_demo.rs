@@ -1,13 +1,13 @@
-// Copyright 2026 the Spoor Authors
+// Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Demonstrates forwarding the `tracing` ecosystem into Spoor.
+//! Demonstrates forwarding the `tracing` ecosystem into Footfall.
 //!
 //! Spans become scopes, events become messages, and the resulting snapshot is
 //! printed as Chrome Trace Event JSON.
 
-use spoor_runtime::Runtime;
-use spoor_tracing::SpoorLayer;
+use footfall_runtime::Runtime;
+use footfall_tracing::FootfallLayer;
 use tracing_subscriber::layer::SubscriberExt as _;
 
 fn main() {
@@ -16,7 +16,7 @@ fn main() {
         .install_global()
         .expect("global runtime should install once");
 
-    let subscriber = tracing_subscriber::registry().with(SpoorLayer::new());
+    let subscriber = tracing_subscriber::registry().with(FootfallLayer::new());
     tracing::subscriber::set_global_default(subscriber)
         .expect("tracing subscriber should install once");
 
@@ -32,5 +32,5 @@ fn main() {
     }
 
     let snapshot = runtime.drain_snapshot();
-    println!("{}", spoor_export::to_chrome_trace_json(&snapshot));
+    println!("{}", footfall_export::to_chrome_trace_json(&snapshot));
 }

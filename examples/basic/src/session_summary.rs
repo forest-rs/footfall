@@ -1,8 +1,8 @@
-// Copyright 2026 the Spoor Authors
+// Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use spoor::LabelKey;
-use spoor_session::{
+use footfall::LabelKey;
+use footfall_session::{
     OwnedArgEntry, OwnedContextEntry, OwnedLabelValue, OwnedObservation, OwnedSessionEnvelope,
     OwnedSessionPayload,
 };

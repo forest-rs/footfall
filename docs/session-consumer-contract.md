@@ -1,7 +1,7 @@
 # Session Consumer Contract
 
 This document defines the minimum contract an external consumer or UI needs in
-order to attach to Spoor.
+order to attach to Footfall.
 
 ## Scope
 
@@ -16,7 +16,7 @@ Its job is to:
 
 ## Canonical Data Model
 
-The transport-neutral contract lives in `spoor_session`.
+The transport-neutral contract lives in `footfall_session`.
 
 The important types are:
 
@@ -54,7 +54,7 @@ It should not assume:
 
 ## Discovery Contract
 
-The current local attach path is implemented by `spoor_session_wtransport`.
+The current local attach path is implemented by `footfall_session_wtransport`.
 Its concrete WebTransport encoding is documented in
 [WebTransport Session Wire Format](session-wire-format.md).
 
@@ -93,7 +93,7 @@ That is the right default user experience.
 
 ## What a UI Actually Needs
 
-A useful first UI does not need every Spoor detail.
+A useful first UI does not need every Footfall detail.
 
 It needs:
 
@@ -115,7 +115,7 @@ That is enough to build:
 
 Snapshot publication and live tool sessions are related but distinct.
 
-`spoor_session` owns a small transport-neutral live-session vocabulary:
+`footfall_session` owns a small transport-neutral live-session vocabulary:
 
 - request ids
 - stream ids
@@ -124,16 +124,16 @@ Snapshot publication and live tool sessions are related but distinct.
 - generic ordered stream item containers
 - generic error/status containers
 
-Domain payloads stay outside Spoor. A UI toolkit, profiler, renderer, or asset
+Domain payloads stay outside Footfall. A UI toolkit, profiler, renderer, or asset
 pipeline can put typed payloads in those containers for same-process use, or an
-encoded byte payload for a network transport. This keeps Spoor responsible for
+encoded byte payload for a network transport. This keeps Footfall responsible for
 correlation and session shape without turning it into an RPC framework or
 making it learn product-specific concepts such as element ids, layer ids, or
 resource inspector sections.
 
 Keep the UI outside this repo if it helps focus:
 
-- Spoor repo owns producers, collection, transport, and examples
+- Footfall repo owns producers, collection, transport, and examples
 - UI repo owns views, interaction, layout, and consumer-side caching
 
 The interface between them should stay:

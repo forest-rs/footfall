@@ -1,18 +1,18 @@
-// Copyright 2026 the Spoor Authors
+// Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Live Tracy example for Spoor.
+//! Live Tracy example for Footfall.
 
-use spoor::{
+use footfall::{
     Context, CounterDesc, CounterDescId, LabelKey, MarkerKind, MarkerPhase, ResourceId,
     ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, SourceLocation, counter_add,
     frame_marker, resource_create, resource_drop, resource_update, scope_begin, scope_end,
 };
-use spoor_fanout::{Fanout, install_global as install_fanout};
-use spoor_memory::{CacheMetrics, CacheStats, ScratchMetrics, TrackedScratchVec};
-use spoor_runtime::{Runtime, backend as runtime_backend, register_global as register_runtime};
-use spoor_session::{Chunking, Consumer, Envelope, Payload, publish_snapshot};
-use spoor_tracy::{Tracy, backend as tracy_backend, register_global as register_tracy};
+use footfall_fanout::{Fanout, install_global as install_fanout};
+use footfall_memory::{CacheMetrics, CacheStats, ScratchMetrics, TrackedScratchVec};
+use footfall_runtime::{Runtime, backend as runtime_backend, register_global as register_runtime};
+use footfall_session::{Chunking, Consumer, Envelope, Payload, publish_snapshot};
+use footfall_tracy::{Tracy, backend as tracy_backend, register_global as register_tracy};
 use std::{thread::sleep, time::Duration};
 
 static RECORD_FRAME: ScopeDesc = ScopeDesc::with_location(

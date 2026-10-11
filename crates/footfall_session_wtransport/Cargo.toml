@@ -1,0 +1,27 @@
+[package]
+name = "footfall_session_wtransport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "WebTransport session adapter for the Footfall observability family."
+
+[dependencies]
+footfall_core.workspace = true
+footfall_runtime.workspace = true
+footfall_session = { features = ["std"], workspace = true }
+tokio = { features = ["io-util", "macros", "rt-multi-thread", "sync", "time"], version = "1.51.1" }
+wtransport = "0.7.0"
+x509-parser = "0.17.0"
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true

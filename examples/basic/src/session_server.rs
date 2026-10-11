@@ -1,16 +1,16 @@
-// Copyright 2026 the Spoor Authors
+// Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! WebTransport session server demo for Spoor.
+//! WebTransport session server demo for Footfall.
 
 mod session_demo;
 
-use session_demo::DemoCapture;
-use spoor_session::Chunking;
-use spoor_session_wtransport::{
+use footfall_session::Chunking;
+use footfall_session_wtransport::{
     ServedRequestKind, SessionAnnouncement, SessionIdentity, SessionRequestKind, SessionServer,
     SessionServerConfig, default_local_url,
 };
+use session_demo::DemoCapture;
 use tokio::signal;
 
 #[tokio::main]
@@ -24,7 +24,7 @@ async fn main() {
         SessionAnnouncement::new("wt_live", "session_server", Some(String::from("wt_live")));
     let capture = DemoCapture::install("session_server", "wt_live");
 
-    println!("serving Spoor sessions over WebTransport");
+    println!("serving Footfall sessions over WebTransport");
     println!("server: {}", default_local_url());
     println!("session: {}", announcement.id);
     println!("press Ctrl-C to stop");

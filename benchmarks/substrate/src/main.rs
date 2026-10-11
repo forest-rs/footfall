@@ -1,18 +1,18 @@
-// Copyright 2026 the Spoor Authors
+// Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Simple Spoor substrate wind tunnel.
+//! Simple Footfall substrate wind tunnel.
 //!
 //! This is intentionally a normal top-level binary instead of a Criterion
 //! benchmark so it adds no dependency pressure to the workspace.
 
-use spoor::{
+use footfall::{
     Context, CounterDesc, CounterDescId, InstrumentationLevel, LabelKey, MarkerKind, MarkerPhase,
     ResourceId, ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, counter_add,
     frame_marker, resource_update, scope_begin, scope_end,
 };
-use spoor_export::to_chrome_trace_json;
-use spoor_runtime::{Runtime, install_global};
+use footfall_export::to_chrome_trace_json;
+use footfall_runtime::{Runtime, install_global};
 use std::{
     hint::black_box,
     thread,
@@ -43,7 +43,7 @@ fn main() {
     }));
 
     let runtime = Box::leak(Box::new(Runtime::named_with_level(
-        "spoor_benchmarks",
+        "footfall_benchmarks",
         4096,
         usize::try_from(EVENT_ITERS.saturating_mul(4)).unwrap_or(usize::MAX),
         InstrumentationLevel::Off,
@@ -104,7 +104,7 @@ fn main() {
         black_box(to_chrome_trace_json(black_box(&snapshot)));
     }));
 
-    println!("spoor substrate wind tunnel");
+    println!("footfall substrate wind tunnel");
     println!("metric,iters,total_us,ns_per_op");
     for result in results {
         println!(

@@ -1,6 +1,6 @@
 # Instrumenting an App
 
-This is the shortest path for using Spoor from an application outside this repo.
+This is the shortest path for using Footfall from an application outside this repo.
 
 ## Goal
 
@@ -15,30 +15,30 @@ A host application should be able to:
 
 For the current happy path, use:
 
-- `spoor` for core ids, descriptors, contexts, and emission calls
-- `spoor_runtime` for bounded local collection
-- `spoor_memory` when you want scratch or cache helpers
-- `spoor_session_wtransport` if you want a local attach path for consumers
+- `footfall` for core ids, descriptors, contexts, and emission calls
+- `footfall_runtime` for bounded local collection
+- `footfall_memory` when you want scratch or cache helpers
+- `footfall_session_wtransport` if you want a local attach path for consumers
 
 ## Minimal Setup
 
 1. Define static descriptors close to the subsystem being instrumented.
-2. Install one `spoor_runtime::Runtime` once at process startup.
+2. Install one `footfall_runtime::Runtime` once at process startup.
 3. Emit observations from hot code using explicit `Context` values.
 4. Keep transport and UI concerns out of the hot path.
 
 Example shape:
 
 ```rust
-use spoor::{
+use footfall::{
     CounterDesc, InstrumentationLevel, ScopeDesc, counter_add, scope,
 };
-use spoor_runtime::Runtime;
+use footfall_runtime::Runtime;
 
-static RECORD_SCOPE: ScopeDesc = spoor::scope_desc!(1, "record_frame");
-static DRAW_OPS: CounterDesc = spoor::counter_desc!(count, 2, "draw_ops");
+static RECORD_SCOPE: ScopeDesc = footfall::scope_desc!(1, "record_frame");
+static DRAW_OPS: CounterDesc = footfall::counter_desc!(count, 2, "draw_ops");
 
-fn install_spoor() -> &'static Runtime {
+fn install_footfall() -> &'static Runtime {
     Runtime::install_global_named_with_level(
         "my_app",
         512,
@@ -49,7 +49,7 @@ fn install_spoor() -> &'static Runtime {
 }
 
 fn record_frame(frame: u32) {
-    let context = spoor::context!(Frame = frame, Pass = 1_u32);
+    let context = footfall::context!(Frame = frame, Pass = 1_u32);
     let _scope = scope(&RECORD_SCOPE, context);
     counter_add(&DRAW_OPS, context, 42);
 }
@@ -119,14 +119,14 @@ The emission seam should not need to change between those modes.
 
 If you want a separate consumer app to connect locally:
 
-1. install `spoor_runtime`
-2. expose a local session server through `spoor_session_wtransport`
+1. install `footfall_runtime`
+2. expose a local session server through `footfall_session_wtransport`
 3. let the consumer discover and fetch sessions through that server
 
 The current examples are the reference shape:
 
-- [session_server.rs](/Users/bruce/Development/forest-rs/spoor/examples/basic/src/session_server.rs)
-- [session_consumer.rs](/Users/bruce/Development/forest-rs/spoor/examples/basic/src/session_consumer.rs)
+- [session_server.rs](../examples/basic/src/session_server.rs)
+- [session_consumer.rs](../examples/basic/src/session_consumer.rs)
 
 ## What Is Still Missing
 

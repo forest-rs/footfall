@@ -1,5 +1,5 @@
 [package]
-name = "spoor_benchmarks"
+name = "footfall_benchmarks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,12 +8,12 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 publish = false
-description = "Top-level benchmark wind tunnel for Spoor substrate overhead."
+description = "Top-level benchmark wind tunnel for Footfall substrate overhead."
 
 [dependencies]
-spoor = { features = ["std"], workspace = true }
-spoor_export.workspace = true
-spoor_runtime.workspace = true
+footfall = { features = ["std"], workspace = true }
+footfall_export.workspace = true
+footfall_runtime.workspace = true
 
 [[bin]]
 name = "substrate"
