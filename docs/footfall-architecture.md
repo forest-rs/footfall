@@ -276,10 +276,10 @@ Anything beyond that should need a concrete proving-ground use case before joini
 
 Footfall core ships no label vocabulary. Applications and libraries declare
 the keys they attribute work by as static `LabelKey` items, for example
-`static FRAME: LabelKey = LabelKey::new("frame");`. Like descriptors, a key's
-identity is its address, so independent crates cannot collide in process.
-Consumers outside the process see keys by name, so a library should prefix
-its key names with its own name.
+`static FRAME: LabelKey = LabelKey::new("frame");`. Unlike descriptors, a
+key's identity is its name, which is also all that consumers outside the
+process see, so a key means the same thing everywhere. A library should
+prefix its key names with its own name.
 
 The discipline moves from the core enum to each subsystem: a key should buy
 real aggregation value. Product-specific concepts should enter as descriptor

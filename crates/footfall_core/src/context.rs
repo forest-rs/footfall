@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::{LabelKey, LabelValue, label::EMPTY_LABEL_KEY};
-use core::{fmt, ptr};
+use core::fmt;
 
 /// Maximum number of inline labels stored in a [`Context`].
 pub const CONTEXT_INLINE_CAPACITY: usize = 8;
@@ -69,7 +69,7 @@ impl Context {
         let entry = ContextEntry::new(key, value.into());
         let len = usize::from(self.len);
         for existing in &mut self.entries[..len] {
-            if ptr::eq(existing.key(), key) {
+            if existing.key() == key {
                 *existing = entry;
                 return Ok(self);
             }
@@ -108,7 +108,7 @@ impl Context {
     pub fn get(&self, key: &'static LabelKey) -> Option<LabelValue> {
         self.as_slice()
             .iter()
-            .find(|entry| ptr::eq(entry.key(), key))
+            .find(|entry| entry.key() == key)
             .map(|entry| entry.value)
     }
 }
