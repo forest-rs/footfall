@@ -111,6 +111,10 @@ Set runtime capture policy explicitly when installing the process runtime:
 - `InstrumentationLevel::Scoped` for counters plus scope/marker/flow timing
 - `InstrumentationLevel::Trace` for the full current observation set, including resources
 
+For a runtime installed with `Runtime::install_global`, the level also sets
+`footfall_core`'s process-wide maximum level, so excluded emissions return
+after one atomic load instead of reaching the runtime.
+
 Turn on richer downstream inspection when needed:
 
 - local snapshots
