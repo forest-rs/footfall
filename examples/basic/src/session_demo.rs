@@ -86,14 +86,14 @@ impl DemoCapture {
             eviction_count: &CACHE_EVICTIONS,
         };
 
-        frame_begin(frame_context);
-        pass_begin(record_context);
+        frame_begin(&frame_context);
+        pass_begin(&record_context);
         flow_begin(
             INVALIDATION_FLOW,
-            frame_context.with(&REASON, "layout_invalidation"),
+            &frame_context.with(&REASON, "layout_invalidation"),
         );
         {
-            let _frame_scope = scope(&RECORD_FRAME, frame_context);
+            let _frame_scope = scope(&RECORD_FRAME, &frame_context);
             let tracing_frame = tracing::info_span!(
                 "session_frame",
                 frame = u64::from(frame),
@@ -105,8 +105,8 @@ impl DemoCapture {
                 let scratch_items = 16_u32 + (frame % 20);
                 let _tessellate_scope = scope_with(
                     &TESSELLATE_NODE,
-                    record_context,
-                    footfall::args!("scratch_items" => scratch_items),
+                    &record_context,
+                    &footfall::args!("scratch_items" => scratch_items),
                 );
                 let tracing_tessellate =
                     tracing::debug_span!("session_tessellate", paths = u64::from(scratch_items));
@@ -117,22 +117,22 @@ impl DemoCapture {
                 for index in 0..scratch_items {
                     scratch.push(index);
                 }
-                counter_add(&DRAW_OPS, record_context, u64::from(scratch_items));
+                counter_add(&DRAW_OPS, &record_context, u64::from(scratch_items));
                 for sample in tessellate_samples(frame) {
-                    histogram_record(&TESSELLATE_MICROS, record_context, sample);
+                    histogram_record(&TESSELLATE_MICROS, &record_context, sample);
                 }
                 message_with(
                     &APP_LOG,
-                    record_context,
+                    &record_context,
                     "tessellation finished",
-                    footfall::args!("items" => scratch_items, "level" => "info"),
+                    &footfall::args!("items" => scratch_items, "level" => "info"),
                 );
                 tracing::debug!(
                     scratch_items = u64::from(scratch_items),
                     bytes = u64::from(scratch_items) * 4,
                     "scratch populated"
                 );
-                flow_step(INVALIDATION_FLOW, record_context);
+                flow_step(INVALIDATION_FLOW, &record_context);
             }
 
             let mut cache = CacheStats::new(cache_metrics, cache_context);
@@ -148,25 +148,25 @@ impl DemoCapture {
                 cache.observe_resident_bytes(resident_bytes);
             }
 
-            resource_create(&ATLAS, ATLAS_ID, atlas_context, resident_bytes);
+            resource_create(&ATLAS, ATLAS_ID, &atlas_context, resident_bytes);
             {
-                let _upload_scope = scope(&UPLOAD_ATLAS, atlas_context);
+                let _upload_scope = scope(&UPLOAD_ATLAS, &atlas_context);
                 let upload_bytes = 1_024_u64 * u64::from(1 + (frame % 4));
-                counter_add(&UPLOAD_BYTES, atlas_context, upload_bytes);
+                counter_add(&UPLOAD_BYTES, &atlas_context, upload_bytes);
                 resource_update(
                     &ATLAS,
                     ATLAS_ID,
-                    atlas_context,
+                    &atlas_context,
                     resident_bytes + upload_bytes,
                 );
                 tracing::info!(upload_bytes, "atlas uploaded");
-                flow_step(INVALIDATION_FLOW, atlas_context);
+                flow_step(INVALIDATION_FLOW, &atlas_context);
             }
-            resource_drop(&ATLAS, ATLAS_ID, atlas_context);
-            flow_end(INVALIDATION_FLOW, atlas_context);
+            resource_drop(&ATLAS, ATLAS_ID, &atlas_context);
+            flow_end(INVALIDATION_FLOW, &atlas_context);
         }
-        pass_end(record_context);
-        frame_end(frame_context);
+        pass_end(&record_context);
+        frame_end(&frame_context);
 
         self.runtime.drain_snapshot()
     }

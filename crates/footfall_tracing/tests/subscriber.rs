@@ -72,7 +72,7 @@ fn spans_and_events_reach_the_runtime() {
     // only comparable within one session, so record all three in the next.
     let second_layer = Dispatch::new(tracing_subscriber::registry().with(FootfallLayer::default()));
     {
-        let _app = scope(&APP_SCOPE, Context::root());
+        let _app = scope(&APP_SCOPE, &Context::root());
         tracing::dispatcher::with_default(&dispatch, || {
             let _entered = tracing::info_span!("record_pass").entered();
         });

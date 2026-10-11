@@ -164,3 +164,24 @@ let context = footfall::context!(FRAME = 7_u32);
 - The session protocol version is now `2.0`: context labels carry the key
   name string instead of a `u8` vocabulary tag. `1.x` consumers cannot decode
   `2.0` envelopes. See [WebTransport Session Wire Format](session-wire-format.md).
+
+## Contexts and Args by Reference
+
+Emission functions, `ScopeGuard::new`/`with_args`, and every `Backend`
+method now take `&Context` and `&Args` instead of copying them. A `Context`
+is about 264 bytes and an `Args` about 168, so passing them by value cost a
+large copy per call, and fan-out backends copied them again for each inner
+backend.
+
+```rust
+// Before
+counter_add(&DRAW_OPS, context, 1);
+let _scope = scope_with(&RECORD, context, args!("items" => 3_u32));
+
+// After
+counter_add(&DRAW_OPS, &context, 1);
+let _scope = scope_with(&RECORD, &context, &args!("items" => 3_u32));
+```
+
+Backends that retain a context or arguments copy them (`*context`,
+`*args`); both types are still `Copy`.

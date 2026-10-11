@@ -52,11 +52,11 @@ fn off(c: &mut Criterion) {
     let context = sample_context();
     let mut group = c.benchmark_group("runtime/off");
     group.bench_function("counter_add", |b| {
-        b.iter(|| counter_add(black_box(&OPS), black_box(context), black_box(1)));
+        b.iter(|| counter_add(black_box(&OPS), black_box(&context), black_box(1)));
     });
     group.bench_function("scope begin+end", |b| {
         b.iter(|| {
-            let token = scope_begin(black_box(&RECORD), black_box(context));
+            let token = scope_begin(black_box(&RECORD), black_box(&context));
             scope_end(black_box(token));
         });
     });
@@ -73,21 +73,21 @@ fn counters(c: &mut Criterion) {
     group.bench_function("counter_add", |b| {
         b.iter_custom(|iters| {
             time_chunked(iters, reset, || {
-                counter_add(black_box(&OPS), black_box(context), black_box(1));
+                counter_add(black_box(&OPS), black_box(&context), black_box(1));
             })
         });
     });
     group.bench_function("gauge_set", |b| {
         b.iter_custom(|iters| {
             time_chunked(iters, reset, || {
-                gauge_set(black_box(&QUEUE_DEPTH), black_box(context), black_box(17));
+                gauge_set(black_box(&QUEUE_DEPTH), black_box(&context), black_box(17));
             })
         });
     });
     group.bench_function("histogram_record", |b| {
         b.iter_custom(|iters| {
             time_chunked(iters, reset, || {
-                histogram_record(black_box(&LATENCY), black_box(context), black_box(1_500));
+                histogram_record(black_box(&LATENCY), black_box(&context), black_box(1_500));
             })
         });
     });
@@ -99,7 +99,7 @@ fn counters(c: &mut Criterion) {
             b.iter_custom(|iters| {
                 let mut next = 0_usize;
                 time_chunked(iters, reset, || {
-                    counter_add(black_box(&OPS), black_box(rotating[next]), black_box(1));
+                    counter_add(black_box(&OPS), black_box(&rotating[next]), black_box(1));
                     next = (next + 1) % rotating.len();
                 })
             });
@@ -112,7 +112,7 @@ fn counters(c: &mut Criterion) {
                     .with(&FRAME, black_box(7_u32))
                     .with(&PASS, black_box(1_u32))
                     .with(&CACHE, "atlas");
-                counter_add(black_box(&OPS), black_box(context), black_box(1));
+                counter_add(black_box(&OPS), black_box(&context), black_box(1));
             })
         });
     });
@@ -142,7 +142,7 @@ fn scoped(c: &mut Criterion) {
     group.bench_function("scope begin+end", |b| {
         b.iter_custom(|iters| {
             time_chunked(iters, reset, || {
-                let token = scope_begin(black_box(&RECORD), black_box(context));
+                let token = scope_begin(black_box(&RECORD), black_box(&context));
                 scope_end(black_box(token));
             })
         });
@@ -150,7 +150,7 @@ fn scoped(c: &mut Criterion) {
     group.bench_function("scope guard", |b| {
         b.iter_custom(|iters| {
             time_chunked(iters, reset, || {
-                drop(black_box(scope(black_box(&RECORD), black_box(context))));
+                drop(black_box(scope(black_box(&RECORD), black_box(&context))));
             })
         });
     });
@@ -159,7 +159,7 @@ fn scoped(c: &mut Criterion) {
             time_chunked(iters, reset, || {
                 message(
                     black_box(&LOG),
-                    black_box(context),
+                    black_box(&context),
                     black_box("uploaded atlas"),
                 );
             })
@@ -171,9 +171,9 @@ fn scoped(c: &mut Criterion) {
             time_chunked(iters, reset, || {
                 message_with(
                     black_box(&LOG),
-                    black_box(context),
+                    black_box(&context),
                     black_box("uploaded atlas"),
-                    black_box(args),
+                    black_box(&args),
                 );
             })
         });
@@ -209,7 +209,7 @@ fn trace(c: &mut Criterion) {
                 resource_update(
                     black_box(&ATLAS),
                     black_box(ATLAS_ID),
-                    black_box(context),
+                    black_box(&context),
                     black_box(4096),
                 );
             })

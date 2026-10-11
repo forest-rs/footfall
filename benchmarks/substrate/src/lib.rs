@@ -126,12 +126,12 @@ pub fn rotating_contexts(base: Context) -> Vec<Context> {
 pub fn seed_snapshot(context: Context) {
     for frame in 0..SEEDED_FRAMES {
         let frame_context = context.with(&FRAME, frame);
-        frame_marker(MarkerKind::Frame, MarkerPhase::Begin, frame_context);
-        counter_add(&OPS, frame_context, u64::from(frame));
-        let token = scope_begin(&RECORD, frame_context);
-        resource_update(&ATLAS, ATLAS_ID, frame_context, 4096 + u64::from(frame));
+        frame_marker(MarkerKind::Frame, MarkerPhase::Begin, &frame_context);
+        counter_add(&OPS, &frame_context, u64::from(frame));
+        let token = scope_begin(&RECORD, &frame_context);
+        resource_update(&ATLAS, ATLAS_ID, &frame_context, 4096 + u64::from(frame));
         scope_end(token);
-        frame_marker(MarkerKind::Frame, MarkerPhase::End, frame_context);
+        frame_marker(MarkerKind::Frame, MarkerPhase::End, &frame_context);
     }
 }
 
@@ -179,7 +179,7 @@ pub fn time_parallel_counter_add(threads: usize, iters: u64) -> Duration {
                     .with(&PASS, 1_u32);
                 start_line.wait();
                 for _ in 0..iters {
-                    counter_add(black_box(&OPS), black_box(context), black_box(1));
+                    counter_add(black_box(&OPS), black_box(&context), black_box(1));
                 }
                 finish_line.wait();
             });

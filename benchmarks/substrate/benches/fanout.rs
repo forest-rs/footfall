@@ -44,7 +44,7 @@ fn counters(c: &mut Criterion) {
             time_chunked(
                 iters,
                 || runtime.reset(),
-                || counter_add(black_box(&OPS), black_box(context), black_box(1)),
+                || counter_add(black_box(&OPS), black_box(&context), black_box(1)),
             )
         });
     });
@@ -62,7 +62,7 @@ fn scoped(c: &mut Criterion) {
                 iters,
                 || runtime.reset(),
                 || {
-                    let token = scope_begin(black_box(&RECORD), black_box(context));
+                    let token = scope_begin(black_box(&RECORD), black_box(&context));
                     scope_end(black_box(token));
                 },
             )

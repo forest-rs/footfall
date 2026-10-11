@@ -50,8 +50,8 @@ fn install_footfall() -> &'static Runtime {
 
 fn record_frame(frame: u32) {
     let context = footfall::context!(FRAME = frame, PASS = 1_u32);
-    let _scope = scope(&RECORD_SCOPE, context);
-    counter_add(&DRAW_OPS, context, 42);
+    let _scope = scope(&RECORD_SCOPE, &context);
+    counter_add(&DRAW_OPS, &context, 42);
 }
 ```
 

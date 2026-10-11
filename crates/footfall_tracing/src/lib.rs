@@ -138,7 +138,7 @@ where
             .extensions()
             .get::<SpanArgs>()
             .map_or_else(Args::none, |state| state.args);
-        let token = footfall_core::scope_begin_with(desc, footfall_core::Context::root(), args);
+        let token = footfall_core::scope_begin_with(desc, &footfall_core::Context::root(), &args);
         SCOPE_STACK.with(|stack| stack.borrow_mut().push((id.into_u64(), token)));
     }
 
@@ -163,7 +163,7 @@ where
             .args
             .try_with("level", level_str(*event.metadata().level()))
             .unwrap_or(visitor.args);
-        footfall_core::message_with(desc, footfall_core::Context::root(), &visitor.text, args);
+        footfall_core::message_with(desc, &footfall_core::Context::root(), &visitor.text, &args);
     }
 }
 
