@@ -3,9 +3,12 @@
 
 //! End-to-end coverage: tracing spans and events land in a Footfall snapshot.
 
+use footfall_core::{Context, ScopeDesc, scope};
 use footfall_runtime::{Observation, Runtime};
 use footfall_tracing::FootfallLayer;
 use tracing_subscriber::layer::SubscriberExt as _;
+
+static APP_SCOPE: ScopeDesc = ScopeDesc::new("record_pass");
 
 #[test]
 fn spans_and_events_reach_the_runtime() {
@@ -63,14 +66,35 @@ fn spans_and_events_reach_the_runtime() {
     );
     assert_eq!(message.1.get("status"), None);
 
-    // Scope descriptors allocate from the reserved tracing id range.
-    let begin_desc_id = snapshot
-        .events
-        .iter()
-        .find_map(|event| match &event.observation {
-            Observation::ScopeBegin { desc_id, .. } => Some(desc_id.get()),
-            _ => None,
-        })
-        .expect("scope begin should exist");
-    assert!(begin_desc_id >= footfall_tracing::TRACING_DESC_ID_BASE);
+    // Bridge descriptors are distinct from application descriptors, even
+    // with the same name, and from those of another layer.
+    let second_layer = tracing_subscriber::registry().with(FootfallLayer::default());
+    tracing::subscriber::with_default(second_layer, || {
+        let _app = scope(&APP_SCOPE, Context::root());
+        let _entered = tracing::info_span!("record_pass").entered();
+    });
+    let snapshot_ids = snapshot.events.iter().filter_map(scope_begin_desc_id);
+    let mut ids: Vec<_> = snapshot_ids
+        .chain(
+            runtime
+                .snapshot()
+                .events
+                .iter()
+                .filter_map(scope_begin_desc_id),
+        )
+        .collect();
+    assert_eq!(ids.len(), 3, "two bridged spans and one application scope");
+    assert!(ids.contains(&APP_SCOPE.id()));
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), 3, "no two descriptors share an id");
+}
+
+fn scope_begin_desc_id(
+    event: &footfall_runtime::TimedObservation,
+) -> Option<footfall_core::ScopeDescId> {
+    match &event.observation {
+        Observation::ScopeBegin { desc_id, .. } => Some(*desc_id),
+        _ => None,
+    }
 }

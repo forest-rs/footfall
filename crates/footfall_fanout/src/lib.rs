@@ -78,22 +78,22 @@ impl fmt::Debug for Fanout {
 }
 
 impl Backend for Fanout {
-    fn counter_add(&self, desc: &CounterDesc, context: Context, value: u64) {
+    fn counter_add(&self, desc: &'static CounterDesc, context: Context, value: u64) {
         self.primary.counter_add(desc, context, value);
         self.secondary.counter_add(desc, context, value);
     }
 
-    fn gauge_set(&self, desc: &CounterDesc, context: Context, value: u64) {
+    fn gauge_set(&self, desc: &'static CounterDesc, context: Context, value: u64) {
         self.primary.gauge_set(desc, context, value);
         self.secondary.gauge_set(desc, context, value);
     }
 
-    fn histogram_record(&self, desc: &CounterDesc, context: Context, value: u64) {
+    fn histogram_record(&self, desc: &'static CounterDesc, context: Context, value: u64) {
         self.primary.histogram_record(desc, context, value);
         self.secondary.histogram_record(desc, context, value);
     }
 
-    fn scope_begin(&self, desc: &ScopeDesc, context: Context, args: Args) -> ScopeToken {
+    fn scope_begin(&self, desc: &'static ScopeDesc, context: Context, args: Args) -> ScopeToken {
         let primary = self.primary.scope_begin(desc, context, args);
         let secondary = self.secondary.scope_begin(desc, context, args);
         let token = ScopeToken::new(self.next_scope_token.fetch_add(1, Ordering::Relaxed));
@@ -121,7 +121,7 @@ impl Backend for Fanout {
 
     fn resource_create(
         &self,
-        desc: &ResourceKindDesc,
+        desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
         context: Context,
         size: u64,
@@ -134,7 +134,7 @@ impl Backend for Fanout {
 
     fn resource_update(
         &self,
-        desc: &ResourceKindDesc,
+        desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
         context: Context,
         size: u64,
@@ -145,7 +145,12 @@ impl Backend for Fanout {
             .resource_update(desc, resource_id, context, size);
     }
 
-    fn resource_drop(&self, desc: &ResourceKindDesc, resource_id: ResourceId, context: Context) {
+    fn resource_drop(
+        &self,
+        desc: &'static ResourceKindDesc,
+        resource_id: ResourceId,
+        context: Context,
+    ) {
         self.primary.resource_drop(desc, resource_id, context);
         self.secondary.resource_drop(desc, resource_id, context);
     }
@@ -160,7 +165,7 @@ impl Backend for Fanout {
         self.secondary.flow(flow_id, phase, context);
     }
 
-    fn message(&self, desc: &EventDesc, context: Context, text: &str, args: Args) {
+    fn message(&self, desc: &'static EventDesc, context: Context, text: &str, args: Args) {
         self.primary.message(desc, context, text, args);
         self.secondary.message(desc, context, text, args);
     }
@@ -176,13 +181,13 @@ struct ScopePair {
 mod tests {
     use super::Fanout;
     use footfall_core::{
-        Args, Backend, Context, CounterDesc, CounterDescId, LabelKey, MarkerKind, MarkerPhase,
-        NoopBackend, ScopeDesc, ScopeDescId, ScopeToken,
+        Args, Backend, Context, CounterDesc, LabelKey, MarkerKind, MarkerPhase, NoopBackend,
+        ScopeDesc, ScopeToken,
     };
     use std::sync::Mutex;
 
-    static COUNTER: CounterDesc = CounterDesc::count(CounterDescId::new(1), "ops");
-    static SCOPE: ScopeDesc = ScopeDesc::new(ScopeDescId::new(2), "record");
+    static COUNTER: CounterDesc = CounterDesc::count("ops");
+    static SCOPE: ScopeDesc = ScopeDesc::new("record");
     static NOOP: NoopBackend = NoopBackend;
 
     /// Records the calls it receives under a fixed name.
@@ -206,11 +211,16 @@ mod tests {
     }
 
     impl Backend for Recorder {
-        fn counter_add(&self, _desc: &CounterDesc, _context: Context, _value: u64) {
+        fn counter_add(&self, _desc: &'static CounterDesc, _context: Context, _value: u64) {
             self.record("counter_add");
         }
 
-        fn scope_begin(&self, _desc: &ScopeDesc, _context: Context, _args: Args) -> ScopeToken {
+        fn scope_begin(
+            &self,
+            _desc: &'static ScopeDesc,
+            _context: Context,
+            _args: Args,
+        ) -> ScopeToken {
             self.record("scope_begin");
             ScopeToken::new(self.token)
         }

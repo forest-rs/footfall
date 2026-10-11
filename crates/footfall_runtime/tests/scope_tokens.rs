@@ -6,11 +6,11 @@
 //! This lives in its own integration test binary because it installs the
 //! process-wide backend.
 
-use footfall_core::{Context, ScopeDesc, ScopeDescId, ScopeToken, scope, scope_begin, scope_end};
+use footfall_core::{Context, ScopeDesc, ScopeToken, scope, scope_begin, scope_end};
 use footfall_runtime::{Observation, Runtime};
 
-static EARLY: ScopeDesc = ScopeDesc::new(ScopeDescId::new(1), "early");
-static LATER: ScopeDesc = ScopeDesc::new(ScopeDescId::new(2), "later");
+static EARLY: ScopeDesc = ScopeDesc::new("early");
+static LATER: ScopeDesc = ScopeDesc::new("later");
 
 #[test]
 fn guard_started_before_install_does_not_end_a_later_scope() {

@@ -133,18 +133,19 @@ impl TracyBackend {
         ScopeToken::new(raw)
     }
 
-    fn begin_scope(&self, desc: &ScopeDesc, context: Context, args: Args) -> ScopeToken {
+    fn begin_scope(&self, desc: &'static ScopeDesc, context: Context, args: Args) -> ScopeToken {
         let token = self.next_scope_token();
         let span = if let Some(location) = desc.location() {
             let location = self.cached_span_location(desc, location);
             self.client.clone().span(location, self.callstack_depth)
         } else {
-            let line = u32::try_from(desc.id().get()).unwrap_or(u32::MAX);
+            // Without a source location there is no meaningful line; Tracy
+            // groups zones by name.
             self.client.clone().span_alloc(
                 Some(desc.name()),
                 "footfall_scope",
                 "footfall",
-                line,
+                0,
                 self.callstack_depth,
             )
         };
@@ -167,7 +168,7 @@ impl TracyBackend {
 
     fn cached_span_location(
         &self,
-        desc: &ScopeDesc,
+        desc: &'static ScopeDesc,
         location: SourceLocation,
     ) -> &'static SpanLocation {
         let mut locations = self
@@ -188,7 +189,7 @@ impl TracyBackend {
         });
     }
 
-    fn observe_counter(&self, desc: &CounterDesc, value: u64, update: CounterUpdate) {
+    fn observe_counter(&self, desc: &'static CounterDesc, value: u64, update: CounterUpdate) {
         let mut counters = self
             .counters
             .lock()
@@ -229,7 +230,7 @@ impl TracyBackend {
     fn emit_resource_message(
         &self,
         verb: &str,
-        desc: &ResourceKindDesc,
+        desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
         context: Context,
         size: Option<u64>,
@@ -262,7 +263,7 @@ struct CounterState {
 }
 
 impl CounterState {
-    fn plot_name(&mut self, desc: &CounterDesc) -> PlotName {
+    fn plot_name(&mut self, desc: &'static CounterDesc) -> PlotName {
         *self
             .plots
             .entry(desc.id())
@@ -283,24 +284,24 @@ thread_local! {
 }
 
 impl Backend for TracyBackend {
-    fn counter_add(&self, desc: &CounterDesc, _context: Context, value: u64) {
+    fn counter_add(&self, desc: &'static CounterDesc, _context: Context, value: u64) {
         self.register_current_thread();
         self.observe_counter(desc, value, CounterUpdate::Add);
     }
 
-    fn gauge_set(&self, desc: &CounterDesc, _context: Context, value: u64) {
+    fn gauge_set(&self, desc: &'static CounterDesc, _context: Context, value: u64) {
         self.register_current_thread();
         self.observe_counter(desc, value, CounterUpdate::Set);
     }
 
-    fn histogram_record(&self, desc: &CounterDesc, _context: Context, value: u64) {
+    fn histogram_record(&self, desc: &'static CounterDesc, _context: Context, value: u64) {
         // Tracy has no histogram primitive; plot each sample so the distribution
         // is at least visible as a time series.
         self.register_current_thread();
         self.observe_counter(desc, value, CounterUpdate::Set);
     }
 
-    fn scope_begin(&self, desc: &ScopeDesc, context: Context, args: Args) -> ScopeToken {
+    fn scope_begin(&self, desc: &'static ScopeDesc, context: Context, args: Args) -> ScopeToken {
         self.register_current_thread();
         self.begin_scope(desc, context, args)
     }
@@ -311,7 +312,7 @@ impl Backend for TracyBackend {
 
     fn resource_create(
         &self,
-        desc: &ResourceKindDesc,
+        desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
         context: Context,
         size: u64,
@@ -322,7 +323,7 @@ impl Backend for TracyBackend {
 
     fn resource_update(
         &self,
-        desc: &ResourceKindDesc,
+        desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
         context: Context,
         size: u64,
@@ -331,7 +332,12 @@ impl Backend for TracyBackend {
         self.emit_resource_message("update", desc, resource_id, context, Some(size));
     }
 
-    fn resource_drop(&self, desc: &ResourceKindDesc, resource_id: ResourceId, context: Context) {
+    fn resource_drop(
+        &self,
+        desc: &'static ResourceKindDesc,
+        resource_id: ResourceId,
+        context: Context,
+    ) {
         self.register_current_thread();
         self.emit_resource_message("drop", desc, resource_id, context, None);
     }
@@ -343,7 +349,7 @@ impl Backend for TracyBackend {
 
     // Flows are ignored: Tracy has no native causal-link primitive.
 
-    fn message(&self, desc: &EventDesc, context: Context, text: &str, args: Args) {
+    fn message(&self, desc: &'static EventDesc, context: Context, text: &str, args: Args) {
         self.register_current_thread();
         let message = message_text(desc, context, text, args);
         self.client.message(&message, self.callstack_depth);
@@ -374,7 +380,7 @@ static TRANSACTION_NAME: OnceLock<FrameName> = OnceLock::new();
 static PASS_NAME: OnceLock<FrameName> = OnceLock::new();
 fn resource_message(
     verb: &str,
-    desc: &ResourceKindDesc,
+    desc: &'static ResourceKindDesc,
     resource_id: ResourceId,
     context: Context,
     size: Option<u64>,
@@ -396,7 +402,7 @@ fn resource_message(
     message
 }
 
-fn message_text(desc: &EventDesc, context: Context, text: &str, args: Args) -> String {
+fn message_text(desc: &'static EventDesc, context: Context, text: &str, args: Args) -> String {
     let mut message = String::new();
     let _ = write!(message, "{}: {text}", desc.name());
     let context_text = context_text(context);
@@ -468,13 +474,12 @@ fn push_label_value(text: &mut String, value: LabelValue) {
 mod tests {
     use super::{context_text, message_text, plot_configuration, resource_message};
     use footfall_core::{
-        Args, Context, CounterDesc, CounterDescId, EventDesc, EventDescId, LabelKey, ResourceId,
-        ResourceKindDesc, ResourceKindId, Unit,
+        Args, Context, CounterDesc, EventDesc, LabelKey, ResourceId, ResourceKindDesc, Unit,
     };
 
-    static BYTES: CounterDesc = CounterDesc::bytes(CounterDescId::new(1), "bytes");
-    static ATLAS: ResourceKindDesc = ResourceKindDesc::new(ResourceKindId::new(2), "atlas");
-    static APP_LOG: EventDesc = EventDesc::new(EventDescId::new(3), "app_log");
+    static BYTES: CounterDesc = CounterDesc::bytes("bytes");
+    static ATLAS: ResourceKindDesc = ResourceKindDesc::new("atlas");
+    static APP_LOG: EventDesc = EventDesc::new("app_log");
 
     #[test]
     fn context_text_formats_compact_labels() {

@@ -12,24 +12,24 @@ use footfall_export::to_chrome_trace_json;
 use footfall_memory::{CacheMetrics, CacheStats, ScratchMetrics, TrackedScratchVec};
 use footfall_runtime::Runtime;
 
-static RECORD_FRAME: ScopeDesc = footfall::scope_desc!(1, "record_frame", "basic::main");
-static TESSELLATE_NODE: ScopeDesc = footfall::scope_desc!(2, "tessellate_node", "basic::main");
-static UPLOAD_ATLAS: ScopeDesc = footfall::scope_desc!(3, "upload_atlas", "basic::main");
+static RECORD_FRAME: ScopeDesc = footfall::scope_desc!("record_frame", "basic::main");
+static TESSELLATE_NODE: ScopeDesc = footfall::scope_desc!("tessellate_node", "basic::main");
+static UPLOAD_ATLAS: ScopeDesc = footfall::scope_desc!("upload_atlas", "basic::main");
 
-static DRAW_OPS: CounterDesc = footfall::counter_desc!(count, 10, "draw_ops");
-static UPLOAD_BYTES: CounterDesc = footfall::counter_desc!(bytes, 11, "upload_bytes");
-static CACHE_CURRENT: CounterDesc = footfall::counter_desc!(bytes, 12, "cache_current_bytes");
-static CACHE_HITS: CounterDesc = footfall::counter_desc!(count, 13, "cache_hits");
-static CACHE_MISSES: CounterDesc = footfall::counter_desc!(count, 14, "cache_misses");
-static CACHE_EVICTIONS: CounterDesc = footfall::counter_desc!(count, 15, "cache_evictions");
-static SCRATCH_CURRENT: CounterDesc = footfall::counter_desc!(bytes, 16, "scratch_current_bytes");
-static SCRATCH_PEAK: CounterDesc = footfall::counter_desc!(bytes, 17, "scratch_peak_bytes");
+static DRAW_OPS: CounterDesc = footfall::counter_desc!(count, "draw_ops");
+static UPLOAD_BYTES: CounterDesc = footfall::counter_desc!(bytes, "upload_bytes");
+static CACHE_CURRENT: CounterDesc = footfall::counter_desc!(bytes, "cache_current_bytes");
+static CACHE_HITS: CounterDesc = footfall::counter_desc!(count, "cache_hits");
+static CACHE_MISSES: CounterDesc = footfall::counter_desc!(count, "cache_misses");
+static CACHE_EVICTIONS: CounterDesc = footfall::counter_desc!(count, "cache_evictions");
+static SCRATCH_CURRENT: CounterDesc = footfall::counter_desc!(bytes, "scratch_current_bytes");
+static SCRATCH_PEAK: CounterDesc = footfall::counter_desc!(bytes, "scratch_peak_bytes");
 static TESSELLATE_MICROS: CounterDesc =
-    footfall::counter_desc!(19, "tessellate_micros", footfall::Unit::Micros);
-static APP_LOG: footfall::EventDesc = footfall::event_desc!(20, "app_log");
-static SCRATCH_GROW: CounterDesc = footfall::counter_desc!(count, 18, "scratch_grow");
+    footfall::counter_desc!("tessellate_micros", footfall::Unit::Micros);
+static APP_LOG: footfall::EventDesc = footfall::event_desc!("app_log");
+static SCRATCH_GROW: CounterDesc = footfall::counter_desc!(count, "scratch_grow");
 
-static ATLAS: ResourceKindDesc = footfall::resource_kind_desc!(20, "atlas");
+static ATLAS: ResourceKindDesc = footfall::resource_kind_desc!("atlas");
 static ATLAS_ID: ResourceId = ResourceId::new(9);
 static INVALIDATION_FLOW: FlowId = FlowId::new(1);
 

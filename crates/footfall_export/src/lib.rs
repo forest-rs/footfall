@@ -758,8 +758,8 @@ fn write_json_string(writer: &mut impl Write, value: &str) -> fmt::Result {
 mod tests {
     use super::{to_chrome_trace_json, track_name};
     use footfall_core::{
-        Args, Context, ContextId, CounterDesc, CounterDescId, FlowId, FlowPhase, LabelKey,
-        MarkerKind, MarkerPhase, ScopeToken, Unit,
+        Args, Context, ContextId, CounterDescId, FlowId, FlowPhase, LabelKey, MarkerKind,
+        MarkerPhase, ScopeToken, Unit,
     };
     use footfall_runtime::{
         ContextSnapshot, CounterKind, CounterSnapshot, Observation, Snapshot, TimedObservation,
@@ -790,7 +790,7 @@ mod tests {
             ],
             counters: vec![CounterSnapshot {
                 desc_id: CounterDescId::new(1),
-                name: CounterDesc::bytes(CounterDescId::new(1), "upload_bytes").name(),
+                name: "upload_bytes",
                 unit: Unit::Bytes,
                 context_id: ContextId::new(1),
                 kind: CounterKind::Counter,

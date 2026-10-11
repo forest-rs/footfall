@@ -35,8 +35,8 @@ use footfall::{
 };
 use footfall_runtime::Runtime;
 
-static RECORD_SCOPE: ScopeDesc = footfall::scope_desc!(1, "record_frame");
-static DRAW_OPS: CounterDesc = footfall::counter_desc!(count, 2, "draw_ops");
+static RECORD_SCOPE: ScopeDesc = footfall::scope_desc!("record_frame");
+static DRAW_OPS: CounterDesc = footfall::counter_desc!(count, "draw_ops");
 
 fn install_footfall() -> &'static Runtime {
     Runtime::named_with_level("my_app", 512, 4096, InstrumentationLevel::Scoped)

@@ -7,12 +7,40 @@
 //!
 //! This crate owns:
 //!
-//! - stable integer-backed ids
-//! - static descriptors
+//! - integer-backed ids
+//! - static descriptors, identified by address
+//! - the [`Backend`] trait and the process-wide emission seam
 //! - explicit semantic context composition
 //! - instrumentation levels
 //!
 //! It does not yet own runtime buffering or export logic.
+//!
+//! # Descriptors
+//!
+//! A descriptor's identity is its address. Declare descriptors as `static`
+//! items, never `const`: every use of a `const` would create a fresh value at
+//! a fresh address. Each descriptor type carries a private zero-sized marker
+//! with a `Drop` impl, which stops the compiler from promoting `&CONST` to
+//! `'static`, so passing a `const` where a `&'static` descriptor is required
+//! is a compile error rather than a silent identity bug:
+//!
+//! ```compile_fail,E0716
+//! use footfall_core::{Context, ScopeDesc, scope};
+//!
+//! const RECORD: ScopeDesc = ScopeDesc::new("record");
+//! let _guard = scope(&RECORD, Context::root());
+//! ```
+//!
+//! ```
+//! use footfall_core::{Context, ScopeDesc, scope};
+//!
+//! static RECORD: ScopeDesc = ScopeDesc::new("record");
+//! let _guard = scope(&RECORD, Context::root());
+//! ```
+//!
+//! Descriptors created at runtime, for example by a bridge from another
+//! instrumentation framework, can be leaked with `Box::leak` to obtain a
+//! `&'static` descriptor with its own identity.
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -93,23 +121,23 @@ macro_rules! args {
 
 /// Builds a [`ScopeDesc`].
 ///
-/// The three-argument form attaches static source-location metadata with the
-/// provided function name.
+/// The two-argument form attaches static source-location metadata with the
+/// provided function name. Assign the result to a `static` item; a
+/// descriptor's identity is its address.
 ///
 /// # Examples
 ///
 /// ```
-/// static RECORD: footfall_core::ScopeDesc = footfall_core::scope_desc!(1, "record_frame");
+/// static RECORD: footfall_core::ScopeDesc = footfall_core::scope_desc!("record_frame");
 /// assert_eq!(RECORD.name(), "record_frame");
 /// ```
 #[macro_export]
 macro_rules! scope_desc {
-    ($id:expr, $name:expr $(,)?) => {
-        $crate::ScopeDesc::new($crate::ScopeDescId::new($id), $name)
+    ($name:expr $(,)?) => {
+        $crate::ScopeDesc::new($name)
     };
-    ($id:expr, $name:expr, $function:expr $(,)?) => {
+    ($name:expr, $function:expr $(,)?) => {
         $crate::ScopeDesc::with_location(
-            $crate::ScopeDescId::new($id),
             $name,
             $crate::SourceLocation::new($function, core::file!(), core::line!()),
         )
@@ -118,33 +146,51 @@ macro_rules! scope_desc {
 
 /// Builds a [`CounterDesc`].
 ///
-/// Use the `count` and `bytes` forms for common counter units.
+/// Use the `count` and `bytes` forms for common counter units. Assign the
+/// result to a `static` item; a descriptor's identity is its address.
+///
+/// # Examples
+///
+/// ```
+/// use footfall_core::{CounterDesc, Unit, counter_desc};
+///
+/// static DRAW_OPS: CounterDesc = counter_desc!(count, "draw_ops");
+/// static UPLOAD_BYTES: CounterDesc = counter_desc!(bytes, "upload_bytes");
+/// static FRAME_TIME: CounterDesc = counter_desc!("frame_time", Unit::Micros);
+/// assert_eq!(FRAME_TIME.unit(), Unit::Micros);
+/// ```
 #[macro_export]
 macro_rules! counter_desc {
-    (count, $id:expr, $name:expr $(,)?) => {
-        $crate::CounterDesc::count($crate::CounterDescId::new($id), $name)
+    (count, $name:expr $(,)?) => {
+        $crate::CounterDesc::count($name)
     };
-    (bytes, $id:expr, $name:expr $(,)?) => {
-        $crate::CounterDesc::bytes($crate::CounterDescId::new($id), $name)
+    (bytes, $name:expr $(,)?) => {
+        $crate::CounterDesc::bytes($name)
     };
-    ($id:expr, $name:expr, $unit:expr $(,)?) => {
-        $crate::CounterDesc::new($crate::CounterDescId::new($id), $name, $unit)
+    ($name:expr, $unit:expr $(,)?) => {
+        $crate::CounterDesc::new($name, $unit)
     };
 }
 
 /// Builds an [`EventDesc`].
+///
+/// Assign the result to a `static` item; a descriptor's identity is its
+/// address.
 #[macro_export]
 macro_rules! event_desc {
-    ($id:expr, $name:expr $(,)?) => {
-        $crate::EventDesc::new($crate::EventDescId::new($id), $name)
+    ($name:expr $(,)?) => {
+        $crate::EventDesc::new($name)
     };
 }
 
 /// Builds a [`ResourceKindDesc`].
+///
+/// Assign the result to a `static` item; a descriptor's identity is its
+/// address.
 #[macro_export]
 macro_rules! resource_kind_desc {
-    ($id:expr, $name:expr $(,)?) => {
-        $crate::ResourceKindDesc::new($crate::ResourceKindId::new($id), $name)
+    ($name:expr $(,)?) => {
+        $crate::ResourceKindDesc::new($name)
     };
 }
 
@@ -152,9 +198,9 @@ macro_rules! resource_kind_desc {
 mod tests {
     use crate::{CounterDesc, LabelKey, ResourceKindDesc, ScopeDesc, Unit};
 
-    static SCOPE: ScopeDesc = crate::scope_desc!(1, "record_frame", "footfall_core::tests");
-    static COUNTER: CounterDesc = crate::counter_desc!(bytes, 2, "upload_bytes");
-    static RESOURCE: ResourceKindDesc = crate::resource_kind_desc!(3, "atlas");
+    static SCOPE: ScopeDesc = crate::scope_desc!("record_frame", "footfall_core::tests");
+    static COUNTER: CounterDesc = crate::counter_desc!(bytes, "upload_bytes");
+    static RESOURCE: ResourceKindDesc = crate::resource_kind_desc!("atlas");
 
     #[test]
     fn macros_build_common_call_site_values() {
