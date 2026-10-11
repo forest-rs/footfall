@@ -48,9 +48,9 @@ in `target/criterion`.
 
 | Case | Measures |
 | --- | --- |
-| `none/counter_add`, `none/scope begin+end`, `none/scope guard`, `none/message` | The emission seam with no backend installed: the call, the backend lookup, and argument copies. |
+| `none/counter_add`, `none/scope begin+end`, `none/scope guard`, `none/message` | The emission seam with no backend installed, which stops at the process-wide maximum level check. |
 | `none/context build/N labels` | Building a `Context` with 1, 4, or 8 labels. |
-| `runtime/off/...` | The runtime installed at `InstrumentationLevel::Off`, which filters everything. |
+| `runtime/off/...` | The runtime installed at `InstrumentationLevel::Off`. Its level drives the core maximum level, so these stop at the same check. |
 | `runtime/counters/counter_add`, `gauge_set`, `histogram_record` | One aggregate update under a reused context. |
 | `runtime/counters/counter_add 1024 rotating contexts` | Counter updates cycling through 1024 distinct contexts, so context interning and aggregate lookups hit a larger table. |
 | `runtime/counters/counter_add context built per call` | The same context rebuilt at the call site before each update. |
@@ -71,46 +71,86 @@ machines.
 - Machine: Apple M3 Max, 16 cores, 64 GB
 - OS: macOS 27.0.1
 - Toolchain: rustc 1.98.1
-- Branch: `bench-methodology`
+- Branch: `hot-path-overhead`
 
 | Case | Estimate | 95% interval |
 | --- | ---: | ---: |
-| none/counter_add | 4.78 ns | 4.78 ns – 4.79 ns |
-| none/scope begin+end | 8.34 ns | 8.30 ns – 8.38 ns |
-| none/scope guard | 8.73 ns | 8.71 ns – 8.74 ns |
-| none/message | 8.51 ns | 8.50 ns – 8.52 ns |
-| none/context build/1 labels | 8.40 ns | 8.36 ns – 8.44 ns |
-| none/context build/4 labels | 10.47 ns | 10.46 ns – 10.49 ns |
-| none/context build/8 labels | 23.07 ns | 22.85 ns – 23.26 ns |
-| runtime/off/counter_add | 5.26 ns | 5.25 ns – 5.26 ns |
-| runtime/off/scope begin+end | 9.19 ns | 9.16 ns – 9.21 ns |
-| runtime/counters/counter_add | 162.65 ns | 158.68 ns – 167.48 ns |
-| runtime/counters/gauge_set | 152.15 ns | 152.03 ns – 152.27 ns |
-| runtime/counters/histogram_record | 147.04 ns | 146.58 ns – 147.55 ns |
-| runtime/counters/counter_add 1024 rotating contexts | 188.66 ns | 188.21 ns – 189.19 ns |
-| runtime/counters/counter_add context built per call | 172.13 ns | 171.72 ns – 172.62 ns |
-| runtime/counters/counter_add threads/1 | 148.52 ns | 148.14 ns – 148.90 ns |
-| runtime/counters/counter_add threads/2 | 239.23 ns | 237.96 ns – 240.45 ns |
-| runtime/counters/counter_add threads/4 | 481.02 ns | 475.95 ns – 485.97 ns |
-| runtime/counters/counter_add threads/8 | 352.31 ns | 351.08 ns – 353.50 ns |
-| runtime/scoped/scope begin+end | 180.03 ns | 179.38 ns – 180.66 ns |
-| runtime/scoped/scope guard | 177.76 ns | 177.60 ns – 177.92 ns |
-| runtime/scoped/message | 154.57 ns | 153.32 ns – 156.08 ns |
-| runtime/scoped/message_with 2 args | 147.96 ns | 147.12 ns – 148.96 ns |
-| runtime/scoped/tracing span enter+exit | 271.53 ns | 270.87 ns – 272.30 ns |
-| runtime/scoped/tracing event | 219.82 ns | 219.22 ns – 220.50 ns |
-| runtime/trace/resource_update | 138.46 ns | 138.21 ns – 138.72 ns |
-| runtime/capture/snapshot 128 frames | 49.6 µs | 49.5 µs – 49.6 µs |
-| runtime/capture/chrome trace export 128 frames | 276.6 µs | 275.7 µs – 277.5 µs |
-| fanout/counters/counter_add | 158.64 ns | 158.44 ns – 158.86 ns |
-| fanout/scoped/scope begin+end | 213.94 ns | 213.79 ns – 214.10 ns |
+| none/counter_add | 0.43 ns | 0.43 ns – 0.43 ns |
+| none/scope begin+end | 0.57 ns | 0.57 ns – 0.57 ns |
+| none/scope guard | 0.63 ns | 0.62 ns – 0.63 ns |
+| none/message | 0.42 ns | 0.42 ns – 0.42 ns |
+| none/context build/1 labels | 11.21 ns | 11.20 ns – 11.23 ns |
+| none/context build/4 labels | 18.33 ns | 18.31 ns – 18.34 ns |
+| none/context build/8 labels | 50.00 ns | 49.92 ns – 50.08 ns |
+| runtime/off/counter_add | 0.45 ns | 0.45 ns – 0.45 ns |
+| runtime/off/scope begin+end | 0.57 ns | 0.57 ns – 0.57 ns |
+| runtime/counters/counter_add | 183.67 ns | 183.51 ns – 183.85 ns |
+| runtime/counters/gauge_set | 182.57 ns | 182.34 ns – 182.83 ns |
+| runtime/counters/histogram_record | 180.14 ns | 179.87 ns – 180.42 ns |
+| runtime/counters/counter_add 1024 rotating contexts | 210.56 ns | 210.28 ns – 210.87 ns |
+| runtime/counters/counter_add context built per call | 204.00 ns | 203.85 ns – 204.16 ns |
+| runtime/counters/counter_add threads/1 | 175.47 ns | 175.22 ns – 175.72 ns |
+| runtime/counters/counter_add threads/2 | 269.25 ns | 267.41 ns – 271.16 ns |
+| runtime/counters/counter_add threads/4 | 547.13 ns | 537.36 ns – 557.24 ns |
+| runtime/counters/counter_add threads/8 | 404.14 ns | 400.73 ns – 407.10 ns |
+| runtime/scoped/scope begin+end | 208.91 ns | 208.52 ns – 209.41 ns |
+| runtime/scoped/scope guard | 208.21 ns | 207.99 ns – 208.44 ns |
+| runtime/scoped/message | 175.04 ns | 174.89 ns – 175.21 ns |
+| runtime/scoped/message_with 2 args | 172.67 ns | 172.46 ns – 172.89 ns |
+| runtime/scoped/tracing span enter+exit | 263.40 ns | 263.13 ns – 263.70 ns |
+| runtime/scoped/tracing event | 210.16 ns | 209.97 ns – 210.35 ns |
+| runtime/trace/resource_update | 170.83 ns | 170.02 ns – 171.57 ns |
+| runtime/capture/snapshot 128 frames | 60.8 µs | 60.5 µs – 61.0 µs |
+| runtime/capture/chrome trace export 128 frames | 271.0 µs | 270.8 µs – 271.2 µs |
+| fanout/counters/counter_add | 186.41 ns | 186.01 ns – 186.96 ns |
+| fanout/scoped/scope begin+end | 231.62 ns | 231.35 ns – 231.94 ns |
+
+### Effect of the Hot-Path Changes
+
+Criterion point estimates before and after `hot-path-overhead` (contexts
+and args passed by reference, and the process-wide maximum level checked
+before dispatch), compared against a baseline saved on
+`core-backend-redesign` on the machine above:
+
+| Case | Before | After |
+| --- | ---: | ---: |
+| none/counter_add | 4.81 ns | 0.43 ns |
+| none/scope begin+end | 8.49 ns | 0.57 ns |
+| none/scope guard | 9.06 ns | 0.63 ns |
+| none/message | 8.63 ns | 0.42 ns |
+| runtime/off/counter_add | 5.07 ns | 0.45 ns |
+| runtime/off/scope begin+end | 8.49 ns | 0.57 ns |
+| runtime/counters/counter_add | 186.94 ns | 183.67 ns |
+| runtime/counters/gauge_set | 186.96 ns | 182.57 ns |
+| runtime/counters/histogram_record | 180.32 ns | 180.14 ns |
+| runtime/counters/counter_add 1024 rotating contexts | 213.37 ns | 210.56 ns |
+| runtime/counters/counter_add context built per call | 202.40 ns | 204.00 ns |
+| runtime/counters/counter_add threads/1 | 182.67 ns | 175.47 ns |
+| runtime/counters/counter_add threads/2 | 287.09 ns | 269.25 ns |
+| runtime/counters/counter_add threads/4 | 586.73 ns | 547.13 ns |
+| runtime/counters/counter_add threads/8 | 412.47 ns | 404.14 ns |
+| runtime/scoped/scope begin+end | 209.97 ns | 208.91 ns |
+| runtime/scoped/scope guard | 208.25 ns | 208.21 ns |
+| runtime/scoped/message | 183.20 ns | 175.04 ns |
+| runtime/scoped/message_with 2 args | 176.82 ns | 172.67 ns |
+| runtime/scoped/tracing span enter+exit | 263.98 ns | 263.40 ns |
+| runtime/scoped/tracing event | 212.46 ns | 210.16 ns |
+| runtime/trace/resource_update | 166.77 ns | 170.83 ns |
+| runtime/capture/snapshot 128 frames | 59.2 µs | 60.8 µs |
+| runtime/capture/chrome trace export 128 frames | 276.2 µs | 271.0 µs |
+| fanout/counters/counter_add | 190.94 ns | 186.41 ns |
+| fanout/scoped/scope begin+end | 242.76 ns | 231.62 ns |
 
 ## Reading the Results
 
-- With no backend, or with the runtime at `Off`, a call costs about 5 to
-  9 ns. Most of that is copying the `Context` and `Args` values through the
-  backend call.
-- Every captured observation costs roughly 140 to 180 ns, whether it is a
-  counter, histogram, scope pair, message, or resource update.
-- More threads lower aggregate counter throughput: per-op wall time is above
-  the single-thread cost at 2, 4, and 8 threads.
+- With no backend, or with the runtime at `Off`, a call costs under 1 ns:
+  one relaxed atomic load and a branch inlined at the call site. Building
+  with `RUSTFLAGS="--cfg footfall_compile_out"` removes even that.
+- Every captured observation costs roughly 170 to 210 ns, whether it is a
+  counter, histogram, scope pair, message, or resource update. Passing
+  `Context` and `Args` by reference took a few nanoseconds off most of the
+  captured paths.
+- More threads still lower aggregate counter throughput: per-op wall time is
+  above the single-thread cost at 2, 4, and 8 threads. Every captured
+  observation interns its context under one runtime-wide lock; replacing
+  per-call interning with interned context handles is planned separately.
