@@ -803,6 +803,7 @@ mod tests {
             events: vec![
                 TimedObservation {
                     at_micros: 20,
+                    sequence: 0,
                     thread_id: 3,
                     observation: Observation::ScopeBegin {
                         desc_id: footfall_core::ScopeDescId::new(2),
@@ -814,6 +815,7 @@ mod tests {
                 },
                 TimedObservation {
                     at_micros: 22,
+                    sequence: 1,
                     thread_id: 3,
                     observation: Observation::ScopeEnd {
                         token: ScopeToken::new(9),
@@ -821,6 +823,7 @@ mod tests {
                 },
                 TimedObservation {
                     at_micros: 24,
+                    sequence: 2,
                     thread_id: 3,
                     observation: Observation::FrameMarker {
                         kind: MarkerKind::Frame,
@@ -830,6 +833,7 @@ mod tests {
                 },
                 TimedObservation {
                     at_micros: 26,
+                    sequence: 3,
                     thread_id: 3,
                     observation: Observation::Flow {
                         flow_id: FlowId::new(8),
