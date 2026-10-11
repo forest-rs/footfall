@@ -4,6 +4,7 @@
 //! Live-session request, response, and stream control messages.
 
 use alloc::string::String;
+use core::fmt;
 
 /// Stable id for one live session request.
 ///
@@ -247,6 +248,14 @@ impl SessionError {
     }
 }
 
+impl fmt::Display for SessionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.code, self.message)
+    }
+}
+
+impl core::error::Error for SessionError {}
+
 impl SessionError {
     /// Creates a live session error.
     #[must_use]
@@ -270,6 +279,25 @@ pub enum SessionErrorCode {
     Unsupported,
     /// The request failed after it was accepted.
     Failed,
+}
+
+impl SessionErrorCode {
+    /// Returns the stable lowercase name of this code.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidRequest => "invalid_request",
+            Self::NotFound => "not_found",
+            Self::Unsupported => "unsupported",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl fmt::Display for SessionErrorCode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 /// A server-side stream was opened.
@@ -458,10 +486,19 @@ pub enum SessionMessage<P> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::{
-        SessionMethod, SessionRequest, SessionRequestId, SessionResponse, SessionStreamEnd,
-        SessionStreamId, SessionStreamItem, SessionStreamStatus,
+        SessionError, SessionErrorCode, SessionMethod, SessionRequest, SessionRequestId,
+        SessionResponse, SessionStreamEnd, SessionStreamId, SessionStreamItem, SessionStreamStatus,
     };
+
+    #[test]
+    fn session_errors_display_code_and_message() {
+        let error = SessionError::new(SessionErrorCode::NotFound, "no such stream");
+        assert_eq!(error.to_string(), "not_found: no such stream");
+        let _: &dyn core::error::Error = &error;
+    }
 
     #[test]
     fn live_session_ids_expose_raw_values() {

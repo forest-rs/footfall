@@ -145,6 +145,7 @@ impl ArgEntry {
 
 /// Returned when an [`Args`] value exceeds its inline capacity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct ArgsCapacityError;
 
 impl fmt::Display for ArgsCapacityError {
@@ -152,6 +153,8 @@ impl fmt::Display for ArgsCapacityError {
         formatter.write_str("args inline capacity exceeded")
     }
 }
+
+impl core::error::Error for ArgsCapacityError {}
 
 #[cfg(test)]
 mod tests {

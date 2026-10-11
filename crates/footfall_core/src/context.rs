@@ -161,6 +161,7 @@ impl ContextEntry {
 
 /// Returned when a [`Context`] exceeds its inline capacity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct ContextCapacityError;
 
 impl fmt::Display for ContextCapacityError {
@@ -168,6 +169,8 @@ impl fmt::Display for ContextCapacityError {
         formatter.write_str("context inline capacity exceeded")
     }
 }
+
+impl core::error::Error for ContextCapacityError {}
 
 #[cfg(test)]
 mod tests {
@@ -239,6 +242,15 @@ mod tests {
         let second = Context::root().with(&FRAME, 1_u32).with(&PASS, 2_u32);
         assert_eq!(first, second);
         assert_ne!(first, Context::root().with(&FRAME, 1_u32));
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn capacity_error_is_an_error() {
+        use alloc::string::ToString;
+
+        let error: &dyn core::error::Error = &ContextCapacityError;
+        assert_eq!(error.to_string(), "context inline capacity exceeded");
     }
 
     #[test]

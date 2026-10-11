@@ -332,3 +332,18 @@ and `Vec` fields as slices.
   default still binds to localhost.
 - `footfall_memory`: `ScratchMetrics` and `CacheMetrics` have `new`
   constructors.
+
+## Error Types
+
+Every public error type implements `Display` and `core::error::Error`, so
+errors compose with `?`, `Box<dyn Error>`, and error-reporting crates:
+
+- `InstallBackendError`, `ContextCapacityError`, and `ArgsCapacityError` are
+  now `#[non_exhaustive]`, so they can gain detail later. Compare against
+  them with `matches!(result, Err(ContextCapacityError { .. }))` outside
+  `footfall_core`.
+- `SessionError` displays as `code: message`, and `SessionErrorCode` gains
+  `as_str` and `Display` with stable lowercase names such as `not_found`.
+- Installing a second backend through `install_backend`,
+  `Runtime::install_global`, `Fanout::install_global`, or
+  `TracyBackend::install_global` reports the same `InstallBackendError`.
