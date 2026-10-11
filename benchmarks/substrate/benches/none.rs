@@ -16,22 +16,22 @@ fn emission(c: &mut Criterion) {
     let context = sample_context();
     let mut group = c.benchmark_group("none");
     group.bench_function("counter_add", |b| {
-        b.iter(|| counter_add(black_box(&OPS), black_box(context), black_box(1)));
+        b.iter(|| counter_add(black_box(&OPS), black_box(&context), black_box(1)));
     });
     group.bench_function("scope begin+end", |b| {
         b.iter(|| {
-            let token = scope_begin(black_box(&RECORD), black_box(context));
+            let token = scope_begin(black_box(&RECORD), black_box(&context));
             scope_end(black_box(token));
         });
     });
     group.bench_function("scope guard", |b| {
-        b.iter(|| drop(black_box(scope(black_box(&RECORD), black_box(context)))));
+        b.iter(|| drop(black_box(scope(black_box(&RECORD), black_box(&context)))));
     });
     group.bench_function("message", |b| {
         b.iter(|| {
             message(
                 black_box(&LOG),
-                black_box(context),
+                black_box(&context),
                 black_box("uploaded atlas"),
             );
         });

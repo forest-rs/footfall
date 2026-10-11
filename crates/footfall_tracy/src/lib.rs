@@ -139,7 +139,7 @@ impl TracyBackend {
         ScopeToken::new(raw)
     }
 
-    fn begin_scope(&self, desc: &'static ScopeDesc, context: Context, args: Args) -> ScopeToken {
+    fn begin_scope(&self, desc: &'static ScopeDesc, context: &Context, args: &Args) -> ScopeToken {
         let token = self.next_scope_token();
         let span = if let Some(location) = desc.location() {
             let location = self.cached_span_location(desc, location);
@@ -238,7 +238,7 @@ impl TracyBackend {
         verb: &str,
         desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
-        context: Context,
+        context: &Context,
         size: Option<u64>,
     ) {
         let message = resource_message(verb, desc, resource_id, context, size);
@@ -292,24 +292,24 @@ thread_local! {
 }
 
 impl Backend for TracyBackend {
-    fn counter_add(&self, desc: &'static CounterDesc, _context: Context, value: u64) {
+    fn counter_add(&self, desc: &'static CounterDesc, _context: &Context, value: u64) {
         self.register_current_thread();
         self.observe_counter(desc, value, CounterUpdate::Add);
     }
 
-    fn gauge_set(&self, desc: &'static CounterDesc, _context: Context, value: u64) {
+    fn gauge_set(&self, desc: &'static CounterDesc, _context: &Context, value: u64) {
         self.register_current_thread();
         self.observe_counter(desc, value, CounterUpdate::Set);
     }
 
-    fn histogram_record(&self, desc: &'static CounterDesc, _context: Context, value: u64) {
+    fn histogram_record(&self, desc: &'static CounterDesc, _context: &Context, value: u64) {
         // Tracy has no histogram primitive; plot each sample so the distribution
         // is at least visible as a time series.
         self.register_current_thread();
         self.observe_counter(desc, value, CounterUpdate::Set);
     }
 
-    fn scope_begin(&self, desc: &'static ScopeDesc, context: Context, args: Args) -> ScopeToken {
+    fn scope_begin(&self, desc: &'static ScopeDesc, context: &Context, args: &Args) -> ScopeToken {
         self.register_current_thread();
         self.begin_scope(desc, context, args)
     }
@@ -322,7 +322,7 @@ impl Backend for TracyBackend {
         &self,
         desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
-        context: Context,
+        context: &Context,
         size: u64,
     ) {
         self.register_current_thread();
@@ -333,7 +333,7 @@ impl Backend for TracyBackend {
         &self,
         desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
-        context: Context,
+        context: &Context,
         size: u64,
     ) {
         self.register_current_thread();
@@ -344,20 +344,20 @@ impl Backend for TracyBackend {
         &self,
         desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
-        context: Context,
+        context: &Context,
     ) {
         self.register_current_thread();
         self.emit_resource_message("drop", desc, resource_id, context, None);
     }
 
-    fn frame_marker(&self, kind: MarkerKind, phase: MarkerPhase, _context: Context) {
+    fn frame_marker(&self, kind: MarkerKind, phase: MarkerPhase, _context: &Context) {
         self.register_current_thread();
         self.handle_marker(kind, phase);
     }
 
     // Flows are ignored: Tracy has no native causal-link primitive.
 
-    fn message(&self, desc: &'static EventDesc, context: Context, text: &str, args: Args) {
+    fn message(&self, desc: &'static EventDesc, context: &Context, text: &str, args: &Args) {
         self.register_current_thread();
         let message = message_text(desc, context, text, args);
         self.client.message(&message, self.callstack_depth);
@@ -390,7 +390,7 @@ fn resource_message(
     verb: &str,
     desc: &'static ResourceKindDesc,
     resource_id: ResourceId,
-    context: Context,
+    context: &Context,
     size: Option<u64>,
 ) -> String {
     let mut message = String::new();
@@ -410,7 +410,7 @@ fn resource_message(
     message
 }
 
-fn message_text(desc: &'static EventDesc, context: Context, text: &str, args: Args) -> String {
+fn message_text(desc: &'static EventDesc, context: &Context, text: &str, args: &Args) -> String {
     let mut message = String::new();
     let _ = write!(message, "{}: {text}", desc.name());
     let context_text = context_text(context);
@@ -437,7 +437,7 @@ fn leak_span_location(name: &str, location: SourceLocation) -> &'static SpanLoca
     Box::leak(Box::new(location))
 }
 
-fn context_text(context: Context) -> String {
+fn context_text(context: &Context) -> String {
     let mut text = String::new();
     for (index, entry) in context.iter().enumerate() {
         if index > 0 {
@@ -450,7 +450,7 @@ fn context_text(context: Context) -> String {
     text
 }
 
-fn args_text(args: Args) -> String {
+fn args_text(args: &Args) -> String {
     let mut text = String::new();
     for (index, entry) in args.iter().enumerate() {
         if index > 0 {
@@ -501,7 +501,7 @@ mod tests {
     #[test]
     fn scope_begun_before_a_move_ends_after_it() {
         let backend = TracyBackend::new();
-        let token = backend.scope_begin(&RECORD, Context::root(), Args::none());
+        let token = backend.scope_begin(&RECORD, &Context::root(), &Args::none());
         assert_eq!(OPEN_SPANS.with(|spans| spans.borrow().len()), 1);
 
         let moved = Box::new(backend);
@@ -521,7 +521,7 @@ mod tests {
             .with(&REASON, "invalidate");
 
         assert_eq!(
-            context_text(context),
+            context_text(&context),
             "frame=7 / pass=1 / reason=invalidate"
         );
     }
@@ -537,7 +537,7 @@ mod tests {
     #[test]
     fn resource_messages_include_context_and_size() {
         let context = Context::root().with(&CACHE, "glyph_atlas");
-        let message = resource_message("create", &ATLAS, ResourceId::new(9), context, Some(4096));
+        let message = resource_message("create", &ATLAS, ResourceId::new(9), &context, Some(4096));
         assert!(message.contains("resource create atlas#9"));
         assert!(message.contains("size=4096"));
         assert!(message.contains("cache=glyph_atlas"));
@@ -547,7 +547,7 @@ mod tests {
     fn messages_include_context_and_args() {
         let context = Context::root().with(&FRAME, 7_u32);
         let args = Args::none().with("bytes", 4096_u32).with("level", "info");
-        let message = message_text(&APP_LOG, context, "uploaded atlas", args);
+        let message = message_text(&APP_LOG, &context, "uploaded atlas", &args);
 
         assert!(message.contains("app_log: uploaded atlas"));
         assert!(message.contains("frame=7"));

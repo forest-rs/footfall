@@ -78,22 +78,22 @@ impl fmt::Debug for Fanout {
 }
 
 impl Backend for Fanout {
-    fn counter_add(&self, desc: &'static CounterDesc, context: Context, value: u64) {
+    fn counter_add(&self, desc: &'static CounterDesc, context: &Context, value: u64) {
         self.primary.counter_add(desc, context, value);
         self.secondary.counter_add(desc, context, value);
     }
 
-    fn gauge_set(&self, desc: &'static CounterDesc, context: Context, value: u64) {
+    fn gauge_set(&self, desc: &'static CounterDesc, context: &Context, value: u64) {
         self.primary.gauge_set(desc, context, value);
         self.secondary.gauge_set(desc, context, value);
     }
 
-    fn histogram_record(&self, desc: &'static CounterDesc, context: Context, value: u64) {
+    fn histogram_record(&self, desc: &'static CounterDesc, context: &Context, value: u64) {
         self.primary.histogram_record(desc, context, value);
         self.secondary.histogram_record(desc, context, value);
     }
 
-    fn scope_begin(&self, desc: &'static ScopeDesc, context: Context, args: Args) -> ScopeToken {
+    fn scope_begin(&self, desc: &'static ScopeDesc, context: &Context, args: &Args) -> ScopeToken {
         let primary = self.primary.scope_begin(desc, context, args);
         let secondary = self.secondary.scope_begin(desc, context, args);
         let token = ScopeToken::new(self.next_scope_token.fetch_add(1, Ordering::Relaxed));
@@ -123,7 +123,7 @@ impl Backend for Fanout {
         &self,
         desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
-        context: Context,
+        context: &Context,
         size: u64,
     ) {
         self.primary
@@ -136,7 +136,7 @@ impl Backend for Fanout {
         &self,
         desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
-        context: Context,
+        context: &Context,
         size: u64,
     ) {
         self.primary
@@ -149,23 +149,23 @@ impl Backend for Fanout {
         &self,
         desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
-        context: Context,
+        context: &Context,
     ) {
         self.primary.resource_drop(desc, resource_id, context);
         self.secondary.resource_drop(desc, resource_id, context);
     }
 
-    fn frame_marker(&self, kind: MarkerKind, phase: MarkerPhase, context: Context) {
+    fn frame_marker(&self, kind: MarkerKind, phase: MarkerPhase, context: &Context) {
         self.primary.frame_marker(kind, phase, context);
         self.secondary.frame_marker(kind, phase, context);
     }
 
-    fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: Context) {
+    fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: &Context) {
         self.primary.flow(flow_id, phase, context);
         self.secondary.flow(flow_id, phase, context);
     }
 
-    fn message(&self, desc: &'static EventDesc, context: Context, text: &str, args: Args) {
+    fn message(&self, desc: &'static EventDesc, context: &Context, text: &str, args: &Args) {
         self.primary.message(desc, context, text, args);
         self.secondary.message(desc, context, text, args);
     }
@@ -213,15 +213,15 @@ mod tests {
     }
 
     impl Backend for Recorder {
-        fn counter_add(&self, _desc: &'static CounterDesc, _context: Context, _value: u64) {
+        fn counter_add(&self, _desc: &'static CounterDesc, _context: &Context, _value: u64) {
             self.record("counter_add");
         }
 
         fn scope_begin(
             &self,
             _desc: &'static ScopeDesc,
-            _context: Context,
-            _args: Args,
+            _context: &Context,
+            _args: &Args,
         ) -> ScopeToken {
             self.record("scope_begin");
             ScopeToken::new(self.token)
@@ -231,7 +231,7 @@ mod tests {
             self.record(&format!("scope_end {}", token.get()));
         }
 
-        fn frame_marker(&self, _kind: MarkerKind, _phase: MarkerPhase, _context: Context) {
+        fn frame_marker(&self, _kind: MarkerKind, _phase: MarkerPhase, _context: &Context) {
             self.record("frame_marker");
         }
     }
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn fanout_ignores_invalid_scope_token() {
         let fanout = Fanout::new(&NOOP, &NOOP);
-        let token = fanout.scope_begin(&SCOPE, Context::root(), Args::none());
+        let token = fanout.scope_begin(&SCOPE, &Context::root(), &Args::none());
         assert!(token.is_valid(), "fanout tokens should start at 1");
 
         fanout.scope_end(ScopeToken::INVALID);
@@ -280,10 +280,10 @@ mod tests {
         );
         let context = Context::root().with(&FRAME, 1_u32);
 
-        fanout.counter_add(&COUNTER, context, 3);
-        let token = fanout.scope_begin(&SCOPE, context, Args::none());
+        fanout.counter_add(&COUNTER, &context, 3);
+        let token = fanout.scope_begin(&SCOPE, &context, &Args::none());
         fanout.scope_end(token);
-        fanout.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
+        fanout.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, &context);
 
         assert_eq!(
             take(log),
@@ -309,8 +309,8 @@ mod tests {
         )));
         let outer = Fanout::new(Recorder::leak("a", 5, log), inner);
 
-        let first = outer.scope_begin(&SCOPE, Context::root(), Args::none());
-        let second = outer.scope_begin(&SCOPE, Context::root(), Args::none());
+        let first = outer.scope_begin(&SCOPE, &Context::root(), &Args::none());
+        let second = outer.scope_begin(&SCOPE, &Context::root(), &Args::none());
         assert_ne!(first, second, "each level issues its own tokens");
         outer.scope_end(second);
         outer.scope_end(first);

@@ -43,24 +43,24 @@ impl CacheStats {
 
     /// Records a cache hit.
     pub fn record_hit(&self) {
-        counter_add(self.metrics.hit_count, self.context, 1);
+        counter_add(self.metrics.hit_count, &self.context, 1);
     }
 
     /// Records a cache miss.
     pub fn record_miss(&self) {
-        counter_add(self.metrics.miss_count, self.context, 1);
+        counter_add(self.metrics.miss_count, &self.context, 1);
     }
 
     /// Records a cache eviction and updates resident bytes.
     pub fn record_eviction(&mut self, resident_bytes: u64) {
-        counter_add(self.metrics.eviction_count, self.context, 1);
+        counter_add(self.metrics.eviction_count, &self.context, 1);
         self.observe_resident_bytes(resident_bytes);
     }
 
     /// Updates the observed resident bytes.
     pub fn observe_resident_bytes(&mut self, resident_bytes: u64) {
         self.current_bytes = resident_bytes;
-        gauge_set(self.metrics.current_bytes, self.context, resident_bytes);
+        gauge_set(self.metrics.current_bytes, &self.context, resident_bytes);
     }
 }
 

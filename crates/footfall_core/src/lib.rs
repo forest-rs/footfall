@@ -28,7 +28,7 @@
 //! use footfall_core::{Context, ScopeDesc, scope};
 //!
 //! const RECORD: ScopeDesc = ScopeDesc::new("record");
-//! let _guard = scope(&RECORD, Context::root());
+//! let _guard = scope(&RECORD, &Context::root());
 //! ```
 //!
 //! ```compile_fail,E0492
@@ -41,7 +41,7 @@
 //! use footfall_core::{Context, ScopeDesc, scope};
 //!
 //! static RECORD: ScopeDesc = ScopeDesc::new("record");
-//! let _guard = scope(&RECORD, Context::root());
+//! let _guard = scope(&RECORD, &Context::root());
 //! ```
 //!
 //! Descriptors created at runtime, for example by a bridge from another

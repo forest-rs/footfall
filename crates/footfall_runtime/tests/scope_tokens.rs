@@ -14,7 +14,7 @@ static LATER: ScopeDesc = ScopeDesc::new("later");
 
 #[test]
 fn guard_started_before_install_does_not_end_a_later_scope() {
-    let early = scope(&EARLY, Context::root());
+    let early = scope(&EARLY, &Context::root());
     assert_eq!(early.token(), ScopeToken::INVALID);
 
     let runtime = Runtime::new(16, 16)
@@ -24,7 +24,7 @@ fn guard_started_before_install_does_not_end_a_later_scope() {
     // The runtime issues token 1 here. Before token 0 was reserved, the
     // early guard carried its descriptor id (also 1) and would end this
     // scope when dropped.
-    let later = scope_begin(&LATER, Context::root());
+    let later = scope_begin(&LATER, &Context::root());
     assert!(later.is_valid());
     drop(early);
     scope_end(later);

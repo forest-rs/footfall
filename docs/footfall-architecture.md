@@ -430,9 +430,9 @@ let ctx = Context::root()
     .with(&PASS, pass_id)
     .with(&NODE, node_id);
 
-let scope = footfall::scope_begin(&RECORD_PASS, ctx);
-footfall::counter_add(&UPLOAD_BYTES, ctx, upload_len as u64);
-footfall::resource_update(&ATLAS, atlas_id, ctx, atlas_bytes as u64);
+let scope = footfall::scope_begin(&RECORD_PASS, &ctx);
+footfall::counter_add(&UPLOAD_BYTES, &ctx, upload_len as u64);
+footfall::resource_update(&ATLAS, atlas_id, &ctx, atlas_bytes as u64);
 footfall::scope_end(scope);
 ```
 

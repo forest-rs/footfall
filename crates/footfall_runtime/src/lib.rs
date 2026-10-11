@@ -297,7 +297,7 @@ impl Runtime {
     fn counter_add_at(
         &self,
         desc: &'static CounterDesc,
-        context: Context,
+        context: &Context,
         value: u64,
         at_micros: u64,
     ) {
@@ -307,7 +307,7 @@ impl Runtime {
     fn gauge_set_at(
         &self,
         desc: &'static CounterDesc,
-        context: Context,
+        context: &Context,
         value: u64,
         at_micros: u64,
     ) {
@@ -317,7 +317,7 @@ impl Runtime {
     fn histogram_record_at(
         &self,
         desc: &'static CounterDesc,
-        context: Context,
+        context: &Context,
         value: u64,
         at_micros: u64,
     ) {
@@ -351,7 +351,7 @@ impl Runtime {
     fn counter_update_at(
         &self,
         desc: &'static CounterDesc,
-        context: Context,
+        context: &Context,
         value: u64,
         at_micros: u64,
         kind: CounterKind,
@@ -420,7 +420,7 @@ impl Runtime {
             });
     }
 
-    fn context_id(&self, context: Context) -> Option<ContextId> {
+    fn context_id(&self, context: &Context) -> Option<ContextId> {
         self.contexts
             .lock()
             .expect("runtime context mutex should not be poisoned")
@@ -876,8 +876,8 @@ impl ContextState {
         self.dropped_contexts = 0;
     }
 
-    fn context_id(&mut self, context: Context) -> Option<ContextId> {
-        if let Some(context_id) = self.context_ids.get(&context) {
+    fn context_id(&mut self, context: &Context) -> Option<ContextId> {
+        if let Some(context_id) = self.context_ids.get(context) {
             return Some(*context_id);
         }
 
@@ -888,10 +888,10 @@ impl ContextState {
 
         let context_id = ContextId::new(self.next_context_id);
         self.next_context_id = self.next_context_id.saturating_add(1);
-        self.context_ids.insert(context, context_id);
+        self.context_ids.insert(*context, context_id);
         self.contexts.push(ContextSnapshot {
             id: context_id,
-            context,
+            context: *context,
         });
         Some(context_id)
     }
@@ -926,7 +926,7 @@ impl CounterKey {
 }
 
 impl Backend for Runtime {
-    fn counter_add(&self, desc: &'static CounterDesc, context: Context, value: u64) {
+    fn counter_add(&self, desc: &'static CounterDesc, context: &Context, value: u64) {
         if !self.level().captures_counters() {
             return;
         }
@@ -934,7 +934,7 @@ impl Backend for Runtime {
         self.counter_add_at(desc, context, value, at_micros);
     }
 
-    fn gauge_set(&self, desc: &'static CounterDesc, context: Context, value: u64) {
+    fn gauge_set(&self, desc: &'static CounterDesc, context: &Context, value: u64) {
         if !self.level().captures_counters() {
             return;
         }
@@ -942,7 +942,7 @@ impl Backend for Runtime {
         self.gauge_set_at(desc, context, value, at_micros);
     }
 
-    fn histogram_record(&self, desc: &'static CounterDesc, context: Context, value: u64) {
+    fn histogram_record(&self, desc: &'static CounterDesc, context: &Context, value: u64) {
         if !self.level().captures_counters() {
             return;
         }
@@ -950,7 +950,7 @@ impl Backend for Runtime {
         self.histogram_record_at(desc, context, value, at_micros);
     }
 
-    fn scope_begin(&self, desc: &'static ScopeDesc, context: Context, args: Args) -> ScopeToken {
+    fn scope_begin(&self, desc: &'static ScopeDesc, context: &Context, args: &Args) -> ScopeToken {
         if !self.level().captures_scopes() {
             return ScopeToken::INVALID;
         }
@@ -966,7 +966,7 @@ impl Backend for Runtime {
                 name: desc.name(),
                 context_id,
                 token,
-                args,
+                args: *args,
             },
             at_micros,
         );
@@ -988,7 +988,7 @@ impl Backend for Runtime {
         &self,
         desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
-        context: Context,
+        context: &Context,
         size: u64,
     ) {
         if !self.level().captures_resources() {
@@ -1015,7 +1015,7 @@ impl Backend for Runtime {
         &self,
         desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
-        context: Context,
+        context: &Context,
         size: u64,
     ) {
         if !self.level().captures_resources() {
@@ -1042,7 +1042,7 @@ impl Backend for Runtime {
         &self,
         desc: &'static ResourceKindDesc,
         resource_id: ResourceId,
-        context: Context,
+        context: &Context,
     ) {
         if !self.level().captures_resources() {
             return;
@@ -1063,7 +1063,7 @@ impl Backend for Runtime {
         );
     }
 
-    fn frame_marker(&self, kind: MarkerKind, phase: MarkerPhase, context: Context) {
+    fn frame_marker(&self, kind: MarkerKind, phase: MarkerPhase, context: &Context) {
         if !self.level().captures_markers() {
             return;
         }
@@ -1082,7 +1082,7 @@ impl Backend for Runtime {
         );
     }
 
-    fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: Context) {
+    fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: &Context) {
         if !self.level().captures_flows() {
             return;
         }
@@ -1101,7 +1101,7 @@ impl Backend for Runtime {
         );
     }
 
-    fn message(&self, desc: &'static EventDesc, context: Context, text: &str, args: Args) {
+    fn message(&self, desc: &'static EventDesc, context: &Context, text: &str, args: &Args) {
         if !self.level().captures_messages() {
             return;
         }
@@ -1116,7 +1116,7 @@ impl Backend for Runtime {
                 name: desc.name(),
                 context_id,
                 text: truncate_message_text(text),
-                args,
+                args: *args,
             },
             at_micros,
         );
@@ -1247,7 +1247,7 @@ mod tests {
         let runtime = Runtime::new(8, 8);
         static CHANNEL: footfall_core::EventDesc = footfall_core::EventDesc::new("app_log");
         let context_id = runtime
-            .context_id(Context::root())
+            .context_id(&Context::root())
             .expect("root context should exist");
 
         let long_text = "x".repeat(super::MESSAGE_TEXT_MAX_BYTES + 64);
@@ -1289,10 +1289,10 @@ mod tests {
         static LATENCY: CounterDesc = CounterDesc::new("frame_micros", Unit::Micros);
         let context = Context::root().with(&PASS, 1_u32);
 
-        runtime.histogram_record_at(&LATENCY, context, 0, 1);
-        runtime.histogram_record_at(&LATENCY, context, 1, 2);
-        runtime.histogram_record_at(&LATENCY, context, 3, 3);
-        runtime.histogram_record_at(&LATENCY, context, 1000, 4);
+        runtime.histogram_record_at(&LATENCY, &context, 0, 1);
+        runtime.histogram_record_at(&LATENCY, &context, 1, 2);
+        runtime.histogram_record_at(&LATENCY, &context, 3, 3);
+        runtime.histogram_record_at(&LATENCY, &context, 1000, 4);
 
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.histograms.len(), 1);
@@ -1342,8 +1342,8 @@ mod tests {
                     let distinct = Context::root()
                         .with(&NODE, u32::try_from(thread).expect("thread index fits"));
                     for update in 0..UPDATES {
-                        runtime.counter_add_at(&OPS, shared, 1, update);
-                        runtime.counter_add_at(&OPS, distinct, 1, update);
+                        runtime.counter_add_at(&OPS, &shared, 1, update);
+                        runtime.counter_add_at(&OPS, &distinct, 1, update);
                     }
                 });
             }
@@ -1367,7 +1367,7 @@ mod tests {
 
         let runtime = Runtime::new(16, CAPACITY);
         let context_id = runtime
-            .context_id(Context::root())
+            .context_id(&Context::root())
             .expect("root context should exist");
         std::thread::scope(|scope| {
             for _ in 0..THREADS {
@@ -1402,7 +1402,7 @@ mod tests {
         static OPS: CounterDesc = CounterDesc::count("ops");
         for node in 0..32_u32 {
             let context = Context::root().with(&NODE, node);
-            runtime.counter_add_at(&OPS, context, 1, u64::from(node));
+            runtime.counter_add_at(&OPS, &context, 1, u64::from(node));
         }
 
         let snapshot = runtime.snapshot();
@@ -1420,7 +1420,7 @@ mod tests {
     fn events_from_different_threads_carry_distinct_thread_ids() {
         let runtime = Runtime::new(8, 8);
         let context_id = runtime
-            .context_id(Context::root())
+            .context_id(&Context::root())
             .expect("root context should exist");
         std::thread::scope(|scope| {
             for _ in 0..2 {
@@ -1451,10 +1451,10 @@ mod tests {
         static RECORD: ScopeDesc = ScopeDesc::new("record");
         let context = Context::root().with(&PASS, 1_u32);
 
-        runtime.counter_add_at(&OPS, context, 5, 10);
-        runtime.gauge_set_at(&OPS, context, 9, 11);
+        runtime.counter_add_at(&OPS, &context, 5, 10);
+        runtime.gauge_set_at(&OPS, &context, 9, 11);
         let token = runtime.next_scope_token();
-        let context_id = runtime.context_id(context).expect("context should intern");
+        let context_id = runtime.context_id(&context).expect("context should intern");
         runtime.push_event_at(
             Observation::ScopeBegin {
                 desc_id: RECORD.id(),
@@ -1525,7 +1525,7 @@ mod tests {
         static FIRST: ScopeDesc = ScopeDesc::new("first");
         static SECOND: ScopeDesc = ScopeDesc::new("second");
         let context_id = runtime
-            .context_id(Context::root().with(&PASS, 1_u32))
+            .context_id(&Context::root().with(&PASS, 1_u32))
             .expect("context should intern");
 
         for desc in [&FIRST, &SECOND] {
@@ -1580,7 +1580,7 @@ mod tests {
         runtime.set_session_name("recording");
 
         let context_id = runtime
-            .context_id(Context::root().with(&FRAME, 1_u32))
+            .context_id(&Context::root().with(&FRAME, 1_u32))
             .expect("context should intern");
         runtime.push_event_at(
             Observation::FrameMarker {
@@ -1643,7 +1643,7 @@ mod tests {
     fn runtime_enforces_event_capacity() {
         let runtime = Runtime::new(4, 1);
         let context_id = runtime
-            .context_id(Context::root())
+            .context_id(&Context::root())
             .expect("root context should exist");
         runtime.push_event_at(
             Observation::FrameMarker {
@@ -1674,8 +1674,8 @@ mod tests {
         static FIRST: CounterDesc = CounterDesc::count("first");
         static SECOND: CounterDesc = CounterDesc::count("second");
 
-        runtime.counter_add_at(&FIRST, context, 1, 1);
-        runtime.counter_add_at(&SECOND, context, 1, 2);
+        runtime.counter_add_at(&FIRST, &context, 1, 1);
+        runtime.counter_add_at(&SECOND, &context, 1, 2);
 
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.counters.len(), 1);
@@ -1691,13 +1691,13 @@ mod tests {
         let runtime = Runtime::with_level(16, 16, InstrumentationLevel::Counters);
 
         let context = Context::root().with(&FRAME, 3_u32);
-        runtime.counter_add(&COUNTER, context, 1);
-        let token = runtime.scope_begin(&SCOPE, context, Args::none());
+        runtime.counter_add(&COUNTER, &context, 1);
+        let token = runtime.scope_begin(&SCOPE, &context, &Args::none());
         assert_eq!(token, ScopeToken::INVALID);
         runtime.scope_end(token);
-        runtime.resource_create(&RESOURCE, ResourceId::new(7), context, 64);
-        runtime.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
-        runtime.flow(FlowId::new(9), FlowPhase::Begin, context);
+        runtime.resource_create(&RESOURCE, ResourceId::new(7), &context, 64);
+        runtime.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, &context);
+        runtime.flow(FlowId::new(9), FlowPhase::Begin, &context);
 
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.counters.len(), 1);
@@ -1705,18 +1705,18 @@ mod tests {
 
         // A scope begun while scopes were excluded must not record an end
         // after the level is raised.
-        let excluded = runtime.scope_begin(&SCOPE, context, Args::none());
+        let excluded = runtime.scope_begin(&SCOPE, &context, &Args::none());
         runtime.set_level(InstrumentationLevel::Trace);
         runtime.scope_end(excluded);
         assert!(runtime.snapshot().events.is_empty());
 
         runtime.reset();
-        runtime.counter_add(&COUNTER, context, 1);
-        let token = runtime.scope_begin(&SCOPE, context, Args::none());
+        runtime.counter_add(&COUNTER, &context, 1);
+        let token = runtime.scope_begin(&SCOPE, &context, &Args::none());
         runtime.scope_end(token);
-        runtime.resource_create(&RESOURCE, ResourceId::new(7), context, 64);
-        runtime.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
-        runtime.flow(FlowId::new(9), FlowPhase::Begin, context);
+        runtime.resource_create(&RESOURCE, ResourceId::new(7), &context, 64);
+        runtime.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, &context);
+        runtime.flow(FlowId::new(9), FlowPhase::Begin, &context);
 
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.counters.len(), 1);
@@ -1734,15 +1734,15 @@ mod tests {
         let runtime = Runtime::with_level(16, 16, InstrumentationLevel::Trace);
         let context = Context::root().with(&FRAME, 1_u32);
         for _ in 0..2 {
-            let token = runtime.scope_begin(&RECORD, context, Args::none());
+            let token = runtime.scope_begin(&RECORD, &context, &Args::none());
             runtime.scope_end(token);
         }
-        runtime.resource_create(&ATLAS, ResourceId::new(1), context, 64);
-        runtime.message(&LOG, context, "hello", Args::none());
-        runtime.counter_add(&OPS, context, 1);
-        runtime.counter_add(&OPS, Context::root(), 1);
-        runtime.histogram_record(&OPS, context, 5);
-        runtime.histogram_record(&LATENCY, context, 7);
+        runtime.resource_create(&ATLAS, ResourceId::new(1), &context, 64);
+        runtime.message(&LOG, &context, "hello", &Args::none());
+        runtime.counter_add(&OPS, &context, 1);
+        runtime.counter_add(&OPS, &Context::root(), 1);
+        runtime.histogram_record(&OPS, &context, 5);
+        runtime.histogram_record(&LATENCY, &context, 7);
 
         let snapshot = runtime.snapshot();
         let scope_ids: Vec<u64> = snapshot
@@ -1797,7 +1797,7 @@ mod tests {
         // reset.
         let again = runtime.drain_snapshot();
         assert_eq!(again.counters[0].desc_id.get(), 4);
-        runtime.histogram_record(&LATENCY, context, 7);
+        runtime.histogram_record(&LATENCY, &context, 7);
         let fresh = runtime.snapshot();
         assert_eq!(fresh.histograms[0].desc_id.get(), 1);
     }

@@ -80,7 +80,7 @@ fn main() {
     resource_drop(
         &ATLAS,
         ATLAS_ID,
-        Context::root()
+        &Context::root()
             .with(&FRAME, FRAME_COUNT)
             .with(&PASS, 1_u32)
             .with(&CACHE, "glyph_atlas")
@@ -107,17 +107,17 @@ fn run_frame(frame: u32, scratch_metrics: ScratchMetrics, cache_metrics: CacheMe
     let cache_context = frame_context.with(&PASS, 1_u32).with(&CACHE, "glyph_atlas");
     let atlas_context = cache_context.with(&RESOURCE, ATLAS_ID);
 
-    frame_marker(MarkerKind::Frame, MarkerPhase::Begin, frame_context);
+    frame_marker(MarkerKind::Frame, MarkerPhase::Begin, &frame_context);
 
-    let frame_scope = scope_begin(&RECORD_FRAME, frame_context);
-    let tessellate_scope = scope_begin(&TESSELLATE_NODE, record_context);
+    let frame_scope = scope_begin(&RECORD_FRAME, &frame_context);
+    let tessellate_scope = scope_begin(&TESSELLATE_NODE, &record_context);
     let mut scratch = TrackedScratchVec::<u32>::new(scratch_metrics, record_context);
     let scratch_items = 12_u32 + (frame % 36);
     scratch.reserve(scratch_items as usize);
     for index in 0..scratch_items {
         scratch.push(index);
     }
-    counter_add(&DRAW_OPS, record_context, u64::from(scratch_items));
+    counter_add(&DRAW_OPS, &record_context, u64::from(scratch_items));
     sleep(Duration::from_millis(u64::from(2 + (frame % 3))));
     scope_end(tessellate_scope);
 
@@ -126,7 +126,7 @@ fn run_frame(frame: u32, scratch_metrics: ScratchMetrics, cache_metrics: CacheMe
     if frame == 0 {
         cache.record_miss();
         cache.observe_resident_bytes(resident_bytes);
-        resource_create(&ATLAS, ATLAS_ID, atlas_context, resident_bytes);
+        resource_create(&ATLAS, ATLAS_ID, &atlas_context, resident_bytes);
     } else if frame.is_multiple_of(11) {
         cache.record_miss();
         cache.record_eviction(resident_bytes.saturating_sub(2_048));
@@ -135,20 +135,20 @@ fn run_frame(frame: u32, scratch_metrics: ScratchMetrics, cache_metrics: CacheMe
         cache.observe_resident_bytes(resident_bytes);
     }
 
-    let upload_scope = scope_begin(&UPLOAD_ATLAS, atlas_context);
+    let upload_scope = scope_begin(&UPLOAD_ATLAS, &atlas_context);
     let upload_bytes = 1_024_u64 * u64::from(1 + (frame % 6));
-    counter_add(&UPLOAD_BYTES, atlas_context, upload_bytes);
+    counter_add(&UPLOAD_BYTES, &atlas_context, upload_bytes);
     resource_update(
         &ATLAS,
         ATLAS_ID,
-        atlas_context,
+        &atlas_context,
         resident_bytes + upload_bytes,
     );
     sleep(Duration::from_millis(u64::from(3 + (frame % 5))));
     scope_end(upload_scope);
 
     scope_end(frame_scope);
-    frame_marker(MarkerKind::Frame, MarkerPhase::End, frame_context);
+    frame_marker(MarkerKind::Frame, MarkerPhase::End, &frame_context);
     sleep(Duration::from_millis(8));
 }
 

@@ -85,17 +85,17 @@ impl<T> TrackedScratchVec<T> {
 
     fn observe_growth(&mut self, previous_capacity: usize) {
         if self.inner.capacity() != previous_capacity {
-            counter_add(self.metrics.grow_count, self.context, 1);
+            counter_add(self.metrics.grow_count, &self.context, 1);
         }
         self.report_capacity();
     }
 
     fn report_capacity(&mut self) {
         let current_bytes = self.reserved_bytes();
-        gauge_set(self.metrics.current_bytes, self.context, current_bytes);
+        gauge_set(self.metrics.current_bytes, &self.context, current_bytes);
         if current_bytes > self.peak_bytes {
             self.peak_bytes = current_bytes;
-            gauge_set(self.metrics.peak_bytes, self.context, self.peak_bytes);
+            gauge_set(self.metrics.peak_bytes, &self.context, self.peak_bytes);
         }
     }
 }
