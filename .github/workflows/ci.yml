@@ -224,6 +224,11 @@ jobs:
       - name: cargo test --doc
         run: cargo test --doc --workspace --locked --all-features --no-fail-fast
 
+      - name: cargo test (instrumentation compiled out)
+        run: cargo test -p footfall_core -p footfall --locked --all-features --no-fail-fast
+        env:
+          RUSTFLAGS: --cfg footfall_compile_out
+
   test-stable-wasm:
     name: cargo test (wasm32)
     runs-on: ubuntu-latest

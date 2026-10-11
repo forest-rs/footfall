@@ -120,6 +120,12 @@ Turn on richer downstream inspection when needed:
 
 The emission seam should not need to change between those modes.
 
+To remove instrumentation from a build entirely, build the final binary with
+`RUSTFLAGS="--cfg footfall_compile_out"`. Every emission then compiles to an
+empty inlined function and no backend sees anything. It is a compiler `cfg`
+rather than a cargo feature so that no dependency, and no `--all-features`
+run, can switch it on for you; libraries should never set it.
+
 ## Current Local Attach Pattern
 
 If you want a separate consumer app to connect locally:

@@ -7,6 +7,28 @@ use crate::{
 #[cfg(feature = "std")]
 use std::sync::OnceLock;
 
+/// Forwards one emission to the installed backend.
+///
+/// With `--cfg footfall_compile_out` the call is replaced by evaluating the
+/// arguments and discarding them, so instrumented code compiles to nothing.
+/// The `else` form supplies the value returned in that case.
+macro_rules! dispatch {
+    ($method:ident($($arg:expr),* $(,)?) else $compiled_out:expr) => {{
+        #[cfg(not(footfall_compile_out))]
+        {
+            backend().$method($($arg),*)
+        }
+        #[cfg(footfall_compile_out)]
+        {
+            let _ = ($($arg,)*);
+            $compiled_out
+        }
+    }};
+    ($method:ident($($arg:expr),* $(,)?)) => {
+        dispatch!($method($($arg),*) else ())
+    };
+}
+
 /// Opaque token returned by [`scope_begin`] and consumed by [`scope_end`].
 ///
 /// The raw value `0` is reserved as [`ScopeToken::INVALID`]. It is returned
@@ -56,11 +78,13 @@ pub struct ScopeGuard {
 
 impl ScopeGuard {
     /// Begins a new guarded scope.
+    #[cfg_attr(footfall_compile_out, inline(always))]
     pub fn new(desc: &'static ScopeDesc, context: &Context) -> Self {
         Self::with_args(desc, context, &Args::none())
     }
 
     /// Begins a new guarded scope carrying per-instance arguments.
+    #[cfg_attr(footfall_compile_out, inline(always))]
     pub fn with_args(desc: &'static ScopeDesc, context: &Context, args: &Args) -> Self {
         Self {
             token: scope_begin_with(desc, context, args),
@@ -75,10 +99,12 @@ impl ScopeGuard {
     }
 
     /// Ends the guarded scope before the guard is dropped.
+    #[cfg_attr(footfall_compile_out, inline(always))]
     pub fn end(mut self) {
         self.end_if_active();
     }
 
+    #[cfg_attr(footfall_compile_out, inline(always))]
     fn end_if_active(&mut self) {
         if self.active {
             scope_end(self.token);
@@ -88,6 +114,7 @@ impl ScopeGuard {
 }
 
 impl Drop for ScopeGuard {
+    #[cfg_attr(footfall_compile_out, inline(always))]
     fn drop(&mut self) {
         self.end_if_active();
     }
@@ -237,127 +264,148 @@ impl Backend for NoopBackend {}
 pub struct InstallBackendError;
 
 /// Adds to a counter descriptor under a semantic context.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn counter_add(desc: &'static CounterDesc, context: &Context, value: u64) {
-    backend().counter_add(desc, context, value);
+    dispatch!(counter_add(desc, context, value));
 }
 
 /// Sets a gauge descriptor under a semantic context.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn gauge_set(desc: &'static CounterDesc, context: &Context, value: u64) {
-    backend().gauge_set(desc, context, value);
+    dispatch!(gauge_set(desc, context, value));
 }
 
 /// Records one sample into a histogram descriptor under a semantic context.
 ///
 /// Histograms aggregate a value distribution per descriptor and context, so
 /// consumers can derive percentiles instead of only sums and last values.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn histogram_record(desc: &'static CounterDesc, context: &Context, value: u64) {
-    backend().histogram_record(desc, context, value);
+    dispatch!(histogram_record(desc, context, value));
 }
 
 /// Begins a scope under a semantic context.
 #[must_use]
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn scope_begin(desc: &'static ScopeDesc, context: &Context) -> ScopeToken {
     scope_begin_with(desc, context, &Args::none())
 }
 
 /// Begins a scope carrying per-instance arguments.
 #[must_use]
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn scope_begin_with(desc: &'static ScopeDesc, context: &Context, args: &Args) -> ScopeToken {
-    backend().scope_begin(desc, context, args)
+    dispatch!(scope_begin(desc, context, args) else ScopeToken::INVALID)
 }
 
 /// Ends a previously-begun scope.
 ///
 /// Ending [`ScopeToken::INVALID`] does nothing.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn scope_end(token: ScopeToken) {
     if token.is_valid() {
-        backend().scope_end(token);
+        dispatch!(scope_end(token));
     }
 }
 
 /// Begins a scope and returns a guard that ends it on drop.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn scope(desc: &'static ScopeDesc, context: &Context) -> ScopeGuard {
     ScopeGuard::new(desc, context)
 }
 
 /// Begins a guarded scope carrying per-instance arguments.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn scope_with(desc: &'static ScopeDesc, context: &Context, args: &Args) -> ScopeGuard {
     ScopeGuard::with_args(desc, context, args)
 }
 
 /// Emits a resource-creation observation.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn resource_create(
     desc: &'static ResourceKindDesc,
     resource_id: ResourceId,
     context: &Context,
     size: u64,
 ) {
-    backend().resource_create(desc, resource_id, context, size);
+    dispatch!(resource_create(desc, resource_id, context, size));
 }
 
 /// Emits a resource-update observation.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn resource_update(
     desc: &'static ResourceKindDesc,
     resource_id: ResourceId,
     context: &Context,
     size: u64,
 ) {
-    backend().resource_update(desc, resource_id, context, size);
+    dispatch!(resource_update(desc, resource_id, context, size));
 }
 
 /// Emits a resource-drop observation.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn resource_drop(desc: &'static ResourceKindDesc, resource_id: ResourceId, context: &Context) {
-    backend().resource_drop(desc, resource_id, context);
+    dispatch!(resource_drop(desc, resource_id, context));
 }
 
 /// Emits a frame, transaction, or pass boundary marker.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn frame_marker(kind: MarkerKind, phase: MarkerPhase, context: &Context) {
-    backend().frame_marker(kind, phase, context);
+    dispatch!(frame_marker(kind, phase, context));
 }
 
 /// Emits a frame begin marker.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn frame_begin(context: &Context) {
     frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
 }
 
 /// Emits a frame end marker.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn frame_end(context: &Context) {
     frame_marker(MarkerKind::Frame, MarkerPhase::End, context);
 }
 
 /// Emits a transaction begin marker.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn transaction_begin(context: &Context) {
     frame_marker(MarkerKind::Transaction, MarkerPhase::Begin, context);
 }
 
 /// Emits a transaction end marker.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn transaction_end(context: &Context) {
     frame_marker(MarkerKind::Transaction, MarkerPhase::End, context);
 }
 
 /// Emits a pass begin marker.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn pass_begin(context: &Context) {
     frame_marker(MarkerKind::Pass, MarkerPhase::Begin, context);
 }
 
 /// Emits a pass end marker.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn pass_end(context: &Context) {
     frame_marker(MarkerKind::Pass, MarkerPhase::End, context);
 }
 
 /// Starts a causal flow under a semantic context.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn flow_begin(flow_id: FlowId, context: &Context) {
-    backend().flow(flow_id, FlowPhase::Begin, context);
+    dispatch!(flow(flow_id, FlowPhase::Begin, context));
 }
 
 /// Continues a causal flow under a semantic context.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn flow_step(flow_id: FlowId, context: &Context) {
-    backend().flow(flow_id, FlowPhase::Step, context);
+    dispatch!(flow(flow_id, FlowPhase::Step, context));
 }
 
 /// Ends a causal flow under a semantic context.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn flow_end(flow_id: FlowId, context: &Context) {
-    backend().flow(flow_id, FlowPhase::End, context);
+    dispatch!(flow(flow_id, FlowPhase::End, context));
 }
 
 /// Emits a message event under a semantic context.
@@ -367,13 +415,15 @@ pub fn flow_end(flow_id: FlowId, context: &Context) {
 /// the caller when a backend is installed and the level captures messages, so
 /// prefer emitting through a facility that already formatted the text, such
 /// as a log or tracing bridge.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn message(desc: &'static EventDesc, context: &Context, text: &str) {
-    backend().message(desc, context, text, &Args::none());
+    dispatch!(message(desc, context, text, &Args::none()));
 }
 
 /// Emits a message event carrying per-instance arguments.
+#[cfg_attr(footfall_compile_out, inline(always))]
 pub fn message_with(desc: &'static EventDesc, context: &Context, text: &str, args: &Args) {
-    backend().message(desc, context, text, args);
+    dispatch!(message(desc, context, text, args));
 }
 
 /// Installs the process-wide backend.
@@ -386,6 +436,7 @@ pub fn install_backend(backend: &'static dyn Backend) -> Result<(), InstallBacke
     BACKEND.set(backend).map_err(|_| InstallBackendError)
 }
 
+#[cfg(not(footfall_compile_out))]
 fn backend() -> &'static dyn Backend {
     #[cfg(feature = "std")]
     if let Some(backend) = BACKEND.get() {
