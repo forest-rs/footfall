@@ -312,7 +312,18 @@ impl Backend for NoopBackend {}
 /// Returned when a backend is already installed.
 #[cfg(feature = "std")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct InstallBackendError;
+
+#[cfg(feature = "std")]
+impl core::fmt::Display for InstallBackendError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("a footfall backend is already installed")
+    }
+}
+
+#[cfg(feature = "std")]
+impl core::error::Error for InstallBackendError {}
 
 /// Adds to a counter descriptor under a semantic context.
 #[cfg_attr(footfall_compile_out, inline(always))]
