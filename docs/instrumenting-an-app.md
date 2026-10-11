@@ -15,8 +15,13 @@ A host application should be able to:
 
 For the current happy path, use:
 
-- `footfall` for core ids, descriptors, contexts, and emission calls
+- `footfall` for descriptors, contexts, and emission calls; this is the only
+  Footfall dependency an instrumented library needs
 - `footfall_runtime` for bounded local collection
+- `footfall_export` to write a capture as Chrome Trace JSON for Perfetto
+- `footfall_tracing` if the app or its dependencies already use `tracing`
+- `footfall_tracy` for live viewing in Tracy, combined with the runtime
+  through `footfall_fanout`
 - `footfall_memory` when you want scratch or cache helpers
 - `footfall_session_wtransport` if you want a local attach path for consumers
 
@@ -75,6 +80,10 @@ impl OpaquePass {
 The low-level `scope_begin` and `scope_end` calls remain available when a scope
 crosses lexical boundaries.
 
+A scope lasts as long as its guard. Bind the guard to a named variable such as
+`_scope`; `let _ = scope(..)` drops the guard immediately and records an empty
+scope, even though the compiler's `must_use` hint suggests that form.
+
 Descriptors are identified by address, so declare them as `static` items,
 never `const`; the compiler rejects a `const` descriptor where one is
 required. Label keys are identified by name, so give keys distinct names; a
@@ -97,17 +106,33 @@ The architectural rule is simple:
 Equal contexts registered separately get distinct handles and are not merged,
 so share the handle rather than re-registering the same labels.
 
-Good labels:
+Typical label keys name the owners an app reasons about, such as `frame`,
+`transaction`, `pass`, `node`, `resource`, `cache`, or `reason`.
 
-- `Frame`
-- `Transaction`
-- `Pass`
-- `Node`
-- `Resource`
-- `Cache`
-- `Reason`
+A handle is valid while its `RegisteredContext` is alive. Keep the
+`RegisteredContext` with its owner rather than copying the handle out of a
+temporary: once the context is released, later emissions with its handle are
+attributed to the root context.
 
 Avoid building instrumentation around ad hoc strings when an id or integer will do.
+
+## Getting Data Out
+
+A runtime snapshot holds everything captured so far: contexts, counters,
+histograms, and timestamped events. Read it directly, or export it:
+
+```rust
+use footfall_runtime::Runtime;
+
+fn write_trace(runtime: &Runtime) -> std::io::Result<()> {
+    let snapshot = runtime.snapshot();
+    footfall_export::write_chrome_trace_file(&snapshot, "trace.json")
+}
+```
+
+Open `trace.json` in [Perfetto](https://ui.perfetto.dev) or
+`chrome://tracing`. Scopes appear as slices on one track per thread, counters
+as counter tracks, and contexts and arguments as slice arguments.
 
 ## What Lives Where
 
@@ -171,10 +196,5 @@ The current examples are the reference shape:
 
 ## What Is Still Missing
 
-The current stack is good enough for external use, but still early:
-
-- there is no descriptor registry or id allocation story yet
 - there is no polished consumer UI yet
-- the current local attach path is intentionally localhost-first
-
-Those are next-step ergonomics, not missing architecture.
+- the local attach path is intentionally localhost-first

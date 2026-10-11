@@ -4,23 +4,25 @@ Footfall is a family of Rust crates for low-overhead instrumentation, semantic
 tracing, counters, memory observation, and downstream projection into existing
 profiling and visualization tools.
 
-The workspace currently contains:
+The crates:
 
-- `footfall_core`: foundational ids, descriptors, context, levels, and emission
-  primitives
-- `footfall`: a thin facade over `footfall_core`
-- `footfall_runtime`: bounded in-process collection and snapshot extraction
-- `footfall_memory`: scratch and cache helpers layered over core counters
-- `footfall_session`: transport-neutral snapshot envelopes for downstream
+- `footfall`: the instrumentation API; start here
+- `footfall_core`: the same API with the reference documentation
+- `footfall_runtime`: bounded in-process capture and snapshots
+- `footfall_export`: Chrome Trace JSON export for Perfetto and `chrome://tracing`
+- `footfall_tracing`: a `tracing` layer that forwards spans and events into
+  Footfall
+- `footfall_tracy`: a live Tracy backend
+- `footfall_fanout`: feeds two backends at once
+- `footfall_memory`: scratch-buffer and cache metrics built on counters
+- `footfall_session`: transport-neutral session envelopes for external
   consumers
-- `footfall_session_wtransport`: local attach path for discovery and snapshot
-  fetch over WebTransport
-- `footfall_fanout`: backend composition for feeding multiple sinks at once
-- `footfall_tracing`: a `tracing` subscriber layer that forwards spans and
-  events into Footfall
-- `footfall_benchmarks`: Criterion benchmarks for substrate overhead
-- `examples/basic`: a top-level example crate to avoid spreading dev
-  dependencies through core packages
+- `footfall_session_wtransport`: serves and fetches sessions over local
+  WebTransport
+
+The workspace also holds `footfall_benchmarks`, the Criterion benchmarks for
+emission overhead, and `examples/basic`, which keeps example dev-dependencies
+out of the published crates.
 
 ## External Use
 
