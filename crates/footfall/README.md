@@ -60,6 +60,7 @@ let chrome_trace_json = footfall_export::to_chrome_trace_json(&snapshot.into());
 | `footfall_memory` | Scratch-buffer and cache metrics built on counters. |
 | `footfall_session` | Transport-neutral session envelopes for external consumers. |
 | `footfall_session_wtransport` | Serves and fetches sessions over local WebTransport. |
+| `footfall_analysis` | Scope, frame, and counter analysis over snapshots, live or from files. |
 
 ## Guides
 

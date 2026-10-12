@@ -13,6 +13,7 @@ env:
   # This should be limited to packages that are intended for publishing.
   RUST_MIN_VER_PKGS: >-
     -p footfall
+    -p footfall_analysis
     -p footfall_core
     -p footfall_export
     -p footfall_fanout
@@ -25,6 +26,7 @@ env:
   # List of packages that don't support `no_std`.
   RUST_STD_ONLY_PKGS: >-
     --exclude footfall
+    --exclude footfall_analysis
     --exclude footfall_benchmarks
     --exclude footfall_export
     --exclude footfall_fanout

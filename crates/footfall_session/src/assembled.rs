@@ -319,6 +319,17 @@ impl OwnedSnapshot {
             .map(|index| &self.contexts[index])
     }
 
+    /// Returns the value of the label `key` in the context `context_id`, if
+    /// the context exists and has that label.
+    #[must_use]
+    pub fn label(&self, context_id: ContextId, key: &str) -> Option<&crate::OwnedLabelValue> {
+        self.context(context_id)?
+            .entries()
+            .iter()
+            .find(|entry| entry.key() == key)
+            .map(crate::OwnedContextEntry::value)
+    }
+
     /// Resolves one thread by id.
     #[must_use]
     pub fn thread(&self, thread_id: u64) -> Option<&ThreadSnapshot> {
