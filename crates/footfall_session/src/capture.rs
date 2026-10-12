@@ -5,8 +5,8 @@
 //!
 //! A capture file is the header `FFALLCAP` followed by the `u16` protocol
 //! major and minor version, little-endian, and then snapshot publications
-//! back to back: each envelope as a `u32` byte length followed by the
-//! envelope encoded as in the [wire-format document]. A file can hold any
+//! back to back: each envelope as its byte length, a LEB128 integer,
+//! followed by the envelope encoded as in the [wire-format document]. A file can hold any
 //! number of snapshots, from one runtime or several, and a reader rebuilds
 //! each one exactly as a live consumer would have received it.
 //!
@@ -34,7 +34,10 @@ use footfall_runtime::Snapshot;
 use crate::{
     Chunking, Consumer, Envelope, OwnedSessionEnvelope, OwnedSessionPayload, OwnedSnapshot,
     PROTOCOL_VERSION, ProtocolVersion,
-    codec::{MAX_SESSION_ENVELOPE_BYTES, decode_envelope, encode_envelope, encode_owned_envelope},
+    codec::{
+        MAX_SESSION_ENVELOPE_BYTES, VarintDecoder, decode_envelope, encode_envelope,
+        encode_owned_envelope, encode_varint,
+    },
     publish_snapshot,
 };
 
@@ -108,9 +111,9 @@ impl<W: Write> Consumer for FrameWriter<'_, W> {
 }
 
 fn write_frame(writer: &mut impl Write, frame: &[u8]) -> io::Result<()> {
-    let len = u32::try_from(frame.len())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "envelope exceeds u32 length"))?;
-    writer.write_all(&len.to_le_bytes())?;
+    let mut len = Vec::with_capacity(10);
+    encode_varint(&mut len, frame.len() as u64);
+    writer.write_all(&len)?;
     writer.write_all(frame)
 }
 
@@ -182,15 +185,22 @@ impl<R: Read> CaptureReader<R> {
     pub fn read_snapshot(&mut self) -> io::Result<Option<OwnedSnapshot>> {
         let mut envelopes = Vec::new();
         loop {
-            let mut len = [0_u8; 4];
-            if self.inner.read(&mut len[..1])? == 0 {
+            let mut byte = [0_u8; 1];
+            if self.inner.read(&mut byte)? == 0 {
                 if envelopes.is_empty() {
                     return Ok(None);
                 }
                 return Err(self.truncated());
             }
-            self.read_exact(&mut len[1..])?;
-            let len = usize::try_from(u32::from_le_bytes(len)).unwrap_or(usize::MAX);
+            let mut decoder = VarintDecoder::new();
+            let mut len_bytes = 1_u64;
+            let len = loop {
+                if let Some(len) = decoder.push(byte[0])? {
+                    break usize::try_from(len).unwrap_or(usize::MAX);
+                }
+                self.read_exact(&mut byte)?;
+                len_bytes += 1;
+            };
             if len > MAX_SESSION_ENVELOPE_BYTES {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -202,7 +212,7 @@ impl<R: Read> CaptureReader<R> {
             }
             let mut frame = vec![0_u8; len];
             self.read_exact(&mut frame)?;
-            self.offset += 4 + u64::try_from(len).unwrap_or(u64::MAX);
+            self.offset += len_bytes + u64::try_from(len).unwrap_or(u64::MAX);
             let envelope = decode_envelope(&frame).map_err(|error| {
                 io::Error::new(
                     error.kind(),

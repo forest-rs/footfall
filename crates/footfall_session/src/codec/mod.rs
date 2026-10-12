@@ -17,6 +17,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
+use std::collections::{HashMap, HashSet};
 use std::io;
 
 use footfall_core::{
@@ -530,9 +531,9 @@ pub(crate) fn encode_counters(
     counters: &[OwnedCounterSnapshot],
 ) -> io::Result<()> {
     encode_len(bytes, counters.len())?;
+    let mut names = NameWriter::default();
     for counter in counters {
-        encode_u64(bytes, counter.desc_id().get());
-        encode_string(bytes, counter.name())?;
+        names.encode(bytes, counter.desc_id().get(), counter.name())?;
         encode_u8(bytes, encode_unit(counter.unit())?);
         encode_u64(bytes, counter.context_id().get());
         encode_u8(bytes, encode_counter_kind(counter.kind())?);
@@ -547,9 +548,9 @@ pub(crate) fn encode_borrowed_counters(
     counters: &[footfall_runtime::CounterSnapshot],
 ) -> io::Result<()> {
     encode_len(bytes, counters.len())?;
+    let mut names = NameWriter::default();
     for counter in counters {
-        encode_u64(bytes, counter.desc_id().get());
-        encode_string(bytes, counter.name())?;
+        names.encode(bytes, counter.desc_id().get(), counter.name())?;
         encode_u8(bytes, encode_unit(counter.unit())?);
         encode_u64(bytes, counter.context_id().get());
         encode_u8(bytes, encode_counter_kind(counter.kind())?);
@@ -562,10 +563,11 @@ pub(crate) fn encode_borrowed_counters(
 pub(crate) fn decode_counters(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedCounterSnapshot>> {
     let len = decode_bounded_len(cursor, MAX_ROWS_PER_ENVELOPE, "counter rows")?;
     let mut counters = Vec::with_capacity(len);
+    let mut names = NameReader::default();
     for _ in 0..len {
         counters.push(OwnedCounterSnapshot::new(
-            CounterDescId::new(decode_u64(cursor)?),
-            decode_string(cursor)?,
+            CounterDescId::new(names.id(cursor)?),
+            names.name(cursor)?,
             decode_unit(decode_u8(cursor)?)?,
             ContextId::new(decode_u64(cursor)?),
             decode_counter_kind(decode_u8(cursor)?)?,
@@ -581,9 +583,9 @@ pub(crate) fn encode_histograms(
     histograms: &[OwnedHistogramSnapshot],
 ) -> io::Result<()> {
     encode_len(bytes, histograms.len())?;
+    let mut names = NameWriter::default();
     for histogram in histograms {
-        encode_u64(bytes, histogram.desc_id().get());
-        encode_string(bytes, histogram.name())?;
+        names.encode(bytes, histogram.desc_id().get(), histogram.name())?;
         encode_u8(bytes, encode_unit(histogram.unit())?);
         encode_u64(bytes, histogram.context_id().get());
         encode_histogram_body(
@@ -604,9 +606,9 @@ pub(crate) fn encode_borrowed_histograms(
     histograms: &[footfall_runtime::HistogramSnapshot],
 ) -> io::Result<()> {
     encode_len(bytes, histograms.len())?;
+    let mut names = NameWriter::default();
     for histogram in histograms {
-        encode_u64(bytes, histogram.desc_id().get());
-        encode_string(bytes, histogram.name())?;
+        names.encode(bytes, histogram.desc_id().get(), histogram.name())?;
         encode_u8(bytes, encode_unit(histogram.unit())?);
         encode_u64(bytes, histogram.context_id().get());
         encode_histogram_body(
@@ -646,9 +648,10 @@ pub(crate) fn decode_histograms(
 ) -> io::Result<Vec<OwnedHistogramSnapshot>> {
     let len = decode_bounded_len(cursor, MAX_ROWS_PER_ENVELOPE, "histogram rows")?;
     let mut histograms = Vec::with_capacity(len);
+    let mut names = NameReader::default();
     for _ in 0..len {
-        let desc_id = CounterDescId::new(decode_u64(cursor)?);
-        let name = decode_string(cursor)?;
+        let desc_id = CounterDescId::new(names.id(cursor)?);
+        let name = names.name(cursor)?;
         let unit = decode_unit(decode_u8(cursor)?)?;
         let context_id = ContextId::new(decode_u64(cursor)?);
         let count = decode_u64(cursor)?;
@@ -680,11 +683,16 @@ pub(crate) fn encode_events(
     events: &[OwnedTimedObservation],
 ) -> io::Result<()> {
     encode_len(bytes, events.len())?;
+    // Timestamps and sequence numbers are written as differences from the
+    // previous row's, which are small.
+    let mut names = NameWriter::default();
+    let (mut at_micros, mut sequence) = (0, 0);
     for event in events {
-        encode_u64(bytes, event.at_micros());
-        encode_u64(bytes, event.sequence());
+        encode_delta(bytes, at_micros, event.at_micros());
+        encode_delta(bytes, sequence, event.sequence());
         encode_u64(bytes, event.thread_id());
-        encode_observation(bytes, event.observation())?;
+        encode_observation(bytes, event.observation(), &mut names)?;
+        (at_micros, sequence) = (event.at_micros(), event.sequence());
     }
     Ok(())
 }
@@ -694,11 +702,16 @@ pub(crate) fn encode_borrowed_events(
     events: &[footfall_runtime::TimedObservation],
 ) -> io::Result<()> {
     encode_len(bytes, events.len())?;
+    // Timestamps and sequence numbers are written as differences from the
+    // previous row's, which are small.
+    let mut names = NameWriter::default();
+    let (mut at_micros, mut sequence) = (0, 0);
     for event in events {
-        encode_u64(bytes, event.at_micros());
-        encode_u64(bytes, event.sequence());
+        encode_delta(bytes, at_micros, event.at_micros());
+        encode_delta(bytes, sequence, event.sequence());
         encode_u64(bytes, event.thread_id());
-        encode_borrowed_observation(bytes, event.observation())?;
+        encode_borrowed_observation(bytes, event.observation(), &mut names)?;
+        (at_micros, sequence) = (event.at_micros(), event.sequence());
     }
     Ok(())
 }
@@ -706,12 +719,16 @@ pub(crate) fn encode_borrowed_events(
 pub(crate) fn decode_events(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedTimedObservation>> {
     let len = decode_bounded_len(cursor, MAX_ROWS_PER_ENVELOPE, "event rows")?;
     let mut events = Vec::with_capacity(len);
+    let mut names = NameReader::default();
+    let (mut at_micros, mut sequence) = (0, 0);
     for _ in 0..len {
+        at_micros = decode_delta(cursor, at_micros)?;
+        sequence = decode_delta(cursor, sequence)?;
         events.push(OwnedTimedObservation::new(
+            at_micros,
+            sequence,
             decode_u64(cursor)?,
-            decode_u64(cursor)?,
-            decode_u64(cursor)?,
-            decode_observation(cursor)?,
+            decode_observation(cursor, &mut names)?,
         ));
     }
     Ok(events)
@@ -720,6 +737,7 @@ pub(crate) fn decode_events(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedTime
 pub(crate) fn encode_borrowed_observation(
     bytes: &mut Vec<u8>,
     observation: &footfall_runtime::Observation,
+    names: &mut NameWriter,
 ) -> io::Result<()> {
     match observation {
         footfall_runtime::Observation::ScopeBegin {
@@ -730,8 +748,7 @@ pub(crate) fn encode_borrowed_observation(
             args,
         } => {
             encode_u8(bytes, 0);
-            encode_u64(bytes, desc_id.get());
-            encode_string(bytes, name)?;
+            names.encode(bytes, desc_id.get(), name)?;
             encode_u64(bytes, context_id.get());
             encode_u64(bytes, token.get());
             encode_borrowed_args(bytes, *args)?;
@@ -748,8 +765,7 @@ pub(crate) fn encode_borrowed_observation(
             size,
         } => {
             encode_u8(bytes, 2);
-            encode_u64(bytes, kind_id.get());
-            encode_string(bytes, kind_name)?;
+            names.encode(bytes, kind_id.get(), kind_name)?;
             encode_u64(bytes, resource_id.get());
             encode_u64(bytes, context_id.get());
             encode_u64(bytes, *size);
@@ -762,8 +778,7 @@ pub(crate) fn encode_borrowed_observation(
             size,
         } => {
             encode_u8(bytes, 3);
-            encode_u64(bytes, kind_id.get());
-            encode_string(bytes, kind_name)?;
+            names.encode(bytes, kind_id.get(), kind_name)?;
             encode_u64(bytes, resource_id.get());
             encode_u64(bytes, context_id.get());
             encode_u64(bytes, *size);
@@ -775,8 +790,7 @@ pub(crate) fn encode_borrowed_observation(
             context_id,
         } => {
             encode_u8(bytes, 4);
-            encode_u64(bytes, kind_id.get());
-            encode_string(bytes, kind_name)?;
+            names.encode(bytes, kind_id.get(), kind_name)?;
             encode_u64(bytes, resource_id.get());
             encode_u64(bytes, context_id.get());
         }
@@ -808,8 +822,7 @@ pub(crate) fn encode_borrowed_observation(
             args,
         } => {
             encode_u8(bytes, 7);
-            encode_u64(bytes, desc_id.get());
-            encode_string(bytes, name)?;
+            names.encode(bytes, desc_id.get(), name)?;
             encode_u64(bytes, context_id.get());
             encode_string(bytes, text)?;
             encode_borrowed_args(bytes, *args)?;
@@ -822,7 +835,16 @@ pub(crate) fn encode_borrowed_observation(
             kind,
             value,
         } => {
-            encode_counter_sample(bytes, *desc_id, name, *unit, *context_id, *kind, *value)?;
+            encode_counter_sample(
+                bytes,
+                names,
+                *desc_id,
+                name,
+                *unit,
+                *context_id,
+                *kind,
+                *value,
+            )?;
         }
         _ => return Err(unsupported("observation")),
     }
@@ -929,6 +951,7 @@ pub(crate) fn decode_label_value(cursor: &mut Cursor<'_>) -> io::Result<OwnedLab
 pub(crate) fn encode_observation(
     bytes: &mut Vec<u8>,
     observation: &OwnedObservation,
+    names: &mut NameWriter,
 ) -> io::Result<()> {
     match observation {
         OwnedObservation::ScopeBegin {
@@ -939,8 +962,7 @@ pub(crate) fn encode_observation(
             args,
         } => {
             encode_u8(bytes, 0);
-            encode_u64(bytes, desc_id.get());
-            encode_string(bytes, name)?;
+            names.encode(bytes, desc_id.get(), name)?;
             encode_u64(bytes, context_id.get());
             encode_u64(bytes, token.get());
             encode_args(bytes, args)?;
@@ -957,8 +979,7 @@ pub(crate) fn encode_observation(
             size,
         } => {
             encode_u8(bytes, 2);
-            encode_u64(bytes, kind_id.get());
-            encode_string(bytes, kind_name)?;
+            names.encode(bytes, kind_id.get(), kind_name)?;
             encode_u64(bytes, resource_id.get());
             encode_u64(bytes, context_id.get());
             encode_u64(bytes, *size);
@@ -971,8 +992,7 @@ pub(crate) fn encode_observation(
             size,
         } => {
             encode_u8(bytes, 3);
-            encode_u64(bytes, kind_id.get());
-            encode_string(bytes, kind_name)?;
+            names.encode(bytes, kind_id.get(), kind_name)?;
             encode_u64(bytes, resource_id.get());
             encode_u64(bytes, context_id.get());
             encode_u64(bytes, *size);
@@ -984,8 +1004,7 @@ pub(crate) fn encode_observation(
             context_id,
         } => {
             encode_u8(bytes, 4);
-            encode_u64(bytes, kind_id.get());
-            encode_string(bytes, kind_name)?;
+            names.encode(bytes, kind_id.get(), kind_name)?;
             encode_u64(bytes, resource_id.get());
             encode_u64(bytes, context_id.get());
         }
@@ -1017,8 +1036,7 @@ pub(crate) fn encode_observation(
             args,
         } => {
             encode_u8(bytes, 7);
-            encode_u64(bytes, desc_id.get());
-            encode_string(bytes, name)?;
+            names.encode(bytes, desc_id.get(), name)?;
             encode_u64(bytes, context_id.get());
             encode_string(bytes, text)?;
             encode_args(bytes, args)?;
@@ -1031,17 +1049,29 @@ pub(crate) fn encode_observation(
             kind,
             value,
         } => {
-            encode_counter_sample(bytes, *desc_id, name, *unit, *context_id, *kind, *value)?;
+            encode_counter_sample(
+                bytes,
+                names,
+                *desc_id,
+                name,
+                *unit,
+                *context_id,
+                *kind,
+                *value,
+            )?;
         }
     }
     Ok(())
 }
 
-pub(crate) fn decode_observation(cursor: &mut Cursor<'_>) -> io::Result<OwnedObservation> {
+pub(crate) fn decode_observation(
+    cursor: &mut Cursor<'_>,
+    names: &mut NameReader,
+) -> io::Result<OwnedObservation> {
     match decode_u8(cursor)? {
         0 => Ok(OwnedObservation::ScopeBegin {
-            desc_id: ScopeDescId::new(decode_u64(cursor)?),
-            name: decode_string(cursor)?,
+            desc_id: ScopeDescId::new(names.id(cursor)?),
+            name: names.name(cursor)?,
             context_id: ContextId::new(decode_u64(cursor)?),
             token: ScopeToken::new(decode_u64(cursor)?),
             args: decode_args(cursor)?,
@@ -1050,22 +1080,22 @@ pub(crate) fn decode_observation(cursor: &mut Cursor<'_>) -> io::Result<OwnedObs
             token: ScopeToken::new(decode_u64(cursor)?),
         }),
         2 => Ok(OwnedObservation::ResourceCreate {
-            kind_id: ResourceKindId::new(decode_u64(cursor)?),
-            kind_name: decode_string(cursor)?,
+            kind_id: ResourceKindId::new(names.id(cursor)?),
+            kind_name: names.name(cursor)?,
             resource_id: ResourceId::new(decode_u64(cursor)?),
             context_id: ContextId::new(decode_u64(cursor)?),
             size: decode_u64(cursor)?,
         }),
         3 => Ok(OwnedObservation::ResourceUpdate {
-            kind_id: ResourceKindId::new(decode_u64(cursor)?),
-            kind_name: decode_string(cursor)?,
+            kind_id: ResourceKindId::new(names.id(cursor)?),
+            kind_name: names.name(cursor)?,
             resource_id: ResourceId::new(decode_u64(cursor)?),
             context_id: ContextId::new(decode_u64(cursor)?),
             size: decode_u64(cursor)?,
         }),
         4 => Ok(OwnedObservation::ResourceDrop {
-            kind_id: ResourceKindId::new(decode_u64(cursor)?),
-            kind_name: decode_string(cursor)?,
+            kind_id: ResourceKindId::new(names.id(cursor)?),
+            kind_name: names.name(cursor)?,
             resource_id: ResourceId::new(decode_u64(cursor)?),
             context_id: ContextId::new(decode_u64(cursor)?),
         }),
@@ -1080,15 +1110,15 @@ pub(crate) fn decode_observation(cursor: &mut Cursor<'_>) -> io::Result<OwnedObs
             context_id: ContextId::new(decode_u64(cursor)?),
         }),
         7 => Ok(OwnedObservation::Message {
-            desc_id: EventDescId::new(decode_u64(cursor)?),
-            name: decode_string(cursor)?,
+            desc_id: EventDescId::new(names.id(cursor)?),
+            name: names.name(cursor)?,
             context_id: ContextId::new(decode_u64(cursor)?),
             text: decode_string(cursor)?,
             args: decode_args(cursor)?,
         }),
         8 => Ok(OwnedObservation::CounterSample {
-            desc_id: CounterDescId::new(decode_u64(cursor)?),
-            name: decode_string(cursor)?,
+            desc_id: CounterDescId::new(names.id(cursor)?),
+            name: names.name(cursor)?,
             unit: decode_unit(decode_u8(cursor)?)?,
             context_id: ContextId::new(decode_u64(cursor)?),
             kind: decode_counter_kind(decode_u8(cursor)?)?,
@@ -1103,6 +1133,7 @@ pub(crate) fn decode_observation(cursor: &mut Cursor<'_>) -> io::Result<OwnedObs
 
 fn encode_counter_sample(
     bytes: &mut Vec<u8>,
+    names: &mut NameWriter,
     desc_id: CounterDescId,
     name: &str,
     unit: Unit,
@@ -1111,8 +1142,7 @@ fn encode_counter_sample(
     value: u64,
 ) -> io::Result<()> {
     encode_u8(bytes, 8);
-    encode_u64(bytes, desc_id.get());
-    encode_string(bytes, name)?;
+    names.encode(bytes, desc_id.get(), name)?;
     encode_u8(bytes, encode_unit(unit)?);
     encode_u64(bytes, context_id.get());
     encode_u8(bytes, encode_counter_kind(kind)?);
@@ -1309,34 +1339,162 @@ pub(crate) fn decode_u16(cursor: &mut Cursor<'_>) -> io::Result<u16> {
 }
 
 pub(crate) fn encode_u32(bytes: &mut Vec<u8>, value: u32) {
-    bytes.extend_from_slice(&value.to_le_bytes());
+    encode_u64(bytes, u64::from(value));
 }
 
 pub(crate) fn decode_u32(cursor: &mut Cursor<'_>) -> io::Result<u32> {
-    let bytes = cursor.read_exact(4)?;
-    Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    u32::try_from(decode_u64(cursor)?)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "integer does not fit u32"))
 }
 
 pub(crate) fn encode_u64(bytes: &mut Vec<u8>, value: u64) {
-    bytes.extend_from_slice(&value.to_le_bytes());
+    encode_varint(bytes, value);
 }
 
 pub(crate) fn decode_u64(cursor: &mut Cursor<'_>) -> io::Result<u64> {
-    let bytes = cursor.read_exact(8)?;
-    Ok(u64::from_le_bytes([
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-    ]))
+    let mut decoder = VarintDecoder::new();
+    loop {
+        if let Some(value) = decoder.push(decode_u8(cursor)?)? {
+            return Ok(value);
+        }
+    }
 }
 
+/// Appends `value` as unsigned LEB128, the integer encoding the session
+/// protocol uses: seven bits per byte, least significant group first, with
+/// the high bit set on every byte but the last.
+pub fn encode_varint(bytes: &mut Vec<u8>, mut value: u64) {
+    loop {
+        let low = (value & 0x7f).to_le_bytes()[0];
+        value >>= 7;
+        if value == 0 {
+            bytes.push(low);
+            return;
+        }
+        bytes.push(low | 0x80);
+    }
+}
+
+/// Returns how many bytes [`encode_varint`] writes for `value`.
+#[must_use]
+pub const fn varint_len(value: u64) -> usize {
+    let bits = 64 - value.leading_zeros() as usize;
+    if bits == 0 { 1 } else { bits.div_ceil(7) }
+}
+
+/// Decodes one unsigned LEB128 integer a byte at a time, for readers that
+/// receive bytes from a stream.
+///
+/// ```
+/// use footfall_session::codec::{VarintDecoder, encode_varint};
+///
+/// let mut bytes = Vec::new();
+/// encode_varint(&mut bytes, 300);
+/// let mut decoder = VarintDecoder::new();
+/// assert_eq!(decoder.push(bytes[0])?, None);
+/// assert_eq!(decoder.push(bytes[1])?, Some(300));
+/// # Ok::<(), std::io::Error>(())
+/// ```
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VarintDecoder {
+    value: u64,
+    shift: u32,
+}
+
+impl VarintDecoder {
+    /// Starts decoding an integer.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { value: 0, shift: 0 }
+    }
+
+    /// Takes the next byte. Returns the integer after its last byte, `None`
+    /// while more bytes are needed, and an error for an encoding longer than
+    /// ten bytes or a value that does not fit a `u64`.
+    pub fn push(&mut self, byte: u8) -> io::Result<Option<u64>> {
+        let bits = u64::from(byte & 0x7f);
+        if self.shift == 63 && bits > 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "integer does not fit u64",
+            ));
+        }
+        self.value |= bits << self.shift;
+        if byte & 0x80 == 0 {
+            return Ok(Some(self.value));
+        }
+        self.shift += 7;
+        if self.shift > 63 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "integer longer than ten bytes",
+            ));
+        }
+        Ok(None)
+    }
+}
+
+/// Writes a signed integer zigzag-encoded, so small magnitudes of either
+/// sign take few bytes.
 pub(crate) fn encode_i64(bytes: &mut Vec<u8>, value: i64) {
-    bytes.extend_from_slice(&value.to_le_bytes());
+    encode_u64(bytes, ((value << 1) ^ (value >> 63)).cast_unsigned());
 }
 
 pub(crate) fn decode_i64(cursor: &mut Cursor<'_>) -> io::Result<i64> {
-    let bytes = cursor.read_exact(8)?;
-    Ok(i64::from_le_bytes([
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-    ]))
+    let value = decode_u64(cursor)?;
+    Ok((value >> 1).cast_signed() ^ -(value & 1).cast_signed())
+}
+
+/// Writes `value` as its signed difference from `previous`.
+pub(crate) fn encode_delta(bytes: &mut Vec<u8>, previous: u64, value: u64) {
+    encode_i64(bytes, value.wrapping_sub(previous).cast_signed());
+}
+
+pub(crate) fn decode_delta(cursor: &mut Cursor<'_>, previous: u64) -> io::Result<u64> {
+    Ok(previous.wrapping_add(decode_i64(cursor)?.cast_unsigned()))
+}
+
+/// Descriptor names already written in the payload being encoded.
+///
+/// A row that names a descriptor writes its id, then its name only the first
+/// time that id appears in the payload; ids are unique across descriptor
+/// kinds, so one set covers scopes, events, counters, and resource kinds.
+#[derive(Debug, Default)]
+pub(crate) struct NameWriter(HashSet<u64>);
+
+impl NameWriter {
+    pub(crate) fn encode(&mut self, bytes: &mut Vec<u8>, id: u64, name: &str) -> io::Result<()> {
+        encode_u64(bytes, id);
+        if self.0.insert(id) {
+            encode_string(bytes, name)?;
+        }
+        Ok(())
+    }
+}
+
+/// Descriptor names already read in the payload being decoded; see
+/// [`NameWriter`]. Read the id with [`id`](Self::id), then its name with
+/// [`name`](Self::name).
+#[derive(Debug, Default)]
+pub(crate) struct NameReader {
+    names: HashMap<u64, String>,
+    last_id: u64,
+}
+
+impl NameReader {
+    pub(crate) fn id(&mut self, cursor: &mut Cursor<'_>) -> io::Result<u64> {
+        self.last_id = decode_u64(cursor)?;
+        Ok(self.last_id)
+    }
+
+    pub(crate) fn name(&mut self, cursor: &mut Cursor<'_>) -> io::Result<String> {
+        if let Some(name) = self.names.get(&self.last_id) {
+            return Ok(name.clone());
+        }
+        let name = decode_string(cursor)?;
+        self.names.insert(self.last_id, name.clone());
+        Ok(name)
+    }
 }
 
 #[derive(Debug)]
@@ -1346,7 +1504,7 @@ pub(crate) struct Cursor<'a> {
 }
 
 impl<'a> Cursor<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, offset: 0 }
     }
 
@@ -1362,7 +1520,7 @@ impl<'a> Cursor<'a> {
         Ok(bytes)
     }
 
-    fn is_exhausted(&self) -> bool {
+    pub(crate) fn is_exhausted(&self) -> bool {
         self.offset == self.bytes.len()
     }
 

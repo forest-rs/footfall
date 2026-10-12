@@ -25,12 +25,25 @@ The default local endpoint is:
 
 ## Primitive Encodings
 
-- Integers are little-endian: `u8`, `u16`, `u32`, `u64`, and `i64`
-  (two's complement).
-- `string` is a `u32` byte length followed by that many bytes of UTF-8.
+- `u8` is one byte. `u16` is two bytes, little-endian; only the protocol
+  version uses it, so the first four bytes of every envelope identify its
+  version whatever else changes.
+- `u32` and `u64` are unsigned LEB128: seven bits per byte, least
+  significant group first, with the high bit set on every byte but the last.
+  A value takes one byte below 128 and at most ten bytes. Decoders reject
+  encodings longer than ten bytes and values that do not fit the type.
+- `i64` is zigzag-encoded (`(n << 1) ^ (n >> 63)`), then written as a `u64`,
+  so small values of either sign take few bytes.
+- `delta` is an `i64` difference from the same field of the previous row in
+  the payload, or from `0` for the first row.
+- `string` is a `u64` byte length followed by that many bytes of UTF-8.
+- `name` is a descriptor's name `string`, written only the first time its
+  descriptor id appears in the payload. Later rows of the same payload with
+  that id omit it, and a decoder reuses the name it read first. Each payload
+  starts afresh, so no state crosses envelopes.
 - `option<T>` is a `u8` presence tag, `0` for absent or `1` for present,
   followed by a `T` when present.
-- `count` is a `u32` element count followed by that many elements.
+- `count` is a `u64` element count followed by that many elements.
 
 ## Requests
 
@@ -223,7 +236,7 @@ A `count` of counter rows:
 | Field | Type | Notes |
 |---|---|---|
 | descriptor id | `u64` | |
-| name | `string` | |
+| name | `name` | |
 | unit | `u8` | see below |
 | context id | `u64` | |
 | kind | `u8` | `0` counter (cumulative sum), `1` gauge (last value) |
@@ -243,7 +256,7 @@ Units:
 
 ### Histograms
 
-A `count` of histogram rows: descriptor id `u64`, name `string`, unit `u8`,
+A `count` of histogram rows: descriptor id `u64`, name `name`, unit `u8`,
 context id `u64`, then `count`, `sum`, `min`, and `max` as `u64`, then
 `footfall_runtime::HISTOGRAM_BUCKET_COUNT` (64) bucket counts as `u64`, then
 the last update time as `u64`. Bucket `i` counts samples whose bit length is
@@ -251,21 +264,21 @@ the last update time as `u64`. Bucket `i` counts samples whose bit length is
 
 ### Events
 
-A `count` of event rows. Each row is `u64` timestamp (microseconds since
-runtime creation), `u64` sequence, `u64` thread id, then a `u8` observation
-tag and its fields:
+A `count` of event rows. Each row is the timestamp (microseconds since
+runtime creation) as a `delta`, the sequence number as a `delta`, the `u64`
+thread id, then a `u8` observation tag and its fields:
 
 | Tag | Observation | Fields |
 |---|---|---|
-| `0` | scope begin | descriptor id `u64`, name `string`, context id `u64`, token `u64`, args |
+| `0` | scope begin | descriptor id `u64`, name `name`, context id `u64`, token `u64`, args |
 | `1` | scope end | token `u64` |
-| `2` | resource create | kind id `u64`, kind name `string`, resource id `u64`, context id `u64`, size `u64` |
-| `3` | resource update | kind id `u64`, kind name `string`, resource id `u64`, context id `u64`, size `u64` |
-| `4` | resource drop | kind id `u64`, kind name `string`, resource id `u64`, context id `u64` |
+| `2` | resource create | kind id `u64`, kind name `name`, resource id `u64`, context id `u64`, size `u64` |
+| `3` | resource update | kind id `u64`, kind name `name`, resource id `u64`, context id `u64`, size `u64` |
+| `4` | resource drop | kind id `u64`, kind name `name`, resource id `u64`, context id `u64` |
 | `5` | marker | kind `u8` (`0` frame, `1` transaction, `2` pass), phase `u8` (`0` begin, `1` end), context id `u64` |
 | `6` | flow | flow id `u64`, phase `u8` (`0` begin, `1` step, `2` end), context id `u64` |
-| `7` | message | descriptor id `u64`, name `string`, context id `u64`, text `string`, args |
-| `8` | counter sample | descriptor id `u64`, name `string`, unit `u8`, context id `u64`, kind `u8`, value `u64` |
+| `7` | message | descriptor id `u64`, name `name`, context id `u64`, text `string`, args |
+| `8` | counter sample | descriptor id `u64`, name `name`, unit `u8`, context id `u64`, kind `u8`, value `u64` |
 
 A counter sample is a counter's or gauge's value at a frame end, recorded
 for each one the frame updated; a counter's change over a frame is the
@@ -302,7 +315,8 @@ resolve arrive attributed to `0` and are counted as unattributed.
 
 Descriptor ids are dense integers from `1`, shared across descriptor kinds and
 assigned in first-seen order, fixed for the life of the instance. They are
-never memory addresses. The descriptor name travels next to every id.
+never memory addresses. Each payload that refers to a descriptor carries its
+name once, next to the first row with its id.
 
 Thread ids are small integers assigned in first-emission order within one
 process lifetime; they are not operating-system thread ids.

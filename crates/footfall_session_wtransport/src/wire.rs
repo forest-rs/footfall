@@ -4,7 +4,7 @@
 //! Request and response framing over WebTransport streams.
 
 use crate::server::SessionAnnouncement;
-use footfall_session::codec::MAX_SESSION_STRING_BYTES;
+use footfall_session::codec::{MAX_SESSION_STRING_BYTES, VarintDecoder, encode_varint};
 use footfall_session::{EventCursor, ProtocolVersion, SessionErrorCode};
 use std::io;
 use std::time::Duration;
@@ -36,28 +36,33 @@ pub(crate) async fn read_u16(recv: &mut RecvStream) -> io::Result<u16> {
     Ok(u16::from_le_bytes(bytes))
 }
 
+// Integers after the version are LEB128, as in envelopes; see
+// `footfall_session::codec::encode_varint`.
+
 pub(crate) async fn write_u32(send: &mut SendStream, value: u32) -> io::Result<()> {
-    send.write_all(&value.to_le_bytes())
-        .await
-        .map_err(|error| io::Error::other(error.to_string()))
+    write_u64(send, u64::from(value)).await
 }
 
 pub(crate) async fn write_u64(send: &mut SendStream, value: u64) -> io::Result<()> {
-    send.write_all(&value.to_le_bytes())
+    let mut bytes = Vec::with_capacity(10);
+    encode_varint(&mut bytes, value);
+    send.write_all(&bytes)
         .await
         .map_err(|error| io::Error::other(error.to_string()))
 }
 
 pub(crate) async fn read_u32(recv: &mut RecvStream) -> io::Result<u32> {
-    let mut bytes = [0_u8; 4];
-    recv.read_exact(&mut bytes).await.map_err(read_error)?;
-    Ok(u32::from_le_bytes(bytes))
+    u32::try_from(read_u64(recv).await?)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "integer does not fit u32"))
 }
 
 pub(crate) async fn read_u64(recv: &mut RecvStream) -> io::Result<u64> {
-    let mut bytes = [0_u8; 8];
-    recv.read_exact(&mut bytes).await.map_err(read_error)?;
-    Ok(u64::from_le_bytes(bytes))
+    let mut decoder = VarintDecoder::new();
+    loop {
+        if let Some(value) = decoder.push(read_u8_stream(recv).await?)? {
+            return Ok(value);
+        }
+    }
 }
 
 pub(crate) async fn finish_response_stream(send: &mut SendStream) -> io::Result<()> {
@@ -83,20 +88,14 @@ pub(crate) async fn read_u8_stream(recv: &mut RecvStream) -> io::Result<u8> {
 pub(crate) async fn write_stream_string(send: &mut SendStream, value: &str) -> io::Result<()> {
     let bytes = value.as_bytes();
     validate_wire_len(bytes.len(), MAX_SESSION_STRING_BYTES, "session string")?;
-    write_u32(
-        send,
-        u32::try_from(bytes.len()).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidInput, "string exceeds u32 length")
-        })?,
-    )
-    .await?;
+    write_u64(send, bytes.len() as u64).await?;
     send.write_all(bytes)
         .await
         .map_err(|error| io::Error::other(error.to_string()))
 }
 
 pub(crate) async fn read_stream_string(recv: &mut RecvStream) -> io::Result<String> {
-    let len = usize::try_from(read_u32(recv).await?)
+    let len = usize::try_from(read_u64(recv).await?)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid string length"))?;
     validate_wire_len(len, MAX_SESSION_STRING_BYTES, "session string")?;
     let mut bytes = vec![0_u8; len];
@@ -209,18 +208,16 @@ pub(crate) fn encode_u8(bytes: &mut Vec<u8>, value: u8) {
 }
 
 pub(crate) fn encode_u32(bytes: &mut Vec<u8>, value: u32) {
-    bytes.extend_from_slice(&value.to_le_bytes());
+    encode_varint(bytes, u64::from(value));
 }
 
 pub(crate) fn encode_u64(bytes: &mut Vec<u8>, value: u64) {
-    bytes.extend_from_slice(&value.to_le_bytes());
+    encode_varint(bytes, value);
 }
 
 pub(crate) fn encode_string(bytes: &mut Vec<u8>, value: &str) -> io::Result<()> {
     validate_wire_len(value.len(), MAX_SESSION_STRING_BYTES, "session string")?;
-    let len = u32::try_from(value.len())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "string exceeds u32 length"))?;
-    encode_u32(bytes, len);
+    encode_u64(bytes, value.len() as u64);
     bytes.extend_from_slice(value.as_bytes());
     Ok(())
 }
