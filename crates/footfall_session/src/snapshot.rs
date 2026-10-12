@@ -530,6 +530,36 @@ impl core::fmt::Display for OwnedLabelValue {
     }
 }
 
+impl From<u64> for OwnedLabelValue {
+    fn from(value: u64) -> Self {
+        Self::Unsigned(value)
+    }
+}
+
+impl From<i64> for OwnedLabelValue {
+    fn from(value: i64) -> Self {
+        Self::Signed(value)
+    }
+}
+
+impl From<bool> for OwnedLabelValue {
+    fn from(value: bool) -> Self {
+        Self::Bool(value)
+    }
+}
+
+impl From<&str> for OwnedLabelValue {
+    fn from(value: &str) -> Self {
+        Self::String(value.into())
+    }
+}
+
+impl From<String> for OwnedLabelValue {
+    fn from(value: String) -> Self {
+        Self::String(value)
+    }
+}
+
 /// One argument recorded with a scope or message, carried by the
 /// [`OwnedObservation`] variants that have arguments.
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -13,7 +13,7 @@
 
 use anstream::println;
 use clap::Parser;
-use footfall::analysis::{Spans, frames};
+use footfall::analysis::{GroupBy, Trace};
 use footfall::runtime::Runtime;
 use footfall::session::OwnedSnapshot;
 use footfall::tracy::TracyBackend;
@@ -66,9 +66,10 @@ fn main() {
 
     // The runtime saw the same emissions Tracy did.
     let snapshot = OwnedSnapshot::from(runtime.snapshot());
-    report::frames(&frames(&snapshot), 1_000_000 / u64::from(args.fps.max(1)));
+    let trace = Trace::from_snapshot(&snapshot);
+    report::frames(trace.frames(), 1_000_000 / u64::from(args.fps.max(1)));
     println!();
-    report::spans(&Spans::from_snapshot(&snapshot), 8);
+    report::spans(&trace.spans().group_by(GroupBy::Name).table(), 8);
 }
 
 /// Blocks this thread until Ctrl-C.

@@ -14,7 +14,7 @@
 
 use anstream::println;
 use clap::Parser;
-use footfall::analysis::FrameTracker;
+use footfall::analysis::Trace;
 use footfall::runtime::Runtime;
 use footfall::session::OwnedSnapshot;
 use footfall::tracing_layer::FootfallLayer;
@@ -94,7 +94,7 @@ async fn main() {
     let budget = 1_000_000 / u64::from(args.fps.max(1));
     let mut status = tokio::time::interval(Duration::from_secs(args.status_every.max(1)));
     status.tick().await;
-    let mut frames = FrameTracker::new();
+    let mut trace = Trace::new();
     let mut cursor = runtime.cursor();
     loop {
         tokio::select! {
@@ -104,8 +104,18 @@ async fn main() {
                 // a tool does over the network.
                 let window = runtime.snapshot_since(cursor);
                 cursor = window.next_cursor();
-                let completed = frames.push(&OwnedSnapshot::from(window));
+                let pushed = trace
+                    .push(&OwnedSnapshot::from(window))
+                    .expect("snapshots of one runtime");
+                let completed: Vec<_> = pushed
+                    .frames()
+                    .iter()
+                    .filter_map(|id| trace.frame(*id))
+                    .filter(|frame| frame.kind() == footfall::MarkerKind::Frame)
+                    .cloned()
+                    .collect();
                 print_status(&completed, budget);
+                trace.forget_before(trace.observed().end());
             }
             () = wait_for(&renderer) => break,
         }

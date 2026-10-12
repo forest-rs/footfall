@@ -9,7 +9,7 @@
 //! ```
 
 use anstream::println;
-use footfall::analysis::{Spans, frames};
+use footfall::analysis::{GroupBy, Trace};
 use footfall::runtime::Runtime;
 use footfall::session::OwnedSnapshot;
 use footfall::{
@@ -61,12 +61,12 @@ fn main() -> std::io::Result<()> {
     // a tool receives over the network or reads from a capture file.
     let snapshot = OwnedSnapshot::from(runtime.snapshot());
     println!("{HEADING}footfall quickstart{HEADING:#} {DIM}· 30 frames, two passes{DIM:#}\n");
-    report::frames(&frames(&snapshot), 16_667);
+    let trace = Trace::from_snapshot(&snapshot);
+    report::frames(trace.frames(), 16_667);
     println!();
-    let spans = Spans::from_snapshot(&snapshot);
-    report::spans(&spans, 10);
+    report::spans(&trace.spans().group_by(GroupBy::Name).table(), 10);
     println!();
-    report::spans_by_label(&spans, &snapshot, "pass");
+    report::spans_by_label(&trace, "pass");
     println!();
     report::counters(&snapshot, 10);
     println!();

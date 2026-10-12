@@ -2,17 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Record a running session to a capture file, and work with it later:
-//! summarize it, or export it as one Chrome trace.
+//! summarize it, ask why its slow frames were slow, compare it with another
+//! run, or export it as one Chrome trace.
 //!
 //! ```sh
 //! cargo run -p footfall_examples --bin footfall_capture -- record demo.ffcap
 //! cargo run -p footfall_examples --bin footfall_capture -- info demo.ffcap
+//! cargo run -p footfall_examples --bin footfall_capture -- slow demo.ffcap
+//! cargo run -p footfall_examples --bin footfall_capture -- compare before.ffcap after.ffcap
+//! cargo run -p footfall_examples --bin footfall_capture -- span demo.ffcap 13909
 //! cargo run -p footfall_examples --bin footfall_capture -- export demo.ffcap
 //! ```
 
 use anstream::{eprintln, println};
 use clap::{Parser, Subcommand};
-use footfall::analysis::{Spans, frames};
+use footfall::analysis::{Comparison, GroupBy, Population, Selection, SpanId, Trace};
 use footfall::session::OwnedSnapshot;
 use footfall::session::capture::{CaptureReader, CaptureWriter};
 use footfall::wtransport::{ClientError, SessionClient};
@@ -52,6 +56,39 @@ enum Command {
         #[arg(long, default_value_t = 16.7)]
         budget_ms: f64,
     },
+    /// Compare a capture's slow frames with the rest: which scopes account
+    /// for the difference, and whether they ran more often or each ran
+    /// slower.
+    Slow {
+        /// The capture file to read.
+        file: PathBuf,
+        /// Frame budget in milliseconds; longer frames are slow.
+        #[arg(long, default_value_t = 16.7)]
+        budget_ms: f64,
+        /// How many scopes to show.
+        #[arg(long, default_value_t = 10)]
+        top: usize,
+    },
+    /// Compare two captures of the same workload frame by frame: which
+    /// scopes changed, and whether they ran more often or each ran slower.
+    Compare {
+        /// The capture to compare against.
+        baseline: PathBuf,
+        /// The capture to compare.
+        candidate: PathBuf,
+        /// How many scopes to show.
+        #[arg(long, default_value_t = 10)]
+        top: usize,
+    },
+    /// Show one span and the work around it: arguments, context, what it
+    /// ran inside, what ran inside it, its messages, and the flows through
+    /// it.
+    Span {
+        /// The capture file to read.
+        file: PathBuf,
+        /// The span's id: the number after `span@`.
+        id: u64,
+    },
     /// Join a capture's windows into one Chrome trace for Perfetto.
     Export {
         /// The capture file to read.
@@ -78,6 +115,17 @@ async fn main() {
             .await
         }
         Command::Info { file, budget_ms } => info(&file, budget_ms),
+        Command::Slow {
+            file,
+            budget_ms,
+            top,
+        } => slow(&file, budget_ms, top),
+        Command::Compare {
+            baseline,
+            candidate,
+            top,
+        } => compare(&baseline, &candidate, top),
+        Command::Span { file, id } => span(&file, SpanId::new(id)),
         Command::Export { file, output } => {
             let output = output.unwrap_or_else(|| file.with_extension("json"));
             export(&file, &output)
@@ -212,13 +260,209 @@ fn info(path: &Path, budget_ms: f64) -> Result<()> {
         reason = "a budget in ms"
     )]
     let budget = (budget_ms * 1000.0) as u64;
-    report::frames(&frames(&snapshot), budget);
+    let trace = Trace::from_snapshot(&snapshot);
+    report::frames(trace.frames(), budget);
     println!();
-    report::spans(&Spans::from_snapshot(&snapshot), 12);
+    report::spans(&trace.spans().group_by(GroupBy::Name).table(), 12);
     println!();
     report::counters(&snapshot, 16);
     println!();
     report::losses(&snapshot);
+    Ok(())
+}
+
+/// Reads every window of a capture into a trace of its first runtime
+/// instance.
+fn read_trace(path: &Path) -> Result<Trace> {
+    let reader = CaptureReader::new(BufReader::new(File::open(path)?))?;
+    let mut trace = Trace::new();
+    let mut skipped = 0_usize;
+    for window in reader {
+        let window = match window {
+            Ok(window) => window,
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(error) => return Err(error.into()),
+        };
+        if trace.push(&window).is_err() {
+            skipped += 1;
+        }
+    }
+    if skipped > 0 {
+        eprintln!("{WARN}skipped {skipped} windows from another run of the producer{WARN:#}");
+    }
+    if trace.instance_id().is_none() {
+        return Err(format!("{} holds no snapshots", path.display()).into());
+    }
+    Ok(trace)
+}
+
+fn slow(path: &Path, budget_ms: f64, top: usize) -> Result<()> {
+    let trace = read_trace(path)?;
+    let budget = Duration::from_secs_f64(budget_ms / 1000.0);
+    let (slow, normal): (Vec<_>, Vec<_>) = trace
+        .frames()
+        .iter()
+        .partition(|frame| frame.duration() > budget);
+    println!(
+        "{HEADING}Why slow frames were slow{HEADING:#} {DIM}· {} of {} frames over {}{DIM:#}\n",
+        format::count(slow.len() as u64),
+        format::count(trace.frames().len() as u64),
+        format::duration(budget),
+    );
+    if slow.is_empty() {
+        println!("No frame was over budget.");
+        return Ok(());
+    }
+    // Time inside each frame, so work that crosses a frame boundary counts
+    // where it ran.
+    let comparison = Comparison::between(
+        &Population::frames(&trace, normal),
+        &Population::frames(&trace, slow.iter().copied()),
+    )
+    .selecting(Selection::Inside)
+    .group_by(GroupBy::Name)
+    .run();
+    report::comparison(&comparison, "normal", "slow", top);
+
+    // The worst example of the biggest change, to look at.
+    if let Some(row) = comparison.rows().first() {
+        let name = row.describe();
+        let ids: Vec<_> = slow.iter().map(|frame| frame.id()).collect();
+        let instances = trace
+            .spans()
+            .in_frames(&ids)
+            .selecting(Selection::Inside)
+            .named(name.as_str())
+            .instances(1);
+        if let Some(worst) = instances.worst().first() {
+            let span = worst.span();
+            let parent = trace.parent(span).map_or_else(
+                || String::from("nothing"),
+                |parent| parent.name().to_owned(),
+            );
+            let thread = trace
+                .track(span.thread_id())
+                .and_then(|track| track.name())
+                .unwrap_or("unnamed thread");
+            println!(
+                "\n{HEADING}Worst {NAME}{name}{NAME:#}{HEADING:#} {DIM}· {} ({}) on {thread}, inside {parent}, in {}{DIM:#}",
+                format::duration(span.duration()),
+                span.id(),
+                trace
+                    .frame_at(span.begin())
+                    .map_or_else(|| String::from("no frame"), |frame| frame.id().to_string()),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn compare(baseline: &Path, candidate: &Path, top: usize) -> Result<()> {
+    let before = read_trace(baseline)?;
+    let after = read_trace(candidate)?;
+    println!(
+        "{HEADING}What changed{HEADING:#} {DIM}· {} ({} frames) → {} ({} frames), per frame{DIM:#}\n",
+        baseline.display(),
+        format::count(before.frames().len() as u64),
+        candidate.display(),
+        format::count(after.frames().len() as u64),
+    );
+    let comparison = Comparison::between(
+        &Population::frames(&before, before.frames()),
+        &Population::frames(&after, after.frames()),
+    )
+    .selecting(Selection::Inside)
+    .group_by(GroupBy::Name)
+    .run();
+    report::comparison(&comparison, "before", "after", top);
+    Ok(())
+}
+
+fn span(path: &Path, id: SpanId) -> Result<()> {
+    let trace = read_trace(path)?;
+    let Some(span) = trace.span(id) else {
+        return Err(format!("{} holds no completed span {id}", path.display()).into());
+    };
+    let thread = trace
+        .track(span.thread_id())
+        .and_then(|track| track.name())
+        .map_or_else(|| format!("thread {}", span.thread_id()), str::to_owned);
+    println!(
+        "{HEADING}{NAME}{}{NAME:#}{HEADING:#} {DIM}· {id} · {thread} · depth {}{DIM:#}",
+        span.name(),
+        span.depth()
+    );
+    println!(
+        "  {} from {} to {}, {} of it its own",
+        format::duration(span.duration()),
+        format::duration(span.begin()),
+        format::duration(span.end()),
+        format::duration(span.self_time()),
+    );
+    println!("  context  {}", trace.describe_context(span.context_id()));
+    for arg in span.args() {
+        println!("  arg      {}={}", arg.key(), arg.value());
+    }
+    if span.interrupted() {
+        println!("  {WARN}events were lost while it ran; nested spans may be missing{WARN:#}");
+    }
+    if let Some(frame) = trace.frame_at(span.begin()) {
+        println!(
+            "  frame    {} took {}",
+            frame.id(),
+            format::duration(frame.duration())
+        );
+    }
+
+    let mut chain = Vec::new();
+    let mut parent = trace.parent(span);
+    while let Some(outer) = parent {
+        chain.push(format!("{} ({})", outer.name(), outer.id()));
+        parent = trace.parent(outer);
+    }
+    if !chain.is_empty() {
+        println!("  inside   {}", chain.join(" ← "));
+    }
+    let children = trace.children(span);
+    if !children.is_empty() {
+        println!("{HEADING}Inside it{HEADING:#}");
+        for child in children {
+            println!(
+                "  {NAME}{}{NAME:#}  {}  {DIM}{}{DIM:#}",
+                child.name(),
+                format::duration(child.duration()),
+                child.id()
+            );
+        }
+    }
+    let messages: Vec<_> = trace
+        .messages_in(span.range())
+        .iter()
+        .filter(|message| message.thread_id() == span.thread_id())
+        .collect();
+    if !messages.is_empty() {
+        println!("{HEADING}Messages while it ran{HEADING:#}");
+        for message in messages {
+            println!("  {NAME}{}{NAME:#}  {}", message.name(), message.text());
+        }
+    }
+    for flow in trace.flows_through(id) {
+        println!("{HEADING}Flow {}{HEADING:#}", flow.id().get());
+        for step in flow.steps() {
+            let at = step
+                .span()
+                .and_then(|step_span| trace.span(step_span))
+                .map_or_else(
+                    || String::from("outside any span"),
+                    |step_span| format!("in {} ({})", step_span.name(), step_span.id()),
+                );
+            println!(
+                "  {:?} at {} {at}",
+                step.phase(),
+                format::duration(step.at())
+            );
+        }
+    }
     Ok(())
 }
 

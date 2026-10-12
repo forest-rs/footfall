@@ -151,11 +151,11 @@ server.shutdown(std::time::Duration::from_secs(1)).await;
 # Attaching to a session
 
 With `wtransport` and `analysis`, a tool finds every local session, subscribes
-to one, and follows its frames across windows.
+to one, and follows its frames across windows in a trace.
 
 ```no_run
 # async fn attach() -> Result<(), footfall::wtransport::ClientError> {
-use footfall::analysis::FrameTracker;
+use footfall::analysis::Trace;
 use footfall::wtransport::SessionClient;
 use std::time::Duration;
 
@@ -165,11 +165,12 @@ let mut subscription = session
     .client()
     .subscribe(session.id(), None, Duration::from_millis(250))
     .await?;
-let mut frames = FrameTracker::new();
+let mut trace = Trace::new();
 loop {
     let window = subscription.next().await?;
-    for frame in frames.push(&window) {
-        println!("frame {} took {} µs", frame.sequence(), frame.duration_micros());
+    let pushed = trace.push(&window).expect("one producer instance");
+    for frame in pushed.frames().iter().filter_map(|id| trace.frame(*id)) {
+        println!("{} took {:?}", frame.id(), frame.duration());
     }
 }
 # }

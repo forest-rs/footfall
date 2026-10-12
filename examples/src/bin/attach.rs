@@ -11,7 +11,7 @@
 
 use anstream::{eprintln, println};
 use clap::Parser;
-use footfall::analysis::{Continuity, FrameTracker, SpanTracker};
+use footfall::analysis::{Continuity, Frame, GroupBy, Selection, Trace};
 use footfall::wtransport::{ClientError, SessionClient};
 use footfall_examples::format;
 use footfall_examples::report::FrameStats;
@@ -68,14 +68,13 @@ async fn follow(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Subscribe: the first window holds everything retained, later ones
-    // only what is new. The trackers carry frames and scopes that span
-    // windows from one to the next.
+    // only what is new. The trace pairs frames and scopes that span windows
+    // from one to the next.
     let mut subscription = session
         .client()
         .subscribe(session.id(), None, Duration::from_millis(args.interval_ms))
         .await?;
-    let mut frames = FrameTracker::new();
-    let mut spans = SpanTracker::new();
+    let mut trace = Trace::new();
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -91,24 +90,52 @@ async fn follow(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(error) => return Err(error.into()),
         };
-        let completed = frames.push(&window);
-        let scopes = spans.push(&window);
-        match frames.continuity() {
-            Continuity::Gap => println!("{WARN}events were lost between windows{WARN:#}"),
-            Continuity::Restarted => println!("{WARN}the producer restarted{WARN:#}"),
-            Continuity::First | Continuity::Continuous => {}
+        let pushed = match trace.push(&window) {
+            Ok(pushed) => pushed,
+            Err(_) => {
+                println!("{WARN}the producer restarted{WARN:#}");
+                trace = Trace::new();
+                trace
+                    .push(&window)
+                    .expect("a new trace accepts a full snapshot")
+            }
+        };
+        if let Continuity::Gap { missed } = pushed.continuity() {
+            println!("{WARN}{missed} events were lost between windows{WARN:#}");
         }
+        // Keep a minute of history; this loop only looks at the latest frames.
+        trace.forget_before(
+            trace
+                .observed()
+                .end()
+                .saturating_sub(Duration::from_secs(60)),
+        );
 
+        let completed: Vec<Frame> = pushed
+            .frames()
+            .iter()
+            .filter_map(|id| trace.frame(*id))
+            .filter(|frame| frame.kind() == footfall::MarkerKind::Frame)
+            .cloned()
+            .collect();
         let Some(stats) = FrameStats::of(&completed, budget) else {
             continue;
         };
-        // Where the most time went, per frame, summed over every thread.
-        let frame_count = stats.count.max(1);
-        let busiest = scopes
-            .by_name()
-            .into_iter()
-            .max_by_key(|(_, stats)| stats.self_micros())
-            .map(|(name, stats)| (name, stats.self_micros() / frame_count));
+        // Where the most time went inside these frames, summed over every
+        // thread.
+        let ids: Vec<_> = completed.iter().map(Frame::id).collect();
+        let table = trace
+            .spans()
+            .in_frames(&ids)
+            .selecting(Selection::Inside)
+            .group_by(GroupBy::Name)
+            .table();
+        let frame_count = u32::try_from(stats.count.max(1)).unwrap_or(u32::MAX);
+        let busiest = table
+            .rows()
+            .iter()
+            .max_by_key(|row| row.stats().self_time())
+            .map(|row| (row.describe(), row.stats().self_time() / frame_count));
         let slow = if stats.slow == 0 {
             format!("{GOOD}none slow{GOOD:#}")
         } else {
@@ -119,9 +146,9 @@ async fn follow(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             stats.count,
             format::micros(stats.mean),
             format::micros(stats.max),
-            busiest.map_or_else(String::new, |(name, micros)| format!(
+            busiest.map_or_else(String::new, |(name, time)| format!(
                 "{name} ({} per frame)",
-                format::micros(micros)
+                format::duration(time)
             )),
             format::bytes(subscription.last_window_bytes() as u64),
         );

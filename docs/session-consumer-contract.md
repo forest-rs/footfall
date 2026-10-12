@@ -222,10 +222,11 @@ export path. `CaptureWriter::write_owned` saves snapshots received from a
 session, for example each one a subscription delivers, and `CaptureReader`
 yields them in order.
 
-To analyse a session as it runs, `footfall::analysis::SpanTracker` and
-`FrameTracker` take each window in turn and carry open scopes, open frames,
-and the last counter samples from one to the next, so scopes and frames that
-span windows are paired without keeping the windows.
+To analyse a session as it runs, push each window into a
+`footfall::analysis::Trace`. It pairs scopes and frames that span windows,
+skips events it has already seen, records events evicted between reads as
+gaps, and refuses a window from another runtime instance, so a restarted
+producer starts a new trace. `Trace::forget_before` bounds its memory.
 
 `OwnedSnapshot::append` joins consecutive windows from one runtime instance
 into one snapshot, counting events neither window held as missed, and
@@ -235,11 +236,12 @@ envelopes for consumers that carry them some other way.
 
 ## Building a Tool
 
-`footfall::analysis` does the interpretation most tools need: it pairs scopes
-into spans with self time and nesting, groups them by name or by a context
-label, pairs frame markers into frames, and turns counter samples into
-per-frame changes, across a subscription's windows. A tool built on it needs
-little more than layout.
+`footfall::analysis` does the interpretation most tools need: per-thread
+tracks of nested spans for a timeline, frames with their counter changes,
+grouped and filtered span tables, typical and worst examples, comparisons
+that split a change into more work and slower work, and with every answer a
+statement of what it covers. A tool built on it needs little more than
+layout; the [analysis guide](analysing-a-trace.md) shows how.
 
 Two examples show the range:
 
