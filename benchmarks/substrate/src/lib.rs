@@ -12,6 +12,8 @@
 //! - `runtime`: `footfall_runtime` installed directly, plus the
 //!   `footfall_tracing` layer as the global `tracing` subscriber
 //! - `fanout`: `footfall_fanout` over the runtime and the core no-op backend
+//! - `capture`: `footfall_runtime` holding only a seeded capture, for
+//!   snapshot and export cost
 //!
 //! Run them with `cargo bench -p footfall_benchmarks`.
 

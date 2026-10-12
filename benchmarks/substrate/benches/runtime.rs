@@ -12,7 +12,7 @@
 //! event buffer full after warm-up and every timed emission evicts the oldest
 //! event: the steady state of any long-running capture.
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use footfall::{
     Args, Context, InstrumentationLevel, RegisteredContext, counter_add, gauge_set,
     histogram_record, message, message_with, register_context, release_context, resource_update,
@@ -20,10 +20,9 @@ use footfall::{
 };
 use footfall_benchmarks::{
     ATLAS, ATLAS_ID, CACHE, COUNTER_CAPACITY, EVENT_CAPACITY, FRAME, LATENCY, LOG, MEASUREMENT,
-    OPS, PASS, QUEUE_DEPTH, RECORD, SEEDED_FRAMES, THREAD_COUNTS, WARM_UP, rotating_contexts,
-    sample_context, seed_snapshot, time_parallel_counter_add,
+    OPS, PASS, QUEUE_DEPTH, RECORD, THREAD_COUNTS, WARM_UP, rotating_contexts, sample_context,
+    time_parallel_counter_add,
 };
-use footfall_export::to_chrome_trace_json;
 use footfall_runtime::Runtime;
 use footfall_tracing::FootfallLayer;
 use std::{hint::black_box, sync::OnceLock};
@@ -207,29 +206,9 @@ fn trace(c: &mut Criterion) {
     group.finish();
 }
 
-/// Snapshot and Chrome export cost over a fixed seeded capture.
-fn capture(c: &mut Criterion) {
-    let runtime = runtime();
-    runtime.set_level(InstrumentationLevel::Trace);
-    let cursor = runtime.cursor();
-    let frames = seed_snapshot(sample_context());
-    let owned = runtime.snapshot_since(cursor).into();
-
-    let mut group = c.benchmark_group("runtime/capture");
-    group.throughput(Throughput::Elements(u64::from(SEEDED_FRAMES)));
-    group.bench_function(format!("snapshot {SEEDED_FRAMES} frames"), |b| {
-        b.iter(|| black_box(runtime.snapshot_since(black_box(cursor))));
-    });
-    group.bench_function(format!("chrome trace export {SEEDED_FRAMES} frames"), |b| {
-        b.iter(|| black_box(to_chrome_trace_json(black_box(&owned))));
-    });
-    group.finish();
-    drop(frames);
-}
-
 criterion_group! {
     name = benches;
     config = Criterion::default().warm_up_time(WARM_UP).measurement_time(MEASUREMENT);
-    targets = off, counters, scoped, trace, capture
+    targets = off, counters, scoped, trace
 }
 criterion_main!(benches);

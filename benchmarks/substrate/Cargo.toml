@@ -40,5 +40,9 @@ harness = false
 name = "fanout"
 harness = false
 
+[[bench]]
+name = "capture"
+harness = false
+
 [lints]
 workspace = true
