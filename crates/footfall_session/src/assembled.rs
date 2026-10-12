@@ -5,14 +5,17 @@
 
 use alloc::vec::Vec;
 use core::fmt;
+use std::collections::{HashMap, HashSet};
 
 use footfall_core::ContextId;
-use footfall_runtime::{Drops, EventCursor, EventWindow, SnapshotMetadata, ThreadSnapshot};
+use footfall_runtime::{
+    CounterKind, Drops, EventCursor, EventWindow, SnapshotMetadata, ThreadSnapshot,
+};
 
 use crate::{
     Chunking, EnvelopeHeader, OwnedContextSnapshot, OwnedCounterSnapshot, OwnedHistogramSnapshot,
     OwnedSessionEnvelope, OwnedSessionPayload, OwnedSnapshotSummary, OwnedTimedObservation,
-    PROTOCOL_VERSION,
+    PROTOCOL_VERSION, SnapshotKind,
 };
 
 /// One published snapshot, reassembled from its envelopes and checked
@@ -25,6 +28,7 @@ pub struct OwnedSnapshot {
     summary: OwnedSnapshotSummary,
     threads: Vec<ThreadSnapshot>,
     contexts: Vec<OwnedContextSnapshot>,
+    retired_contexts: Vec<ContextId>,
     counters: Vec<OwnedCounterSnapshot>,
     histograms: Vec<OwnedHistogramSnapshot>,
     events: Vec<OwnedTimedObservation>,
@@ -54,6 +58,7 @@ impl OwnedSnapshot {
             summary,
             threads: Vec::new(),
             contexts: Vec::new(),
+            retired_contexts: Vec::new(),
             counters: Vec::new(),
             histograms: Vec::new(),
             events: Vec::new(),
@@ -74,6 +79,7 @@ impl OwnedSnapshot {
             let repeatable = matches!(
                 payload,
                 OwnedSessionPayload::Contexts(_)
+                    | OwnedSessionPayload::RetiredContexts(_)
                     | OwnedSessionPayload::Counters(_)
                     | OwnedSessionPayload::Histograms(_)
                     | OwnedSessionPayload::Events(_)
@@ -91,6 +97,9 @@ impl OwnedSnapshot {
                 }
                 OwnedSessionPayload::Threads(rows) => snapshot.threads.extend_from_slice(rows),
                 OwnedSessionPayload::Contexts(rows) => snapshot.contexts.extend_from_slice(rows),
+                OwnedSessionPayload::RetiredContexts(ids) => {
+                    snapshot.retired_contexts.extend_from_slice(ids);
+                }
                 OwnedSessionPayload::Counters(rows) => snapshot.counters.extend_from_slice(rows),
                 OwnedSessionPayload::Histograms(rows) => {
                     snapshot.histograms.extend_from_slice(rows);
@@ -112,6 +121,11 @@ impl OwnedSnapshot {
         for (rows, announced, received) in [
             ("thread", counts.threads(), snapshot.threads.len()),
             ("context", counts.contexts(), snapshot.contexts.len()),
+            (
+                "retired context",
+                counts.retired_contexts(),
+                snapshot.retired_contexts.len(),
+            ),
             ("counter", counts.counters(), snapshot.counters.len()),
             ("histogram", counts.histograms(), snapshot.histograms.len()),
             ("event", counts.events(), snapshot.events.len()),
@@ -142,6 +156,7 @@ impl OwnedSnapshot {
             summary,
             threads,
             contexts,
+            retired_contexts: Vec::new(),
             counters,
             histograms,
             events,
@@ -153,6 +168,27 @@ impl OwnedSnapshot {
     #[must_use]
     pub const fn metadata(&self) -> &SnapshotMetadata {
         self.summary.metadata()
+    }
+
+    /// Returns whether this snapshot holds the producer's whole state or
+    /// only what changed since the previous snapshot of a subscription.
+    ///
+    /// [`SessionClient::subscribe`] and capture files hand out full
+    /// snapshots; a consumer that assembles envelopes itself sees
+    /// [`SnapshotKind::Changes`] and applies them with
+    /// [`apply`](Self::apply).
+    ///
+    /// [`SessionClient::subscribe`]: https://docs.rs/footfall_session_wtransport
+    #[must_use]
+    pub const fn kind(&self) -> SnapshotKind {
+        self.summary.kind()
+    }
+
+    /// Returns the contexts retired since the previous snapshot, for a
+    /// [`SnapshotKind::Changes`] snapshot; empty for a full one.
+    #[must_use]
+    pub fn retired_contexts(&self) -> &[ContextId] {
+        &self.retired_contexts
     }
 
     /// Returns the time since runtime creation when the snapshot was taken.
@@ -217,12 +253,69 @@ impl OwnedSnapshot {
     /// from a capture file, into one view: events from `later` that this
     /// snapshot does not already hold are appended, contexts and threads are
     /// combined with `later`'s winning, and counters, histograms, metadata,
-    /// and drop totals become `later`'s, which are cumulative. Events between
-    /// the two windows that neither holds count as missed.
+    /// and drop totals become `later`'s, which are cumulative. Contexts stay
+    /// even once retired, so every event keeps its attribution. Events
+    /// between the two windows that neither holds count as missed. `later`
+    /// may be full or hold only changes.
     ///
-    /// Fails, leaving this snapshot unchanged, when `later` is from another
-    /// instance or ends before this snapshot does.
+    /// Fails, leaving this snapshot unchanged, when this snapshot holds only
+    /// changes, or `later` is from another instance or ends before this
+    /// snapshot does.
     pub fn append(&mut self, later: Self) -> Result<(), AppendError> {
+        self.check_later(&later)?;
+        let window = self.window();
+        let later_window = later.window();
+        let gap = later_window.since().saturating_sub(window.next());
+        let missed = window
+            .missed()
+            .saturating_add(gap)
+            .saturating_add(later_window.missed());
+        let merged_window = EventWindow::new(window.since(), later_window.next(), missed);
+
+        let mut later = later;
+        let events = core::mem::take(&mut later.events);
+        self.merge_state(later, false);
+        self.events.extend(
+            events
+                .into_iter()
+                .filter(|event| event.sequence() >= window.next()),
+        );
+        self.finish_merge(merged_window);
+        Ok(())
+    }
+
+    /// Brings this full snapshot up to date with a later one from the same
+    /// runtime instance, full or holding only changes.
+    ///
+    /// Contexts, threads, counters, histograms, metadata, and drop totals
+    /// become current: changes are applied, and retired contexts are removed
+    /// with their counters and histograms. The events become `later`'s, so
+    /// the result is exactly the full snapshot the producer would have sent.
+    /// This is how a subscription's snapshots that hold only changes become
+    /// full ones.
+    ///
+    /// Fails, leaving this snapshot unchanged, when this snapshot holds only
+    /// changes, or `later` is from another instance or ends before this
+    /// snapshot does.
+    pub fn apply(&mut self, later: Self) -> Result<(), AppendError> {
+        self.check_later(&later)?;
+        if later.kind() == SnapshotKind::Full {
+            *self = later;
+            return Ok(());
+        }
+        let window = later.window();
+        let mut later = later;
+        let events = core::mem::take(&mut later.events);
+        self.merge_state(later, true);
+        self.events = events;
+        self.finish_merge(window);
+        Ok(())
+    }
+
+    fn check_later(&self, later: &Self) -> Result<(), AppendError> {
+        if self.kind() != SnapshotKind::Full {
+            return Err(AppendError::NotFull);
+        }
         let instance = self.metadata().instance_id();
         let later_instance = later.metadata().instance_id();
         if later_instance != instance {
@@ -231,47 +324,92 @@ impl OwnedSnapshot {
                 found: later_instance,
             });
         }
-        let window = self.window();
-        let later_window = later.window();
-        if later_window.next() < window.next() {
+        if later.window().next() < self.window().next() {
             return Err(AppendError::Earlier {
-                next: window.next(),
-                later_next: later_window.next(),
+                next: self.window().next(),
+                later_next: later.window().next(),
             });
         }
+        Ok(())
+    }
 
-        let gap = later_window.since().saturating_sub(window.next());
-        let missed = window
-            .missed()
-            .saturating_add(gap)
-            .saturating_add(later_window.missed());
-        let merged_window = EventWindow::new(window.since(), later_window.next(), missed);
+    /// Merges `later`'s state, without its events, into this snapshot.
+    fn merge_state(&mut self, later: Self, remove_retired: bool) {
+        let Self {
+            summary,
+            threads,
+            contexts,
+            retired_contexts,
+            counters,
+            histograms,
+            drops,
+            ..
+        } = later;
+        merge_by_key(&mut self.contexts, contexts, OwnedContextSnapshot::id);
+        merge_by_key(&mut self.threads, threads, ThreadSnapshot::id);
+        if summary.kind() == SnapshotKind::Full {
+            self.counters = counters;
+            self.histograms = histograms;
+        } else {
+            let retired: HashSet<ContextId> = retired_contexts.into_iter().collect();
+            if remove_retired {
+                self.contexts
+                    .retain(|context| !retired.contains(&context.id()));
+            }
+            self.counters
+                .retain(|counter| !retired.contains(&counter.context_id()));
+            self.histograms
+                .retain(|histogram| !retired.contains(&histogram.context_id()));
+            replace_or_push(&mut self.counters, counters, |counter| {
+                (
+                    counter.desc_id(),
+                    counter.context_id(),
+                    counter.kind() == CounterKind::Gauge,
+                )
+            });
+            replace_or_push(&mut self.histograms, histograms, |histogram| {
+                (histogram.desc_id(), histogram.context_id())
+            });
+            // Keep the producer's order, so the result equals the full
+            // snapshot it would have sent.
+            self.counters.sort_by(|left, right| {
+                (
+                    left.name(),
+                    left.context_id(),
+                    left.kind() == CounterKind::Gauge,
+                )
+                    .cmp(&(
+                        right.name(),
+                        right.context_id(),
+                        right.kind() == CounterKind::Gauge,
+                    ))
+            });
+            self.histograms.sort_by(|left, right| {
+                (left.name(), left.context_id()).cmp(&(right.name(), right.context_id()))
+            });
+        }
+        self.drops = drops;
+        self.summary = summary;
+    }
 
-        self.events.extend(
-            later
-                .events
-                .into_iter()
-                .filter(|event| event.sequence() >= window.next()),
-        );
-        merge_by_key(&mut self.contexts, later.contexts, |row| row.id());
-        merge_by_key(&mut self.threads, later.threads, ThreadSnapshot::id);
-        self.counters = later.counters;
-        self.histograms = later.histograms;
-        self.drops = later.drops;
+    /// Makes this snapshot full again after a merge, with `window`.
+    fn finish_merge(&mut self, window: EventWindow) {
+        self.retired_contexts.clear();
         let counts = crate::RowCounts::new(
             self.threads.len(),
             self.contexts.len(),
+            0,
             self.counters.len(),
             self.histograms.len(),
             self.events.len(),
         );
         self.summary = OwnedSnapshotSummary::new(
-            later.summary.metadata().clone(),
-            later.summary.captured_at_micros(),
-            merged_window,
+            self.summary.metadata().clone(),
+            SnapshotKind::Full,
+            self.summary.captured_at_micros(),
+            window,
             counts,
         );
-        Ok(())
     }
 
     /// Splits this snapshot into envelopes, as a producer would publish it.
@@ -284,6 +422,12 @@ impl OwnedSnapshot {
         }
         for rows in self.contexts.chunks(chunk_size(chunking.max_contexts())) {
             payloads.push(OwnedSessionPayload::Contexts(rows.to_vec()));
+        }
+        for ids in self
+            .retired_contexts
+            .chunks(chunk_size(chunking.max_contexts()))
+        {
+            payloads.push(OwnedSessionPayload::RetiredContexts(ids.to_vec()));
         }
         for rows in self.counters.chunks(chunk_size(chunking.max_counters())) {
             payloads.push(OwnedSessionPayload::Counters(rows.to_vec()));
@@ -438,6 +582,9 @@ pub enum AppendError {
         /// The later snapshot's instance id.
         found: u64,
     },
+    /// This snapshot holds only changes, so there is no whole state to
+    /// extend; start from a full snapshot.
+    NotFull,
     /// The later snapshot's window ends before this one's.
     Earlier {
         /// Where this snapshot's window ends.
@@ -454,6 +601,9 @@ impl fmt::Display for AppendError {
                 formatter,
                 "snapshot is from runtime instance {found:016x}, not {expected:016x}"
             ),
+            Self::NotFull => {
+                formatter.write_str("this snapshot holds only changes; start from a full snapshot")
+            }
             Self::Earlier { next, later_next } => write!(
                 formatter,
                 "snapshot's events end at {later_next}, before this one's at {next}"
@@ -471,6 +621,29 @@ fn merge_by_key<T, K: Ord + Copy>(rows: &mut Vec<T>, later: Vec<T>, key: impl Fn
         match rows.binary_search_by_key(&key(&row), &key) {
             Ok(index) => rows[index] = row,
             Err(index) => rows.insert(index, row),
+        }
+    }
+}
+
+/// Replaces each row of `rows` whose key matches one of `later`'s, and adds
+/// the rest.
+fn replace_or_push<T, K: Eq + core::hash::Hash>(
+    rows: &mut Vec<T>,
+    later: Vec<T>,
+    key: impl Fn(&T) -> K,
+) {
+    let mut index: HashMap<K, usize> = rows
+        .iter()
+        .enumerate()
+        .map(|(position, row)| (key(row), position))
+        .collect();
+    for row in later {
+        match index.get(&key(&row)) {
+            Some(&position) => rows[position] = row,
+            None => {
+                index.insert(key(&row), rows.len());
+                rows.push(row);
+            }
         }
     }
 }
@@ -494,10 +667,11 @@ const fn publication_rank(payload: &OwnedSessionPayload) -> u8 {
         OwnedSessionPayload::SnapshotStart(_) => 0,
         OwnedSessionPayload::Threads(_) => 1,
         OwnedSessionPayload::Contexts(_) => 2,
-        OwnedSessionPayload::Counters(_) => 3,
-        OwnedSessionPayload::Histograms(_) => 4,
-        OwnedSessionPayload::Events(_) => 5,
-        OwnedSessionPayload::SnapshotEnd(_) => 6,
+        OwnedSessionPayload::RetiredContexts(_) => 3,
+        OwnedSessionPayload::Counters(_) => 4,
+        OwnedSessionPayload::Histograms(_) => 5,
+        OwnedSessionPayload::Events(_) => 6,
+        OwnedSessionPayload::SnapshotEnd(_) => 7,
     }
 }
 
@@ -506,6 +680,7 @@ const fn payload_name(payload: &OwnedSessionPayload) -> &'static str {
         OwnedSessionPayload::SnapshotStart(_) => "SnapshotStart",
         OwnedSessionPayload::Threads(_) => "Threads",
         OwnedSessionPayload::Contexts(_) => "Contexts",
+        OwnedSessionPayload::RetiredContexts(_) => "RetiredContexts",
         OwnedSessionPayload::Counters(_) => "Counters",
         OwnedSessionPayload::Histograms(_) => "Histograms",
         OwnedSessionPayload::Events(_) => "Events",

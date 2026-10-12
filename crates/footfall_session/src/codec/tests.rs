@@ -55,7 +55,7 @@ fn encoded_envelopes_match_golden_fixtures() {
     let encoded = encode_owned_envelope(&counters).expect("encoding should succeed");
     assert_eq!(
         to_hex(&encoded),
-        "01000000020000000000000003010000000300000000000000030000006f707301010000\
+        "01000000020000000000000004010000000300000000000000030000006f707301010000\
          00000000000007000000000000000e00000000000000"
     );
 
@@ -80,7 +80,7 @@ fn encoded_envelopes_match_golden_fixtures() {
     let encoded = encode_owned_envelope(&events).expect("encoding should succeed");
     assert_eq!(
         to_hex(&encoded),
-        "01000000030000000000000005010000000f000000000000000400000000000000020000\
+        "01000000030000000000000006010000000f000000000000000400000000000000020000\
          0000000000000500000000000000060000007265636f7264010000000000000009000000\
          0000000001050000006974656d73000300000000000000"
     );
@@ -135,17 +135,18 @@ fn snapshot_framing_envelopes_match_golden_fixtures() {
         EnvelopeHeader::new(PROTOCOL_VERSION, 0),
         OwnedSessionPayload::SnapshotStart(OwnedSnapshotSummary::new(
             metadata,
+            crate::SnapshotKind::Full,
             20,
             crate::EventWindow::new(1, 3, 1),
-            RowCounts::new(1, 2, 0, 0, 1),
+            RowCounts::new(1, 2, 0, 0, 0, 1),
         )),
     );
     assert_eq!(
         to_hex(&encode_owned_envelope(&start).expect("encoding should succeed")),
         "010000000000000000000000000400000064656d6f000807060504030201090000000000\
          000005000000302e312e3002100000000000000040000000000000002000000000000000\
-         140000000000000001000000000000000300000000000000010000000000000001000000\
-         02000000000000000000000001000000"
+         001400000000000000010000000000000003000000000000000100000000000000010000\
+         000200000000000000000000000000000001000000"
     );
 
     let threads = OwnedSessionEnvelope::new(
@@ -173,7 +174,7 @@ fn snapshot_framing_envelopes_match_golden_fixtures() {
     );
     assert_eq!(
         to_hex(&encode_owned_envelope(&end).expect("encoding should succeed")),
-        "010000000200000000000000060100000000000000020000000000000003000000000000\
+        "010000000200000000000000070100000000000000020000000000000003000000000000\
          000400000000000000"
     );
 
@@ -388,9 +389,9 @@ fn counter_samples_match_their_golden_fixture() {
     // name, unit (count), context id, kind (gauge), and value.
     assert_eq!(
         to_hex(&encoded),
-        "0100000001000000000000000501000000090000000000000002000000000000000100000000\
-         000000080300000000000000030000006f70730104000000000000000107000000000000\
-         00"
+        "010000000100000000000000060100000009000000000000000200000000000000010000\
+         0000000000080300000000000000030000006f7073010400000000000000010700000000\
+         000000"
     );
     assert_eq!(
         decode_envelope(&encoded).expect("decoding should succeed"),

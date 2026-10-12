@@ -30,10 +30,11 @@ Snapshot publication has a fixed shape:
 1. `SnapshotStart`
 2. at most one `Threads` envelope
 3. zero or more `Contexts` chunks
-4. zero or more `Counters` chunks
-5. zero or more `Histograms` chunks
-6. zero or more `Events` chunks
-7. `SnapshotEnd`
+4. zero or more `RetiredContexts` chunks, only in a changes snapshot
+5. zero or more `Counters` chunks
+6. zero or more `Histograms` chunks
+7. zero or more `Events` chunks
+8. `SnapshotEnd`
 
 That ordering is the contract a consumer should rely on.
 
@@ -170,7 +171,10 @@ and consumers skip it.
 
 `SessionClient::subscribe(session_id, since, interval)` asks the server to
 send a snapshot now and another every `interval` on one stream, each holding
-the events recorded since the previous one. `Subscription::next` waits for
+the events recorded since the previous one. After the first, the server sends only what
+changed since the previous snapshot, and `Subscription::next` applies it, so
+each snapshot it returns is full and current while unchanged contexts and
+counters cross the wire once. `Subscription::next` waits for
 the next. The server never queues snapshots for a slow consumer: it waits for
 the consumer to take one before preparing the next, and events evicted in
 the meantime appear in the next window's `missed` count. Polling with

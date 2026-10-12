@@ -15,7 +15,7 @@ use crate::{MAX_DISCOVERED_SESSIONS, MAX_SESSION_ENVELOPES};
 use footfall_runtime::{Runtime, Snapshot};
 use footfall_session::codec::{MAX_SESSION_ENVELOPE_BYTES, encode_envelope};
 use footfall_session::{
-    Chunking, Consumer, Envelope, EventCursor, SessionErrorCode, publish_snapshot,
+    Chunking, Consumer, Envelope, EventCursor, SessionErrorCode, publish_changes, publish_snapshot,
 };
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
@@ -483,6 +483,7 @@ impl SessionRequest {
 
         let interval = interval.max(MIN_SUBSCRIPTION_INTERVAL);
         let mut cursor = since;
+        let mut previous: Option<Snapshot> = None;
         let mut snapshot_count = 0_usize;
         loop {
             let snapshot = match cursor {
@@ -490,12 +491,18 @@ impl SessionRequest {
                 None => runtime.snapshot(),
             };
             cursor = Some(snapshot.next_cursor());
-            if write_snapshot(&mut self.send, &snapshot, chunking)
-                .await
-                .is_err()
-            {
+            // After the first snapshot, send only what changed: the client
+            // already holds the rest.
+            let written = match &previous {
+                Some(previous) => {
+                    write_changes(&mut self.send, previous, &snapshot, chunking).await
+                }
+                None => write_snapshot(&mut self.send, &snapshot, chunking).await,
+            };
+            if written.is_err() {
                 break;
             }
+            previous = Some(snapshot);
             snapshot_count += 1;
             tokio::time::sleep(interval).await;
         }
@@ -536,6 +543,23 @@ async fn write_snapshot(
 ) -> io::Result<usize> {
     let mut consumer = EncodingConsumer::default();
     publish_snapshot(snapshot, chunking, &mut consumer)?;
+    write_frames(send, consumer).await
+}
+
+/// Writes one snapshot response holding what changed from `previous` to
+/// `current`. Returns the envelope count.
+async fn write_changes(
+    send: &mut SendStream,
+    previous: &Snapshot,
+    current: &Snapshot,
+    chunking: Chunking,
+) -> io::Result<usize> {
+    let mut consumer = EncodingConsumer::default();
+    publish_changes(previous, current, chunking, &mut consumer)?;
+    write_frames(send, consumer).await
+}
+
+async fn write_frames(send: &mut SendStream, consumer: EncodingConsumer) -> io::Result<usize> {
     write_u8_stream(send, RESPONSE_SNAPSHOT).await?;
     write_u64(
         send,

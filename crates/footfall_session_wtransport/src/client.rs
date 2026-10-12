@@ -15,8 +15,9 @@ use crate::wire::{
 };
 use crate::{MAX_DISCOVERED_SESSIONS, MAX_SESSION_ENVELOPES};
 use footfall_session::codec::{MAX_SESSION_ENVELOPE_BYTES, decode_envelope};
-use footfall_session::{AssembleError, OwnedSnapshot, SessionErrorCode};
-use footfall_session::{EventCursor, ProtocolVersion};
+use footfall_session::{
+    AssembleError, EventCursor, OwnedSnapshot, ProtocolVersion, SessionErrorCode, SnapshotKind,
+};
 use std::path::PathBuf;
 use std::{fmt, io};
 use std::{
@@ -299,6 +300,7 @@ impl SessionClient {
             finish_request_stream(&mut send).await.map_err(io_error)?;
             Ok(Subscription {
                 url: self.url.clone(),
+                state: None,
                 patience: self.timeout.saturating_add(interval),
                 _endpoint: endpoint,
                 _connection: connection,
@@ -377,6 +379,9 @@ impl SessionClient {
 /// A stream of snapshots from [`SessionClient::subscribe`].
 pub struct Subscription {
     url: String,
+    /// The producer's state as of the last snapshot, which later snapshots
+    /// holding only changes apply to.
+    state: Option<OwnedSnapshot>,
     patience: Duration,
     _endpoint: Endpoint<wtransport::endpoint::endpoint_side::Client>,
     _connection: Connection,
@@ -403,6 +408,27 @@ impl Subscription {
     /// when the server ends the subscription with an error, such as an
     /// unknown session id.
     pub async fn next(&mut self) -> Result<OwnedSnapshot, ClientError> {
+        let received = self.receive().await?;
+        match (received.kind(), &mut self.state) {
+            (SnapshotKind::Full, _) => {
+                self.state = Some(received.clone());
+                Ok(received)
+            }
+            (SnapshotKind::Changes, Some(state)) => {
+                state
+                    .apply(received)
+                    .map_err(|error| ClientError::Malformed {
+                        reason: error.to_string(),
+                    })?;
+                Ok(state.clone())
+            }
+            (SnapshotKind::Changes, None) => Err(ClientError::Malformed {
+                reason: String::from("subscription sent changes before a full snapshot"),
+            }),
+        }
+    }
+
+    async fn receive(&mut self) -> Result<OwnedSnapshot, ClientError> {
         let read = async {
             match read_u8_stream(&mut self.recv).await.map_err(io_error)? {
                 RESPONSE_SNAPSHOT => read_snapshot(&mut self.recv).await,
