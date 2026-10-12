@@ -8,19 +8,46 @@ counters, markers, flows, messages, and resource lifecycles through one
 process-wide backend. With no backend installed, or with instrumentation
 compiled out, an emission costs about a nanosecond or nothing at all.
 
-This crate is the instrumentation API. It re-exports `footfall_core`, which
-has the full reference for descriptors, contexts, levels, and compiling
-instrumentation out. Libraries depend on `footfall` alone; the application
-chooses where the data goes.
+This crate is the one entry point. Its root is the instrumentation API, which
+is `no_std` and has no dependencies; features add the parts an application or
+a tool needs as modules.
+
+## Choosing features
+
+| You are writing | Depend on |
+|---|---|
+| A library | `footfall`, with no features |
+| An application that captures and exports | `footfall` with `runtime` and `export` |
+| An application others can attach to live | `footfall` with `runtime` and `wtransport` |
+| A tool that attaches to applications | `footfall` with `wtransport` and `analysis` |
+
+| Feature | Module | What it adds |
+|---|---|---|
+| `std` | | Standard-library conveniences in the instrumentation API |
+| `runtime` | `footfall::runtime` | Bounded in-process capture with snapshots and cursors |
+| `export` | `footfall::export` | Chrome Trace JSON for Perfetto and `chrome://tracing` |
+| `session` | `footfall::session` | Snapshots for consumers, the envelope codec, capture files |
+| `analysis` | `footfall::analysis` | Spans, frames, and per-frame counter changes from snapshots |
+| `wtransport` | `footfall::wtransport` | Serve sessions and attach to them over local WebTransport |
+| `tracing` | `footfall::tracing_layer` | A `tracing` layer that forwards spans and events |
+| `tracy` | `footfall::tracy` | A live Tracy backend |
+
+`wtransport` and `tracy` are not available on wasm targets; there, the
+features add nothing.
 
 ## Quick start
+
+```toml
+[dependencies]
+footfall = { version = "0.1", features = ["runtime", "export"] }
+```
 
 ```rust
 use footfall::{
     ContextHandle, CounterDesc, LabelKey, RegisteredContext, ScopeDesc, context, counter_add,
-    frame_begin, frame_end, scope,
+    frame_begin, frame_end,
 };
-use footfall_runtime::Runtime;
+use footfall::runtime::Runtime;
 
 // Descriptors and label keys are `static` items, declared once.
 static PASS: LabelKey = LabelKey::new("pass");
@@ -41,7 +68,7 @@ let opaque = RegisteredContext::new(&context!(PASS = "opaque"));
 for _ in 0..3 {
     frame_begin(ContextHandle::ROOT);
     {
-        let _render = scope(&RENDER, opaque.handle());
+        footfall::scope!(&RENDER, opaque.handle());
         counter_add(&UPLOAD_BYTES, opaque.handle(), 4096);
     }
     frame_end(ContextHandle::ROOT);
@@ -52,31 +79,27 @@ let snapshot = runtime.snapshot();
 for counter in snapshot.counters() {
     println!("{} = {} {}", counter.name(), counter.value(), counter.unit().as_str());
 }
-let chrome_trace_json = footfall_export::to_chrome_trace_json(&snapshot.into());
+let chrome_trace_json = footfall::export::to_chrome_trace_json(&snapshot.into());
 # let _ = chrome_trace_json;
 ```
 
-## Crates
-
-| Crate | Role |
-|---|---|
-| `footfall` | Instrumentation API for libraries and applications. |
-| `footfall_core` | The same API, with the reference documentation. |
-| `footfall_runtime` | Bounded in-process capture with snapshots. |
-| `footfall_export` | Chrome Trace JSON export for Perfetto and `chrome://tracing`. |
-| `footfall_tracing` | `tracing` layer that forwards spans and events into Footfall. |
-| `footfall_tracy` | Live Tracy backend. |
-| `footfall_fanout` | Feeds two backends at once, such as a runtime and Tracy. |
-| `footfall_memory` | Scratch-buffer and cache metrics built on counters. |
-| `footfall_session` | Transport-neutral session envelopes for external consumers. |
-| `footfall_session_wtransport` | Serves and fetches sessions over local WebTransport. |
-| `footfall_analysis` | Scope, frame, and counter analysis over snapshots, live or from files. |
+Save the JSON to a file and open it in [Perfetto](https://ui.perfetto.dev).
 
 ## Guides
 
 - [Instrumenting an app](https://github.com/forest-rs/footfall/blob/main/docs/instrumenting-an-app.md)
 - [Session consumer contract](https://github.com/forest-rs/footfall/blob/main/docs/session-consumer-contract.md)
 - [Performance](https://github.com/forest-rs/footfall/blob/main/docs/performance.md)
+- [Examples](https://github.com/forest-rs/footfall/tree/main/examples)
+
+## Crates
+
+Each module is a crate of its own, which other crates can depend on directly:
+`footfall_core` (the instrumentation API), `footfall_runtime`,
+`footfall_export`, `footfall_session`, `footfall_analysis`,
+`footfall_session_wtransport`, `footfall_tracing`, and `footfall_tracy`.
+`footfall_fanout` (two backends at once) and `footfall_memory` (scratch-buffer
+and cache metrics) are separate crates.
 
 ## License
 

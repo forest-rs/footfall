@@ -5,6 +5,11 @@
 
 //! Core instrumentation primitives for Footfall.
 //!
+//! Most code should depend on [`footfall`](https://docs.rs/footfall), which
+//! re-exports this crate at its root and documents how the pieces fit. This
+//! crate is the reference for the rules below, and what the other Footfall
+//! crates build on.
+//!
 //! This crate owns:
 //!
 //! - integer-backed ids
@@ -13,7 +18,7 @@
 //! - semantic contexts, registered once and emitted by handle
 //! - instrumentation levels
 //!
-//! It does not yet own runtime buffering or export logic.
+//! Runtime buffering, export, and transport live in other crates.
 //!
 //! # Descriptors
 //!

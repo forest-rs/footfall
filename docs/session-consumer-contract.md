@@ -16,7 +16,8 @@ Its job is to:
 
 ## Canonical Data Model
 
-The transport-neutral contract lives in `footfall_session`.
+The transport-neutral contract lives in `footfall_session`, which `footfall`
+re-exports as `footfall::session` with the `session` feature.
 
 The important types are:
 
@@ -90,7 +91,8 @@ It should not assume:
 
 ## Discovery Contract
 
-The current local attach path is implemented by `footfall_session_wtransport`.
+The current local attach path is implemented by `footfall_session_wtransport`,
+available as `footfall::wtransport` with the `wtransport` feature.
 Its concrete WebTransport encoding is documented in
 [WebTransport Session Wire Format](session-wire-format.md).
 
@@ -100,7 +102,7 @@ and reports the ones that did not answer:
 
 ```rust,no_run
 # async fn read() -> Result<(), Box<dyn std::error::Error>> {
-use footfall_session_wtransport::SessionClient;
+use footfall::wtransport::SessionClient;
 use std::time::Duration;
 
 let discovery = SessionClient::discover_local(Duration::from_secs(1)).await?;
@@ -207,22 +209,22 @@ stream open.
 
 ## Saving and Reloading
 
-`footfall_session::capture` writes snapshots to a capture file and reads
+`footfall::session::capture` writes snapshots to a capture file and reads
 them back as the same `OwnedSnapshot` values a live consumer receives, so
 live and offline tools share one model, one set of identities, and one
 export path. `CaptureWriter::write_owned` saves snapshots received from a
 session, for example each one a subscription delivers, and `CaptureReader`
 yields them in order.
 
-To analyse a session as it runs, `footfall_analysis::SpanTracker` and
+To analyse a session as it runs, `footfall::analysis::SpanTracker` and
 `FrameTracker` take each window in turn and carry open scopes, open frames,
 and the last counter samples from one to the next, so scopes and frames that
 span windows are paired without keeping the windows.
 
 `OwnedSnapshot::append` joins consecutive windows from one runtime instance
 into one snapshot, counting events neither window held as missed, and
-`footfall_export::to_chrome_trace_json` turns any `OwnedSnapshot` into a
-trace for Perfetto. `footfall_session::codec` encodes and decodes single
+`footfall::export::to_chrome_trace_json` turns any `OwnedSnapshot` into a
+trace for Perfetto. `footfall::session::codec` encodes and decodes single
 envelopes for consumers that carry them some other way.
 
 ## What a UI Actually Needs
