@@ -158,7 +158,8 @@ and size each capacity for what the app emits:
 
 - `counter_capacity`: counter, gauge, and histogram descriptors times the
   contexts each is recorded under. Recording a counter under a context per
-  frame or per item multiplies the keys it needs.
+  frame or per item multiplies the keys it needs; for per-frame values,
+  record under a stable context and use counter samples instead (below).
 - `event_capacity`: two events per scope plus one per marker, flow step,
   message, or resource change, over the span of history you want to keep.
   When it is full, the oldest events are evicted.
@@ -167,6 +168,16 @@ and size each capacity for what the app emits:
   event refers to them.
 
 Each `Drops` count names the capacity to raise.
+
+## Per-Frame Values
+
+With frame markers (`frame_begin` and `frame_end`), each frame end records
+a counter sample for every counter and gauge the frame updated: its value
+at that moment, merged across threads. A counter's change over a frame is
+the difference between consecutive samples, so per-frame upload bytes or
+draw counts need no context per frame. Samples also plot as a time series
+for each counter in the Chrome export. Turn them off with
+`RuntimeBuilder::counter_samples(false)`.
 
 ## What Lives Where
 

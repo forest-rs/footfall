@@ -109,8 +109,9 @@ pub fn write_chrome_trace_json(snapshot: &OwnedSnapshot, writer: &mut impl Write
     let mut unmatched_scope_ends = 0_u64;
     for event in snapshot.events() {
         match build_timed_observation(snapshot, event, &mut scope_tracks)? {
-            Some(json) => events.push(json),
-            None => unmatched_scope_ends += 1,
+            Exported::Event(json) => events.push(json),
+            Exported::UnmatchedScopeEnd => unmatched_scope_ends += 1,
+            Exported::Skipped => {}
         }
     }
 
@@ -428,13 +429,22 @@ fn build_internal_counter_event(at_micros: u64, name: &str, value: u64) -> Strin
     json
 }
 
-/// Builds one timed observation, or returns `None` for a scope end whose
-/// begin is not in the snapshot.
+/// What one timed observation became.
+enum Exported {
+    /// A trace event.
+    Event(String),
+    /// Nothing: a scope end whose begin is not in the snapshot.
+    UnmatchedScopeEnd,
+    /// Nothing: an observation kind this exporter does not know.
+    Skipped,
+}
+
+/// Builds one timed observation.
 fn build_timed_observation(
     snapshot: &OwnedSnapshot,
     event: &OwnedTimedObservation,
     scope_tracks: &mut HashMap<ScopeToken, u64>,
-) -> Result<Option<String>, fmt::Error> {
+) -> Result<Exported, fmt::Error> {
     match event.observation() {
         OwnedObservation::ScopeBegin {
             name,
@@ -469,14 +479,14 @@ fn build_timed_observation(
             json.push_str(",\"context\":");
             write_context(&mut json, context)?;
             json.push_str("}}");
-            Ok(Some(json))
+            Ok(Exported::Event(json))
         }
         OwnedObservation::ScopeEnd { token } => {
             // Close the slice on its begin's track so B/E pairs stay matched
             // even when a scope ends on another thread. An end without a
             // begin in this snapshot would close an unrelated slice.
             let Some(tid) = scope_tracks.remove(token) else {
-                return Ok(None);
+                return Ok(Exported::UnmatchedScopeEnd);
             };
             let mut json = String::new();
             json.push('{');
@@ -488,7 +498,7 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_u64(&mut json, "tid", tid)?;
             json.push('}');
-            Ok(Some(json))
+            Ok(Exported::Event(json))
         }
         OwnedObservation::ResourceCreate {
             kind_name,
@@ -506,7 +516,7 @@ fn build_timed_observation(
             *context_id,
             Some(*size),
         )
-        .map(Some),
+        .map(Exported::Event),
         OwnedObservation::ResourceUpdate {
             kind_name,
             resource_id,
@@ -523,7 +533,7 @@ fn build_timed_observation(
             *context_id,
             Some(*size),
         )
-        .map(Some),
+        .map(Exported::Event),
         OwnedObservation::ResourceDrop {
             kind_name,
             resource_id,
@@ -539,7 +549,7 @@ fn build_timed_observation(
             *context_id,
             None,
         )
-        .map(Some),
+        .map(Exported::Event),
         OwnedObservation::FrameMarker {
             kind,
             phase,
@@ -566,7 +576,7 @@ fn build_timed_observation(
             json.push_str(",\"context\":");
             write_context(&mut json, context)?;
             json.push_str("}}");
-            Ok(Some(json))
+            Ok(Exported::Event(json))
         }
         OwnedObservation::Flow {
             flow_id,
@@ -596,7 +606,7 @@ fn build_timed_observation(
             json.push_str(",\"context\":");
             write_context(&mut json, context)?;
             json.push_str("}}");
-            Ok(Some(json))
+            Ok(Exported::Event(json))
         }
         OwnedObservation::Message {
             name,
@@ -632,10 +642,48 @@ fn build_timed_observation(
             json.push_str(",\"context\":");
             write_context(&mut json, context)?;
             json.push_str("}}");
-            Ok(Some(json))
+            Ok(Exported::Event(json))
+        }
+        OwnedObservation::CounterSample {
+            name,
+            unit,
+            context_id,
+            kind,
+            value,
+            ..
+        } => {
+            // A point on the same track as the counter's final value, so
+            // each counter plots as a series over the capture.
+            let context = snapshot
+                .context(*context_id)
+                .map_or(&[][..], |context| context.entries());
+            let mut json = String::new();
+            json.push('{');
+            write_json_field_str(&mut json, "name", &counter_track_name(name, context))?;
+            json.push(',');
+            write_json_field_str(
+                &mut json,
+                "cat",
+                match kind {
+                    CounterKind::Gauge => "gauge",
+                    _ => "counter",
+                },
+            )?;
+            json.push(',');
+            write_json_field_str(&mut json, "ph", "C")?;
+            json.push(',');
+            write_json_field_u64(&mut json, "ts", event.at_micros())?;
+            json.push(',');
+            write_json_field_u64(&mut json, "pid", 1)?;
+            json.push(',');
+            write_json_field_u64(&mut json, "tid", AGGREGATE_TID)?;
+            json.push_str(",\"args\":{");
+            write_json_field_u64(&mut json, unit.as_str(), *value)?;
+            json.push_str("}}");
+            Ok(Exported::Event(json))
         }
         // Observation kinds this exporter does not know are left out.
-        _ => Ok(None),
+        _ => Ok(Exported::Skipped),
     }
 }
 
@@ -919,6 +967,29 @@ mod tests {
             .into_iter()
             .fold(builder, |builder, event| builder.event(event))
             .build()
+    }
+
+    #[test]
+    fn counter_samples_plot_on_their_counter_track() {
+        let sample = Observation::CounterSample {
+            desc_id: CounterDescId::new(1),
+            name: "upload_bytes",
+            unit: Unit::Bytes,
+            context_id: ContextId::new(1),
+            kind: CounterKind::Counter,
+            value: 4096,
+        };
+        let snapshot = snapshot_with(vec![], vec![timed(0, 12, 1, sample)]);
+
+        let json = to_chrome_trace_json(&snapshot.into());
+        assert!(json.contains(
+            "{\"name\":\"upload_bytes [frame=7]\",\"cat\":\"counter\",\"ph\":\"C\",\"ts\":12,"
+        ));
+        assert!(json.contains("\"args\":{\"bytes\":4096}"));
+        assert!(
+            !json.contains("footfall_unmatched_scope_ends"),
+            "a sample is not an unmatched scope end"
+        );
     }
 
     fn timed(

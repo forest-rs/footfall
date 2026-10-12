@@ -796,6 +796,22 @@ pub enum OwnedObservation {
         /// Per-instance arguments carried by this message.
         args: Vec<OwnedArgEntry>,
     },
+    /// A counter's or gauge's value at the end of a frame; see
+    /// `footfall_runtime::Observation::CounterSample`.
+    CounterSample {
+        /// Counter descriptor id.
+        desc_id: CounterDescId,
+        /// Stable descriptor name.
+        name: String,
+        /// Unit copied from the counter descriptor.
+        unit: Unit,
+        /// Canonical semantic context id.
+        context_id: ContextId,
+        /// Whether the value is additive or gauge-like.
+        kind: CounterKind,
+        /// The value at the end of the frame.
+        value: u64,
+    },
 }
 
 /// Owned versioned session envelope suitable for transport and storage.
@@ -1202,6 +1218,21 @@ fn owned_observation(observation: &Observation) -> Option<OwnedObservation> {
             context_id: *context_id,
             text: text.clone(),
             args: owned_args(*args),
+        },
+        Observation::CounterSample {
+            desc_id,
+            name,
+            unit,
+            context_id,
+            kind,
+            value,
+        } => OwnedObservation::CounterSample {
+            desc_id: *desc_id,
+            name: String::from(*name),
+            unit: *unit,
+            context_id: *context_id,
+            kind: *kind,
+            value: *value,
         },
         _ => return None,
     })
