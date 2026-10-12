@@ -97,6 +97,17 @@ define_id!(
     EventDescId
 );
 
+define_id!(
+    /// Opaque id for one clock descriptor, as [`ClockDesc::id`](crate::ClockDesc::id)
+    /// returns it.
+    ///
+    /// Inside the process the id is derived from the descriptor's address:
+    /// unique among live descriptors within one process run, not stable
+    /// across runs. Runtimes must not expose that value; snapshots carry
+    /// dense, session-scoped ids instead.
+    ClockId
+);
+
 #[cfg(test)]
 mod tests {
     use super::{ContextId, CounterDescId, FlowId, ResourceId, ResourceKindId, ScopeDescId};

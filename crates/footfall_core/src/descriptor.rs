@@ -3,7 +3,7 @@
 
 //! Static descriptors. See the crate docs for the identity rules.
 
-use crate::{CounterDescId, EventDescId, ResourceKindId, ScopeDescId, Unit};
+use crate::{ClockId, CounterDescId, EventDescId, ResourceKindId, ScopeDescId, Unit};
 use core::{fmt, ptr, sync::atomic::AtomicU8};
 
 /// Private marker that keeps descriptors out of `const` evaluation.
@@ -277,6 +277,47 @@ impl ResourceKindDesc {
     }
 }
 
+/// Names a clock other than the backend's own, such as a GPU's timestamp
+/// counter, or the host clock a frame scheduler or display reports in.
+///
+/// Pass it in a [`ClockReading`](crate::ClockReading) to
+/// [`clock_sync`](crate::clock_sync) or [`clock_pair`](crate::clock_pair),
+/// so times read from that clock can be placed on the backend's own
+/// timeline. Snapshots identify it by a [`ClockId`].
+///
+/// Identity is the descriptor's address; see the [crate docs](crate#descriptors) for why
+/// descriptors must be `static` items.
+pub struct ClockDesc {
+    name: &'static str,
+    _static_only: StaticOnly,
+}
+
+impl ClockDesc {
+    /// Creates a new clock descriptor.
+    #[must_use]
+    pub const fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            _static_only: StaticOnly::new(),
+        }
+    }
+
+    /// Returns the opaque id derived from this descriptor's address.
+    ///
+    /// Ids are unique among live descriptors within one process run and are
+    /// not stable across runs.
+    #[must_use]
+    pub fn id(&'static self) -> ClockId {
+        ClockId::new(address_id(self))
+    }
+
+    /// Returns the stable clock name.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
 /// Implements identity equality and a compact `Debug` for a descriptor type.
 macro_rules! descriptor_identity {
     ($name:ident { $($field:ident),* }) => {
@@ -304,6 +345,7 @@ descriptor_identity!(ScopeDesc { name, location });
 descriptor_identity!(EventDesc { name });
 descriptor_identity!(CounterDesc { name, unit });
 descriptor_identity!(ResourceKindDesc { name });
+descriptor_identity!(ClockDesc { name });
 
 #[cfg(test)]
 mod tests {

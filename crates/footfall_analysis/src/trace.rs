@@ -17,7 +17,7 @@ use footfall_core::{
 };
 use footfall_runtime::{CounterKind, Drops, SnapshotMetadata};
 use footfall_session::{
-    OwnedArgEntry, OwnedContextSnapshot, OwnedCounterSnapshot, OwnedHistogramSnapshot,
+    Clocks, OwnedArgEntry, OwnedContextSnapshot, OwnedCounterSnapshot, OwnedHistogramSnapshot,
     OwnedLabelValue, OwnedObservation, OwnedSnapshot, OwnedSourceLocation, SnapshotKind,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -74,6 +74,7 @@ pub struct Trace {
     resources: Vec<Resource>,
     live_resources: HashMap<(ResourceKindId, ResourceId), usize>,
     flows: BTreeMap<FlowId, Flow>,
+    clocks: Clocks,
 }
 
 /// A scope begun and not yet ended.
@@ -278,6 +279,7 @@ impl Trace {
                 self.lose_continuity();
                 collecting = None;
             }
+            self.clocks.observe(event);
             self.ingest(event, at, &mut pushed, &mut collecting);
             self.last_event_at = self.last_event_at.max(at);
         }
@@ -763,6 +765,14 @@ impl Trace {
     #[must_use]
     pub fn observed(&self) -> TimeRange {
         TimeRange::new(self.forgotten_before, self.captured_at)
+    }
+
+    /// Returns the clocks other than the producer's that it recorded syncs
+    /// or pairs for, which convert times read from them, such as GPU
+    /// timestamps, to the trace's time.
+    #[must_use]
+    pub const fn clocks(&self) -> &Clocks {
+        &self.clocks
     }
 
     /// Returns where events are missing, by time.

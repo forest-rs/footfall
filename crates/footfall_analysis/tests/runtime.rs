@@ -9,8 +9,8 @@
 use core::time::Duration;
 use footfall_analysis::{Continuity, GroupBy, OwnedSnapshot, Selection, Trace};
 use footfall_core::{
-    Args, Backend as _, Context, ContextHandle, ContextId, CounterDesc, LabelKey, MarkerKind,
-    MarkerPhase, ScopeDesc,
+    Args, Backend as _, ClockDesc, ClockReading, Context, ContextHandle, ContextId, CounterDesc,
+    LabelKey, MarkerKind, MarkerPhase, ScopeDesc, TickPeriod,
 };
 use footfall_runtime::Runtime;
 
@@ -253,4 +253,29 @@ fn a_span_leads_to_its_code_in_process_and_from_a_capture() {
             .expect("work ran");
         assert_eq!(work.span().location(), None, "ScopeDesc::new records none");
     }
+}
+
+#[test]
+fn a_clock_synced_with_the_runtime_converts_to_trace_time() {
+    static HOST: ClockDesc = ClockDesc::new("host");
+    static GPU: ClockDesc = ClockDesc::new("gpu");
+    let runtime = Runtime::default();
+    // A host clock in microseconds, read as 5,000 just now, and a GPU
+    // clock read at the same moment as the host clock read 5,010.
+    runtime.clock_sync(ClockReading::new(&HOST, 5_000, TickPeriod::MICROSECOND));
+    runtime.clock_pair(
+        ClockReading::new(&GPU, 1_000_000, TickPeriod::NANOSECOND),
+        ClockReading::new(&HOST, 5_010, TickPeriod::MICROSECOND),
+    );
+    let trace = Trace::from_snapshot(&OwnedSnapshot::from(runtime.snapshot()));
+    let clocks = trace.clocks();
+    let host = clocks.find("host").expect("the host clock was synced");
+    let gpu = clocks.find("gpu").expect("the GPU clock was paired");
+    let synced = clocks.to_runtime(host, 5_000).expect("synced").nanos();
+    // 2 µs of GPU time after the pair is 12 µs of host time after the sync.
+    let converted = clocks
+        .to_runtime(gpu, 1_002_000)
+        .expect("paired with the synced host clock");
+    assert_eq!(converted.nanos() - synced, 12_000);
+    assert_eq!(converted.via(), Some(host));
 }

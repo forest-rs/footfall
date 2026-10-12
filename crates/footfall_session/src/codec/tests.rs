@@ -19,10 +19,10 @@ use super::{
     encode_varint, varint_len,
 };
 use crate::{
-    Chunking, Envelope, EnvelopeHeader, OwnedArgEntry, OwnedContextEntry, OwnedContextSnapshot,
-    OwnedCounterSnapshot, OwnedLabelValue, OwnedObservation, OwnedSessionEnvelope,
-    OwnedSessionPayload, OwnedSnapshotSummary, OwnedSourceLocation, OwnedTimedObservation,
-    PROTOCOL_VERSION, Payload, RowCounts, collect_snapshot,
+    Chunking, Envelope, EnvelopeHeader, OwnedArgEntry, OwnedClockTicks, OwnedContextEntry,
+    OwnedContextSnapshot, OwnedCounterSnapshot, OwnedLabelValue, OwnedObservation,
+    OwnedSessionEnvelope, OwnedSessionPayload, OwnedSnapshotSummary, OwnedSourceLocation,
+    OwnedTimedObservation, PROTOCOL_VERSION, Payload, RowCounts, collect_snapshot,
 };
 
 static FRAME: LabelKey = LabelKey::new("frame");
@@ -407,6 +407,63 @@ fn markers_match_their_golden_fixture() {
         "01000000000602\
          0000010500000000\
          0a02010500012a00"
+    );
+    assert_eq!(
+        decode_envelope(&encoded).expect("decoding should succeed"),
+        envelope
+    );
+}
+
+/// Clock readings carry the clock's id, its name the first time, the ticks,
+/// and the tick period as nanoseconds per ticks.
+#[test]
+fn clock_readings_match_their_golden_fixture() {
+    let host = |ticks| {
+        OwnedClockTicks::new(
+            footfall_core::ClockId::new(0),
+            String::from("host"),
+            ticks,
+            footfall_core::TickPeriod::new(125, 3),
+        )
+    };
+    let envelope = OwnedSessionEnvelope::new(
+        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+        OwnedSessionPayload::Events(vec![
+            OwnedTimedObservation::new(
+                0,
+                0,
+                1,
+                OwnedObservation::ClockSync {
+                    clock: host(24_000_000),
+                },
+            ),
+            OwnedTimedObservation::new(
+                9,
+                1,
+                1,
+                OwnedObservation::ClockPair {
+                    first: OwnedClockTicks::new(
+                        footfall_core::ClockId::new(1),
+                        String::from("gpu"),
+                        7_000,
+                        footfall_core::TickPeriod::NANOSECOND,
+                    ),
+                    second: host(24_000_240),
+                },
+            ),
+        ]),
+    );
+    let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
+    // Sync: tag `09`, clock `00` named "host", 24,000,000 ticks, 125/3.
+    // Pair: tag `0a`, clock `01` named "gpu", 7,000 ticks, 1/1; then the
+    // host, whose name was already written, 24,000,240 ticks, 125/3.
+    assert_eq!(
+        to_hex(&encoded),
+        "01000000000602\
+         0000010900\
+         04686f737480ecb80b7d03\
+         1202010a0103677075d8360101\
+         00f0edb80b7d03"
     );
     assert_eq!(
         decode_envelope(&encoded).expect("decoding should succeed"),

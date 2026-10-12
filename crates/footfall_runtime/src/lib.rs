@@ -46,10 +46,11 @@
 //! features.
 
 use footfall_core::{
-    Args, Backend, Context, ContextHandle, ContextId, CounterDesc, CounterDescId, EventDesc,
-    EventDescId, FlowId, FlowPhase, InstallBackendError, InstrumentationLevel, MarkerKind,
-    MarkerPhase, ResourceId, ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, ScopeToken,
-    SourceLocation, Unit, install_backend, set_max_level,
+    Args, Backend, ClockId, ClockReading, Context, ContextHandle, ContextId, CounterDesc,
+    CounterDescId, EventDesc, EventDescId, FlowId, FlowPhase, InstallBackendError,
+    InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ResourceKindId,
+    ScopeDesc, ScopeDescId, ScopeToken, SourceLocation, TickPeriod, Unit, install_backend,
+    set_max_level,
 };
 use std::{
     boxed::Box,
@@ -2253,6 +2254,83 @@ pub enum Observation {
         /// The value at the end of the frame.
         value: u64,
     },
+    /// A clock other than the runtime's read [`ClockTicks::ticks`] at the
+    /// observation's time; see [`footfall_core::clock_sync`].
+    ClockSync {
+        /// The clock's reading.
+        clock: ClockTicks,
+    },
+    /// Two clocks other than the runtime's read these ticks at the same
+    /// moment; see [`footfall_core::clock_pair`].
+    ClockPair {
+        /// The first clock's reading.
+        first: ClockTicks,
+        /// The second clock's reading.
+        second: ClockTicks,
+    },
+}
+
+/// One reading of a clock other than the runtime's, as
+/// [`Observation::ClockSync`] and [`Observation::ClockPair`] carry it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClockTicks {
+    clock_id: ClockId,
+    name: &'static str,
+    ticks: u64,
+    period: TickPeriod,
+}
+
+impl ClockTicks {
+    /// Creates a reading of the clock `clock_id`, named `name`.
+    #[must_use]
+    pub const fn new(
+        clock_id: ClockId,
+        name: &'static str,
+        ticks: u64,
+        period: TickPeriod,
+    ) -> Self {
+        Self {
+            clock_id,
+            name,
+            ticks,
+            period,
+        }
+    }
+
+    /// Returns the clock descriptor's id; see [`Snapshot`].
+    #[must_use]
+    pub const fn clock_id(&self) -> ClockId {
+        self.clock_id
+    }
+
+    /// Returns the clock's name.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// Returns the tick count read.
+    #[must_use]
+    pub const fn ticks(&self) -> u64 {
+        self.ticks
+    }
+
+    /// Returns how long one tick lasts.
+    #[must_use]
+    pub const fn period(&self) -> TickPeriod {
+        self.period
+    }
+}
+
+impl From<ClockReading> for ClockTicks {
+    fn from(reading: ClockReading) -> Self {
+        Self::new(
+            reading.clock().id(),
+            reading.clock().name(),
+            reading.ticks(),
+            reading.period(),
+        )
+    }
 }
 
 impl Observation {
@@ -2268,7 +2346,7 @@ impl Observation {
             | Self::Flow { context_id, .. }
             | Self::Message { context_id, .. }
             | Self::CounterSample { context_id, .. } => Some(*context_id),
-            Self::ScopeEnd { .. } => None,
+            Self::ScopeEnd { .. } | Self::ClockSync { .. } | Self::ClockPair { .. } => None,
         }
     }
 
@@ -2282,7 +2360,7 @@ impl Observation {
             | Self::Flow { context_id, .. }
             | Self::Message { context_id, .. }
             | Self::CounterSample { context_id, .. } => Some(context_id),
-            Self::ScopeEnd { .. } => None,
+            Self::ScopeEnd { .. } | Self::ClockSync { .. } | Self::ClockPair { .. } => None,
         }
     }
 }
@@ -2337,6 +2415,13 @@ impl DescriptorIds {
                 | Observation::ResourceUpdate { kind_id, .. }
                 | Observation::ResourceDrop { kind_id, .. } => {
                     *kind_id = ResourceKindId::new(self.dense(kind_id.get()));
+                }
+                Observation::ClockSync { clock } => {
+                    clock.clock_id = ClockId::new(self.dense(clock.clock_id.get()));
+                }
+                Observation::ClockPair { first, second } => {
+                    first.clock_id = ClockId::new(self.dense(first.clock_id.get()));
+                    second.clock_id = ClockId::new(self.dense(second.clock_id.get()));
                 }
                 Observation::ScopeEnd { .. }
                 | Observation::FrameMarker { .. }
@@ -2757,6 +2842,33 @@ impl Backend for Runtime {
         context: ContextHandle,
     ) {
         self.marker(kind, phase, Some(number), context);
+    }
+
+    fn clock_sync(&self, reading: ClockReading) {
+        if !self.level().captures_markers() {
+            return;
+        }
+        let at_nanos = self.now_nanos();
+        self.push_event_at(
+            Observation::ClockSync {
+                clock: reading.into(),
+            },
+            at_nanos,
+        );
+    }
+
+    fn clock_pair(&self, first: ClockReading, second: ClockReading) {
+        if !self.level().captures_markers() {
+            return;
+        }
+        let at_nanos = self.now_nanos();
+        self.push_event_at(
+            Observation::ClockPair {
+                first: first.into(),
+                second: second.into(),
+            },
+            at_nanos,
+        );
     }
 
     fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: ContextHandle) {
