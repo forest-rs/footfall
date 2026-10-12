@@ -6,8 +6,8 @@ use crate::InstrumentationLevel;
 #[cfg(not(footfall_compile_out))]
 use crate::max_level;
 use crate::{
-    Args, Context, ContextHandle, CounterDesc, EventDesc, FlowId, ResourceId, ResourceKindDesc,
-    ScopeDesc,
+    Args, ClockReading, Context, ContextHandle, CounterDesc, EventDesc, FlowId, ResourceId,
+    ResourceKindDesc, ScopeDesc,
 };
 #[cfg(feature = "std")]
 use std::sync::OnceLock;
@@ -309,6 +309,19 @@ pub trait Backend: Send + Sync {
         self.frame_marker(kind, phase, context);
     }
 
+    /// Observes that a clock other than the backend's own read
+    /// `reading.ticks()` at this moment, so times from that clock can be
+    /// placed on the backend's timeline.
+    fn clock_sync(&self, reading: ClockReading) {
+        let _ = reading;
+    }
+
+    /// Observes two clocks other than the backend's own read at the same
+    /// moment, such as a GPU and host timestamp sampled together.
+    fn clock_pair(&self, first: ClockReading, second: ClockReading) {
+        let _ = (first, second);
+    }
+
     /// Observes one phase of a causal flow.
     fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: ContextHandle) {
         let _ = (flow_id, phase, context);
@@ -546,6 +559,32 @@ pub fn pass_begin(context: ContextHandle) {
 #[cfg_attr(not(footfall_compile_out), inline)]
 pub fn pass_end(context: ContextHandle) {
     frame_marker(MarkerKind::Pass, MarkerPhase::End, context);
+}
+
+/// Records that `reading`'s clock read `reading.ticks()` just now.
+///
+/// Call it right after reading the clock, such as once per frame with the
+/// host clock a frame scheduler uses. Analysis converts that clock's times to
+/// the backend's own from these syncs, interpolating between them, so regular
+/// syncs keep the conversion exact even when the clocks drift.
+#[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
+pub fn clock_sync(reading: ClockReading) {
+    dispatch!(when max_level().captures_markers() => clock_sync(reading));
+}
+
+/// Records two clocks that read the given ticks at the same moment, such as
+/// a GPU timestamp and a host timestamp sampled together by Metal's
+/// `sampleTimestamps`, Vulkan's calibrated timestamps, or Direct3D's clock
+/// calibration.
+///
+/// Analysis converts the first clock's times through the second, so a GPU
+/// clock paired with a host clock that is itself synced with
+/// [`clock_sync`] is placed on the backend's timeline.
+#[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
+pub fn clock_pair(first: ClockReading, second: ClockReading) {
+    dispatch!(when max_level().captures_markers() => clock_pair(first, second));
 }
 
 /// Starts a causal flow under a semantic context.

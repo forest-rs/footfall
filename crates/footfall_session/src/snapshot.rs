@@ -7,11 +7,12 @@ use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use std::collections::{HashMap, HashSet};
 
 use footfall_core::{
-    ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, LabelValue, MarkerKind, MarkerPhase,
-    ResourceId, ResourceKindId, ScopeDescId, ScopeToken, SourceLocation, Unit,
+    ClockId, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, LabelValue, MarkerKind,
+    MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, SourceLocation, TickPeriod,
+    Unit,
 };
 use footfall_runtime::{
-    ContextSnapshot, CounterKind, CounterSnapshot, Drops, EventCursor, EventWindow,
+    ClockTicks, ContextSnapshot, CounterKind, CounterSnapshot, Drops, EventCursor, EventWindow,
     HISTOGRAM_BUCKET_COUNT, HistogramSnapshot, Observation, Snapshot, SnapshotMetadata,
     ThreadSnapshot, TimedObservation,
 };
@@ -1056,6 +1057,80 @@ pub enum OwnedObservation {
         /// The value at the end of the frame.
         value: u64,
     },
+    /// A clock other than the producer's read [`OwnedClockTicks::ticks`] at
+    /// the observation's time; see `footfall_core::clock_sync`.
+    ClockSync {
+        /// The clock's reading.
+        clock: OwnedClockTicks,
+    },
+    /// Two clocks other than the producer's read these ticks at the same
+    /// moment; see `footfall_core::clock_pair`.
+    ClockPair {
+        /// The first clock's reading.
+        first: OwnedClockTicks,
+        /// The second clock's reading.
+        second: OwnedClockTicks,
+    },
+}
+
+/// One reading of a clock other than the producer's, as
+/// [`OwnedObservation::ClockSync`] and [`OwnedObservation::ClockPair`] carry
+/// it. [`Clocks`](crate::Clocks) converts such a clock's times to the
+/// producer's.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnedClockTicks {
+    clock_id: ClockId,
+    name: String,
+    ticks: u64,
+    period: TickPeriod,
+}
+
+impl OwnedClockTicks {
+    /// Creates a reading of the clock `clock_id`, named `name`.
+    #[must_use]
+    pub const fn new(clock_id: ClockId, name: String, ticks: u64, period: TickPeriod) -> Self {
+        Self {
+            clock_id,
+            name,
+            ticks,
+            period,
+        }
+    }
+
+    /// Returns the clock's id, local to the producing runtime instance.
+    #[must_use]
+    pub const fn clock_id(&self) -> ClockId {
+        self.clock_id
+    }
+
+    /// Returns the clock's name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the tick count read.
+    #[must_use]
+    pub const fn ticks(&self) -> u64 {
+        self.ticks
+    }
+
+    /// Returns how long one tick lasts.
+    #[must_use]
+    pub const fn period(&self) -> TickPeriod {
+        self.period
+    }
+}
+
+impl From<&ClockTicks> for OwnedClockTicks {
+    fn from(clock: &ClockTicks) -> Self {
+        Self::new(
+            clock.clock_id(),
+            String::from(clock.name()),
+            clock.ticks(),
+            clock.period(),
+        )
+    }
 }
 
 /// One versioned session envelope, owned, for transport and storage.
@@ -1604,6 +1679,13 @@ fn owned_observation(observation: &Observation) -> Option<OwnedObservation> {
             context_id: *context_id,
             kind: *kind,
             value: *value,
+        },
+        Observation::ClockSync { clock } => OwnedObservation::ClockSync {
+            clock: clock.into(),
+        },
+        Observation::ClockPair { first, second } => OwnedObservation::ClockPair {
+            first: first.into(),
+            second: second.into(),
         },
         _ => return None,
     })

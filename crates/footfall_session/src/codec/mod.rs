@@ -21,13 +21,13 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 
 use footfall_core::{
-    ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, InstrumentationLevel, MarkerKind,
-    MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, Unit,
+    ClockId, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, InstrumentationLevel,
+    MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, TickPeriod, Unit,
 };
 use footfall_runtime::CounterKind;
 
 use crate::{
-    CaptureSettings, Drops, Envelope, EnvelopeHeader, EventWindow, OwnedArgEntry,
+    CaptureSettings, Drops, Envelope, EnvelopeHeader, EventWindow, OwnedArgEntry, OwnedClockTicks,
     OwnedContextEntry, OwnedContextSnapshot, OwnedCounterSnapshot, OwnedHistogramSnapshot,
     OwnedLabelValue, OwnedObservation, OwnedSessionEnvelope, OwnedSessionPayload,
     OwnedSnapshotSummary, OwnedSourceLocation, OwnedTimedObservation, PROTOCOL_VERSION, Payload,
@@ -854,6 +854,36 @@ pub(crate) fn encode_borrowed_observation(
                 *value,
             )?;
         }
+        footfall_runtime::Observation::ClockSync { clock } => {
+            encode_u8(bytes, 9);
+            encode_clock(
+                bytes,
+                names,
+                clock.clock_id(),
+                clock.name(),
+                clock.ticks(),
+                clock.period(),
+            )?;
+        }
+        footfall_runtime::Observation::ClockPair { first, second } => {
+            encode_u8(bytes, 10);
+            encode_clock(
+                bytes,
+                names,
+                first.clock_id(),
+                first.name(),
+                first.ticks(),
+                first.period(),
+            )?;
+            encode_clock(
+                bytes,
+                names,
+                second.clock_id(),
+                second.name(),
+                second.ticks(),
+                second.period(),
+            )?;
+        }
         _ => return Err(unsupported("observation")),
     }
     Ok(())
@@ -1078,6 +1108,15 @@ pub(crate) fn encode_observation(
                 *value,
             )?;
         }
+        OwnedObservation::ClockSync { clock } => {
+            encode_u8(bytes, 9);
+            encode_owned_clock(bytes, names, clock)?;
+        }
+        OwnedObservation::ClockPair { first, second } => {
+            encode_u8(bytes, 10);
+            encode_owned_clock(bytes, names, first)?;
+            encode_owned_clock(bytes, names, second)?;
+        }
     }
     Ok(())
 }
@@ -1148,11 +1187,71 @@ pub(crate) fn decode_observation(
             kind: decode_counter_kind(decode_u8(cursor)?)?,
             value: decode_u64(cursor)?,
         }),
+        9 => Ok(OwnedObservation::ClockSync {
+            clock: decode_clock(cursor, names)?,
+        }),
+        10 => Ok(OwnedObservation::ClockPair {
+            first: decode_clock(cursor, names)?,
+            second: decode_clock(cursor, names)?,
+        }),
         tag => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("unknown observation tag: {tag}"),
         )),
     }
+}
+
+/// Writes a clock reading: the clock's id, its name the first time the id
+/// appears in the payload, the ticks, and the tick period as nanoseconds
+/// per ticks.
+fn encode_clock(
+    bytes: &mut Vec<u8>,
+    names: &mut NameWriter,
+    clock_id: ClockId,
+    name: &str,
+    ticks: u64,
+    period: TickPeriod,
+) -> io::Result<()> {
+    names.encode(bytes, clock_id.get(), name)?;
+    encode_u64(bytes, ticks);
+    encode_u32(bytes, period.nanos());
+    encode_u32(bytes, period.ticks());
+    Ok(())
+}
+
+fn encode_owned_clock(
+    bytes: &mut Vec<u8>,
+    names: &mut NameWriter,
+    clock: &OwnedClockTicks,
+) -> io::Result<()> {
+    encode_clock(
+        bytes,
+        names,
+        clock.clock_id(),
+        clock.name(),
+        clock.ticks(),
+        clock.period(),
+    )
+}
+
+fn decode_clock(cursor: &mut Cursor<'_>, names: &mut NameReader) -> io::Result<OwnedClockTicks> {
+    let clock_id = ClockId::new(names.id(cursor)?);
+    let name = names.name(cursor)?;
+    let ticks = decode_u64(cursor)?;
+    let period_nanos = decode_u32(cursor)?;
+    let period_ticks = decode_u32(cursor)?;
+    if period_ticks == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "a clock's tick period counts zero ticks",
+        ));
+    }
+    Ok(OwnedClockTicks::new(
+        clock_id,
+        name,
+        ticks,
+        TickPeriod::new(period_nanos, period_ticks),
+    ))
 }
 
 fn encode_counter_sample(

@@ -179,6 +179,19 @@ Timestamps are nanoseconds on a monotonic clock that starts at runtime
 creation, so even the shortest scopes have a duration. Analysis works on
 `Duration`s rather than raw timestamps.
 
+## Other Clocks
+
+Work outside the CPU threads is timed by other clocks: a GPU's timestamp
+counter, a display's present times, a frame scheduler's host clock. A
+program names each with a `ClockDesc` and records how it relates to the
+runtime's clock, with syncs (this clock reads N now) and pairs (these two
+clocks read N and M at the same moment). The runtime records the readings
+as events and converts nothing: `footfall_session::Clocks` converts later,
+when every reading is known, interpolating between syncs so drift is
+followed, and through a pair when a clock, like a GPU's, is only related to
+another clock. The same conversion serves analysis and export, and each
+converted time says how it was made.
+
 ## Invariants
 
 - Core emission never allocates and never formats strings.

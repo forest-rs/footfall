@@ -110,6 +110,7 @@ extern crate alloc;
 extern crate std;
 
 mod args;
+mod clock;
 mod context;
 mod descriptor;
 mod emit;
@@ -120,14 +121,18 @@ mod level;
 mod unit;
 
 pub use args::{ARGS_INLINE_CAPACITY, ArgEntry, Args, ArgsCapacityError};
+pub use clock::{ClockReading, TickPeriod};
 pub use context::{CONTEXT_INLINE_CAPACITY, Context, ContextCapacityError, ContextEntry};
-pub use descriptor::{CounterDesc, EventDesc, ResourceKindDesc, ScopeDesc, SourceLocation};
+pub use descriptor::{
+    ClockDesc, CounterDesc, EventDesc, ResourceKindDesc, ScopeDesc, SourceLocation,
+};
 pub use emit::{
-    Backend, FlowPhase, MarkerKind, MarkerPhase, NoopBackend, ScopeGuard, ScopeToken, counter_add,
-    flow_begin, flow_end, flow_step, frame_begin, frame_begin_numbered, frame_end,
-    frame_end_numbered, frame_marker, gauge_set, histogram_record, message, message_with,
-    numbered_marker, pass_begin, pass_end, resource_create, resource_drop, resource_update, scope,
-    scope_begin, scope_begin_with, scope_end, scope_with, transaction_begin, transaction_end,
+    Backend, FlowPhase, MarkerKind, MarkerPhase, NoopBackend, ScopeGuard, ScopeToken, clock_pair,
+    clock_sync, counter_add, flow_begin, flow_end, flow_step, frame_begin, frame_begin_numbered,
+    frame_end, frame_end_numbered, frame_marker, gauge_set, histogram_record, message,
+    message_with, numbered_marker, pass_begin, pass_end, resource_create, resource_drop,
+    resource_update, scope, scope_begin, scope_begin_with, scope_end, scope_with,
+    transaction_begin, transaction_end,
 };
 #[cfg(feature = "std")]
 pub use emit::{InstallBackendError, install_backend};
@@ -135,7 +140,7 @@ pub use emit::{InstallBackendError, install_backend};
 pub use handle::LazyContext;
 pub use handle::{ContextHandle, RegisteredContext, register_context, release_context};
 pub use id::{
-    ContextId, CounterDescId, EventDescId, FlowId, ResourceId, ResourceKindId, ScopeDescId,
+    ClockId, ContextId, CounterDescId, EventDescId, FlowId, ResourceId, ResourceKindId, ScopeDescId,
 };
 pub use label::{LabelKey, LabelValue};
 pub use level::{InstrumentationLevel, max_level, set_max_level};

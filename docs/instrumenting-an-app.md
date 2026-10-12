@@ -231,6 +231,42 @@ for frame_index in 0..3_u64 {
 }
 ```
 
+## Other Clocks
+
+Some times come from clocks other than the runtime's: a GPU's timestamp
+counter, or the host clock a frame scheduler or display reports in, such
+as Mach absolute time or a performance counter. Name each with a static
+`ClockDesc` and tell the runtime how it relates:
+
+- `clock_sync` records that a clock read some ticks just now. Call it
+  right after reading the clock, for example once per frame.
+- `clock_pair` records two clocks read at the same moment, such as the GPU
+  and host timestamps that Metal's `sampleTimestamps`, Vulkan's calibrated
+  timestamps, or Direct3D's clock calibration return together.
+
+Analysis converts a clock's times to the runtime's from these readings,
+interpolating between syncs so drift between the clocks is followed. A
+GPU clock paired with a synced host clock converts through it.
+
+```rust
+use footfall::{ClockDesc, ClockReading, TickPeriod};
+
+static HOST: ClockDesc = ClockDesc::new("host");
+static GPU: ClockDesc = ClockDesc::new("gpu");
+
+// Mach absolute time on Apple silicon: 125/3 ns per tick.
+let host_period = TickPeriod::new(125, 3);
+let host_now: u64 = 1_000_000; // read the host clock here
+footfall::clock_sync(ClockReading::new(&HOST, host_now, host_period));
+
+// A GPU and host timestamp sampled together.
+let (gpu_ticks, host_ticks): (u64, u64) = (7_000, 1_000_240);
+footfall::clock_pair(
+    ClockReading::new(&GPU, gpu_ticks, TickPeriod::NANOSECOND),
+    ClockReading::new(&HOST, host_ticks, host_period),
+);
+```
+
 ## What Lives Where
 
 Call sites should stay in subsystem code:

@@ -285,10 +285,20 @@ thread id, then a `u8` observation tag and its fields:
 | `6` | flow | flow id `u64`, phase `u8` (`0` begin, `1` step, `2` end), context id `u64` |
 | `7` | message | descriptor id `u64`, name `name`, context id `u64`, text `string`, args |
 | `8` | counter sample | descriptor id `u64`, name `name`, unit `u8`, context id `u64`, kind `u8`, value `u64` |
+| `9` | clock sync | clock |
+| `10` | clock pair | clock, clock |
 
 A counter sample is a counter's or gauge's value at a frame end, recorded
 for each one the frame updated; a counter's change over a frame is the
 difference from its previous sample.
+
+A `clock` is one reading of a clock other than the producer's: the clock
+descriptor's id `u64`, its name `name`, the ticks read `u64`, and the tick
+period as nanoseconds `u32` per ticks `u32` (a tick lasts
+`nanoseconds / ticks` nanoseconds; the ticks are never `0`). A
+clock sync says the clock read those ticks at the row's time; a clock pair
+says two clocks read their ticks at the same moment, and its row's time
+means nothing.
 
 `args` is a `u8` entry count, at most `footfall_core::ARGS_INLINE_CAPACITY`,
 followed by that many entries of key `string` and label value. Message text is

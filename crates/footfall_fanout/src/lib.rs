@@ -24,7 +24,7 @@
 //! ```
 
 use footfall_core::{
-    Args, Backend, Context, ContextHandle, CounterDesc, EventDesc, FlowId, FlowPhase,
+    Args, Backend, ClockReading, Context, ContextHandle, CounterDesc, EventDesc, FlowId, FlowPhase,
     InstallBackendError, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ScopeDesc,
     ScopeToken, install_backend,
 };
@@ -187,6 +187,16 @@ impl Backend for Fanout {
     ) {
         self.primary.numbered_marker(kind, phase, number, context);
         self.secondary.numbered_marker(kind, phase, number, context);
+    }
+
+    fn clock_sync(&self, reading: ClockReading) {
+        self.primary.clock_sync(reading);
+        self.secondary.clock_sync(reading);
+    }
+
+    fn clock_pair(&self, first: ClockReading, second: ClockReading) {
+        self.primary.clock_pair(first, second);
+        self.secondary.clock_pair(first, second);
     }
 
     fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: ContextHandle) {

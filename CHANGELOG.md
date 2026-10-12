@@ -17,6 +17,9 @@ The first release.
   `static` descriptor and attributed to a registered semantic context.
 - Markers can carry the program's own frame number, so overlapping frames
   pair correctly and later observations can find a frame by number.
+- Clock syncs and pairs relate other clocks, such as a GPU's or a frame
+  scheduler's host clock, to the runtime's, and `Clocks` converts their
+  times, following drift between syncs.
 - `scope!` for a scope that lasts to the end of the block; `context!` and
   `args!` for labels and per-instance arguments.
 - Instrumentation levels, and `--cfg footfall_compile_out` to compile every

@@ -62,6 +62,7 @@ extern crate std;
 mod assembled;
 #[cfg(feature = "std")]
 pub mod capture;
+mod clocks;
 #[cfg(feature = "std")]
 pub mod codec;
 mod error;
@@ -72,6 +73,8 @@ mod snapshot;
 pub use assembled::{AppendError, AssembleError, OwnedSnapshot};
 // Types that snapshots carry as they are, re-exported so consumers can name
 // and match them without depending on `footfall_core` or `footfall_runtime`.
+#[cfg(feature = "std")]
+pub use clocks::{ClockInfo, Clocks, Converted};
 pub use error::SessionErrorCode;
 pub use footfall_core::{
     ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, InstrumentationLevel, MarkerKind,
@@ -81,13 +84,12 @@ pub use footfall_core::{
 pub use footfall_runtime::{
     CaptureSettings, CounterKind, Drops, EventCursor, EventWindow, SnapshotMetadata, ThreadSnapshot,
 };
-#[cfg(feature = "std")]
 pub use snapshot::{
-    Chunking, Consumer, Envelope, EnvelopeHeader, OwnedArgEntry, OwnedContextEntry,
-    OwnedContextSnapshot, OwnedCounterSnapshot, OwnedHistogramSnapshot, OwnedLabelValue,
-    OwnedObservation, OwnedSessionEnvelope, OwnedSessionPayload, OwnedSnapshotSummary,
-    OwnedSourceLocation, OwnedTimedObservation, Payload, RowCounts, SnapshotKind, SnapshotSummary,
-    collect_snapshot, publish_changes, publish_snapshot,
+    Chunking, Consumer, Envelope, EnvelopeHeader, OwnedArgEntry, OwnedClockTicks,
+    OwnedContextEntry, OwnedContextSnapshot, OwnedCounterSnapshot, OwnedHistogramSnapshot,
+    OwnedLabelValue, OwnedObservation, OwnedSessionEnvelope, OwnedSessionPayload,
+    OwnedSnapshotSummary, OwnedSourceLocation, OwnedTimedObservation, Payload, RowCounts,
+    SnapshotKind, SnapshotSummary, collect_snapshot, publish_changes, publish_snapshot,
 };
 
 /// Current protocol version for Footfall session messages.
