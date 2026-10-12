@@ -256,6 +256,13 @@ impl Runtime {
         self.instance_id
     }
 
+    /// Returns the operating-system process id reported in snapshots, or `0`
+    /// on platforms without one.
+    #[must_use]
+    pub const fn process_id(&self) -> u32 {
+        self.process_id
+    }
+
     /// Returns the process name reported in snapshots.
     #[must_use]
     pub fn process_name(&self) -> &str {

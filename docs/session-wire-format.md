@@ -94,6 +94,8 @@ Each session announcement is:
 1. session id `string`
 2. process name `string`
 3. session name `option<string>`
+4. `u64` instance id of the serving runtime, or `0`
+5. `u32` process id of the producer, or `0`
 
 Snapshot response payload:
 

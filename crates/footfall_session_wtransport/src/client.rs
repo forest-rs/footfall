@@ -52,9 +52,10 @@ pub fn default_local_url() -> String {
 /// # async fn read() -> Result<(), footfall_session_wtransport::ClientError> {
 /// use footfall_session_wtransport::SessionClient;
 ///
-/// let client = SessionClient::local().await?;
-/// let discovery = client.discover().await?;
+/// // Every session of every producer on this machine.
+/// let discovery = SessionClient::discover_local(std::time::Duration::from_secs(1)).await?;
 /// let session = &discovery.sessions()[0];
+/// let client = session.client();
 ///
 /// let first = client.fetch(session.id(), None).await?;
 /// // Later: only the events recorded since the first read.
@@ -108,15 +109,10 @@ impl SessionClient {
     /// Returns a client for every session server registered on this
     /// machine, default port first; see [`LocalSessionServer`](crate::LocalSessionServer).
     ///
-    /// A registration can outlive a producer that crashed, so a client in
-    /// the list may fail with [`ClientError::TimedOut`]; skip it.
+    /// Registrations of producers that exited without unregistering are
+    /// recognized by their port being free and removed. Returns an empty
+    /// list when no producer has registered.
     pub async fn local_servers() -> Result<Vec<Self>, ClientError> {
-        let certificate_hash = SessionIdentity::load_localhost_certificate_hash()
-            .await
-            .map_err(|source| ClientError::LocalIdentity {
-                path: SessionIdentity::localhost_certificate_path().ok(),
-                source,
-            })?;
         let directory = local_registry_directory().map_err(ClientError::Io)?;
         let mut entries = match fs::read_dir(&directory).await {
             Ok(entries) => entries,
@@ -132,12 +128,27 @@ impl SessionClient {
             else {
                 continue;
             };
+            // A server holds its port while it runs, so a port anyone can
+            // bind belongs to a producer that exited without unregistering.
+            if std::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, port)).is_ok() {
+                let _ = fs::remove_file(entry.path()).await;
+                continue;
+            }
             let url = fs::read_to_string(entry.path())
                 .await
                 .map_err(ClientError::Io)?;
             servers.push((port != DEFAULT_LOCAL_PORT, port, url.trim().to_owned()));
         }
+        if servers.is_empty() {
+            return Ok(Vec::new());
+        }
         servers.sort();
+        let certificate_hash = SessionIdentity::load_localhost_certificate_hash()
+            .await
+            .map_err(|source| ClientError::LocalIdentity {
+                path: SessionIdentity::localhost_certificate_path().ok(),
+                source,
+            })?;
         Ok(servers
             .into_iter()
             .map(|(_, _, url)| Self::new(url, certificate_hash))
@@ -146,18 +157,32 @@ impl SessionClient {
 
     /// Discovers the sessions of every local server.
     ///
-    /// Asks each server [`local_servers`](Self::local_servers) lists for its
-    /// sessions, waiting at most `timeout` for each, and returns every
-    /// session found with a client for its server, plus the servers that did
-    /// not answer and why.
+    /// Asks every server [`local_servers`](Self::local_servers) lists for its
+    /// sessions at once, waiting at most `timeout` for each, and returns
+    /// every session found with a client for its server, plus the servers
+    /// that did not answer and why. The clients use
+    /// [`DEFAULT_TIMEOUT`](Self::DEFAULT_TIMEOUT) for later requests.
+    /// Returns an empty discovery when no producer has registered.
     pub async fn discover_local(timeout: Duration) -> Result<LocalDiscovery, ClientError> {
+        let mut requests = tokio::task::JoinSet::new();
+        for (order, client) in Self::local_servers().await?.into_iter().enumerate() {
+            requests.spawn(async move {
+                let found = client.clone().with_timeout(timeout).discover().await;
+                (order, client, found)
+            });
+        }
+        let mut answers = Vec::new();
+        while let Some(answer) = requests.join_next().await {
+            answers.push(answer.map_err(|error| ClientError::Io(io::Error::other(error)))?);
+        }
+        answers.sort_by_key(|(order, ..)| *order);
+
         let mut discovery = LocalDiscovery {
             sessions: Vec::new(),
             unreachable: Vec::new(),
         };
-        for client in Self::local_servers().await? {
-            let client = client.with_timeout(timeout);
-            match client.discover().await {
+        for (_, client, found) in answers {
+            match found {
                 Ok(found) => {
                     for announcement in found.sessions {
                         discovery.sessions.push(LocalSession {
@@ -472,12 +497,44 @@ impl LocalDiscovery {
         &self.sessions
     }
 
-    /// Returns the first session with the given id.
-    #[must_use]
-    pub fn session(&self, id: &str) -> Option<&LocalSession> {
-        self.sessions
+    /// Returns the session with the given id.
+    ///
+    /// Fails when no local producer offers it, listing the ids they do, and
+    /// when several do, listing each, since session ids are only unique per
+    /// server: pick one by process name or id from
+    /// [`sessions`](Self::sessions).
+    pub fn session(&self, id: &str) -> Result<&LocalSession, FindSessionError> {
+        let mut matches = self
+            .sessions
             .iter()
-            .find(|session| session.announcement.id() == id)
+            .filter(|session| session.announcement.id() == id);
+        match (matches.next(), matches.next()) {
+            (Some(session), None) => Ok(session),
+            (None, _) => Err(FindSessionError::NotFound {
+                id: String::from(id),
+                offered: self
+                    .sessions
+                    .iter()
+                    .map(|session| String::from(session.id()))
+                    .collect(),
+            }),
+            (Some(_), Some(_)) => Err(FindSessionError::Ambiguous {
+                id: String::from(id),
+                producers: self
+                    .sessions
+                    .iter()
+                    .filter(|session| session.announcement.id() == id)
+                    .map(|session| {
+                        format!(
+                            "{} (pid {}) at {}",
+                            session.announcement.process_name(),
+                            session.announcement.process_id(),
+                            session.client.url()
+                        )
+                    })
+                    .collect(),
+            }),
+        }
     }
 
     /// Returns the registered servers that did not answer, by URL, with the
@@ -488,6 +545,44 @@ impl LocalDiscovery {
         &self.unreachable
     }
 }
+
+/// Why [`LocalDiscovery::session`] found no single session.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum FindSessionError {
+    /// No local producer offers the session.
+    NotFound {
+        /// The id asked for.
+        id: String,
+        /// The session ids local producers do offer.
+        offered: Vec<String>,
+    },
+    /// Several local producers offer a session with this id.
+    Ambiguous {
+        /// The id asked for.
+        id: String,
+        /// Each producer offering it, by process name, process id, and URL.
+        producers: Vec<String>,
+    },
+}
+
+impl fmt::Display for FindSessionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotFound { id, offered } => write!(
+                formatter,
+                "no local producer offers session `{id}`; local sessions: {offered:?}"
+            ),
+            Self::Ambiguous { id, producers } => write!(
+                formatter,
+                "several local producers offer session `{id}`: {}",
+                producers.join(", ")
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FindSessionError {}
 
 /// One session on a local server.
 #[derive(Clone, Debug)]
@@ -645,7 +740,7 @@ impl fmt::Display for ClientError {
             Self::CertificateRejected { url, problem } => match problem {
                 CertificateProblem::HashMismatch => write!(
                     formatter,
-                    "the certificate of {url} does not match the pinned hash: the server has another identity, or renewed its certificate; re-read the server's certificate hash"
+                    "the certificate of {url} does not match the pinned hash: the server renewed its certificate, has its own identity, or is a producer using another state directory (FOOTFALL_STATE_DIR); re-read the hash, or find local producers with discover_local"
                 ),
                 CertificateProblem::Expired => write!(
                     formatter,
@@ -677,8 +772,9 @@ impl fmt::Display for ClientError {
             Self::LocalIdentity { path, source } => match path {
                 Some(path) => write!(
                     formatter,
-                    "cannot read the local session certificate at {}: {source}; start a local producer first",
-                    path.display()
+                    "cannot read the local session certificate at {} ({}); start a local producer first",
+                    path.display(),
+                    source.kind()
                 ),
                 None => write!(
                     formatter,

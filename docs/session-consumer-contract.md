@@ -94,15 +94,18 @@ The current local attach path is implemented by `footfall_session_wtransport`.
 Its concrete WebTransport encoding is documented in
 [WebTransport Session Wire Format](session-wire-format.md).
 
-A Rust consumer uses `SessionClient`:
+A Rust consumer finds every session on the machine with
+`SessionClient::discover_local`, which asks each registered producer at once
+and reports the ones that did not answer:
 
 ```rust,no_run
-# async fn read() -> Result<(), footfall_session_wtransport::ClientError> {
+# async fn read() -> Result<(), Box<dyn std::error::Error>> {
 use footfall_session_wtransport::SessionClient;
+use std::time::Duration;
 
-let client = SessionClient::local().await?;
-let discovery = client.discover().await?;
-let session = &discovery.sessions()[0];
+let discovery = SessionClient::discover_local(Duration::from_secs(1)).await?;
+let session = discovery.session("main")?;
+let client = session.client();
 let snapshot = client.fetch(session.id(), None).await?;
 let next = client.fetch(session.id(), Some(snapshot.next_cursor())).await?;
 # let _ = next;
@@ -110,18 +113,26 @@ let next = client.fetch(session.id(), Some(snapshot.next_cursor())).await?;
 # }
 ```
 
+Session ids are unique per producer, not per machine, so
+`LocalDiscovery::session` fails, listing the producers, when several offer
+the same id; each announcement carries the producer's process name, process
+id, and runtime instance id to choose by. `SessionClient::new(url, hash)`
+connects to one known server, and `SessionClient::local()` to whichever
+producer holds the default port.
+
 `fetch` returns an `OwnedSnapshot`, reassembled from its envelopes and
 checked against the publication contract. Consumers that handle envelopes
 themselves, for example from another transport, use
 `OwnedSnapshot::from_envelopes`, which rejects a publication that breaks
 the contract with an `AssembleError` naming the chunk and the rule.
 
-Discovery returns the server's protocol version and its
+Discovery returns each server's protocol version and its
 `SessionAnnouncement` rows, each carrying:
 
 - `id`
 - `process_name`
 - `session_name`
+- `instance_id` and `process_id` of the producer
 
 ## Errors
 
@@ -139,6 +150,8 @@ Every client failure is a `ClientError` variant a consumer can act on:
 - `Incompatible`: the server speaks a protocol version the client cannot
   decode, named with both versions
 - `Malformed`: the response broke the wire format or publication contract
+- `Closed`: the server closed the connection, usually because the producer
+  stopped
 - `LocalIdentity`: the local certificate could not be read, usually because
   no local producer has run yet
 - `InvalidUrl`, `Unreachable`, and `Io` for the remaining transport failures

@@ -117,7 +117,8 @@ pub(crate) async fn encode_session_announcement_stream(
         }
         None => write_u8_stream(send, 0).await?,
     }
-    Ok(())
+    write_u64(send, session.instance_id).await?;
+    write_u32(send, session.process_id).await
 }
 
 pub(crate) async fn decode_session_announcement_stream(
@@ -135,10 +136,14 @@ pub(crate) async fn decode_session_announcement_stream(
             ));
         }
     };
+    let instance_id = read_u64(recv).await?;
+    let process_id = read_u32(recv).await?;
     Ok(SessionAnnouncement {
         id,
         process_name,
         session_name,
+        instance_id,
+        process_id,
     })
 }
 

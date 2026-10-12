@@ -31,6 +31,10 @@ pub struct SessionAnnouncement {
     pub(crate) process_name: String,
     /// Optional capture-session label.
     pub(crate) session_name: Option<String>,
+    /// The serving runtime's instance id, or `0` when not given.
+    pub(crate) instance_id: u64,
+    /// The producer's operating-system process id, or `0` when not given.
+    pub(crate) process_id: u32,
 }
 
 impl SessionAnnouncement {
@@ -65,7 +69,32 @@ impl SessionAnnouncement {
             id: id.into(),
             process_name: process_name.into(),
             session_name,
+            instance_id: 0,
+            process_id: 0,
         }
+    }
+
+    /// Sets the identity of the producer behind the session: its runtime
+    /// instance id and operating-system process id.
+    #[must_use]
+    pub const fn with_producer(mut self, instance_id: u64, process_id: u32) -> Self {
+        self.instance_id = instance_id;
+        self.process_id = process_id;
+        self
+    }
+
+    /// Returns the serving runtime's instance id, which changes when the
+    /// producer restarts, or `0` when the server did not give one.
+    #[must_use]
+    pub const fn instance_id(&self) -> u64 {
+        self.instance_id
+    }
+
+    /// Returns the producer's operating-system process id, which tells apart
+    /// producers offering the same session id, or `0` when not given.
+    #[must_use]
+    pub const fn process_id(&self) -> u32 {
+        self.process_id
     }
 }
 
