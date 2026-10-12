@@ -212,6 +212,33 @@ macro_rules! scope_desc {
     };
 }
 
+/// Begins a scope that lasts until the end of the enclosing block.
+///
+/// This binds the guard [`scope`] returns to a hidden variable, so the scope
+/// cannot end early by mistake, as `let _ = scope(..)` would make it. Pass
+/// [`Args`] as a third argument to record per-instance values.
+///
+/// ```
+/// use footfall_core::{ContextHandle, ScopeDesc, args};
+///
+/// static RECORD: ScopeDesc = ScopeDesc::new("record");
+///
+/// fn record(items: u32) {
+///     footfall_core::scope!(&RECORD, ContextHandle::ROOT, args!("items" => items));
+///     // ... the scope covers the rest of this block.
+/// }
+/// # record(3);
+/// ```
+#[macro_export]
+macro_rules! scope {
+    ($desc:expr, $context:expr $(,)?) => {
+        let _footfall_scope = $crate::scope($desc, $context);
+    };
+    ($desc:expr, $context:expr, $args:expr $(,)?) => {
+        let _footfall_scope = $crate::scope_with($desc, $context, &$args);
+    };
+}
+
 /// Builds a [`CounterDesc`].
 ///
 /// Use the `count` and `bytes` forms for common counter units. Assign the

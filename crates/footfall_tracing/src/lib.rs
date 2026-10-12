@@ -20,6 +20,12 @@
 //! it are attributed to it. A span with no such fields shares its parent's
 //! context, and spans outside any span with no fields use the root context.
 //!
+//! A span's context comes only from its own fields and its parent `tracing`
+//! span, not from footfall scopes or contexts around it, so a span recorded
+//! inside a footfall scope is attributed by its `tracing` ancestry alone.
+//! Give spans the fields you group by, or wrap the call in a footfall scope
+//! under the context you want.
+//!
 //! Descriptors are interned per callsite. `tracing` callsite metadata is
 //! `&'static`, so descriptor names and source locations come straight from
 //! the callsite. Each layer leaks one descriptor per callsite it sees, so

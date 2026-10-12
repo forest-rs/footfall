@@ -100,6 +100,8 @@ fn spans_and_frames_answer_frame_loop_questions() {
         })
         .collect();
     assert_eq!(uploads, [Some(1000), Some(2000), Some(3000)]);
+    assert_eq!(frames[2].total_change("upload_bytes"), Some(3000));
+    assert_eq!(frames[2].total_change("missing"), None);
 
     // The slow frame's spans are its own.
     let slow = &frames[1];

@@ -83,8 +83,9 @@ The low-level `scope_begin` and `scope_end` calls remain available when a scope
 crosses lexical boundaries.
 
 A scope lasts as long as its guard. Bind the guard to a named variable such as
-`_scope`; `let _ = scope(..)` drops the guard immediately and records an empty
-scope, even though the compiler's `must_use` hint suggests that form.
+`_scope`, or use `footfall::scope!(&RECORD_SCOPE, handle)`, which covers the
+rest of the block; `let _ = scope(..)` drops the guard immediately and records
+an empty scope, even though the compiler's `must_use` hint suggests that form.
 
 Descriptors are identified by address, so declare them as `static` items,
 never `const`; the compiler rejects a `const` descriptor where one is
