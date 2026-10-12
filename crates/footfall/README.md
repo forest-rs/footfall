@@ -16,11 +16,14 @@ chooses where the data goes.
 ## Quick start
 
 ```rust
-use footfall::{CounterDesc, LabelKey, RegisteredContext, ScopeDesc, context, counter_add, scope};
+use footfall::{
+    ContextHandle, CounterDesc, LabelKey, RegisteredContext, ScopeDesc, context, counter_add,
+    frame_begin, frame_end, scope,
+};
 use footfall_runtime::Runtime;
 
 // Descriptors and label keys are `static` items, declared once.
-static FRAME: LabelKey = LabelKey::new("frame");
+static PASS: LabelKey = LabelKey::new("pass");
 static RENDER: ScopeDesc = ScopeDesc::new("render");
 static UPLOAD_BYTES: CounterDesc = CounterDesc::bytes("upload_bytes");
 
@@ -30,11 +33,18 @@ let runtime = Runtime::builder()
     .install_global()
     .expect("no other backend is installed");
 
-// Register a context once per semantic owner, then emit with its handle.
-let frame = RegisteredContext::new(&context!(FRAME = 1_u32));
-{
-    let _render = scope(&RENDER, frame.handle());
-    counter_add(&UPLOAD_BYTES, frame.handle(), 4096);
+// Register a context once per long-lived owner, then emit with its handle.
+let opaque = RegisteredContext::new(&context!(PASS = "opaque"));
+
+// Each frame: mark it, and do the work under the owner's context. Frame ends
+// record each counter's value, which gives per-frame changes.
+for _ in 0..3 {
+    frame_begin(ContextHandle::ROOT);
+    {
+        let _render = scope(&RENDER, opaque.handle());
+        counter_add(&UPLOAD_BYTES, opaque.handle(), 4096);
+    }
+    frame_end(ContextHandle::ROOT);
 }
 
 // Read back what was captured, or export it for a trace viewer.

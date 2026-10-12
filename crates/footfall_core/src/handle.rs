@@ -96,9 +96,11 @@ pub fn register_context(context: &Context) -> ContextHandle {
 
 /// Releases a handle returned by [`register_context`].
 ///
-/// Backends may keep resolving a released handle for observations already
-/// recorded, but new emissions with it are attributed to the root context.
-/// Releasing [`ContextHandle::ROOT`] does nothing.
+/// Do not emit with a handle after releasing it. Backends keep resolving it
+/// for observations already recorded; `footfall_runtime` attributes events
+/// recorded with it afterwards to the root context and counts them, and
+/// counts counter rows updated with it afterwards, since aggregated rows
+/// cannot be split. Releasing [`ContextHandle::ROOT`] does nothing.
 pub fn release_context(handle: ContextHandle) {
     #[cfg(all(feature = "std", not(footfall_compile_out)))]
     if !handle.is_root() {

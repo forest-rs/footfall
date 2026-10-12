@@ -81,7 +81,7 @@ impl ScopeToken {
 /// [`ScopeGuard::end`] when a scope must end before the guard leaves lexical
 /// scope.
 #[derive(Debug)]
-#[must_use = "dropping a ScopeGuard immediately ends the scope"]
+#[must_use = "the scope lasts as long as this guard: bind it with `let _scope = ...`; `let _ = ...` ends the scope at once"]
 pub struct ScopeGuard {
     token: ScopeToken,
     active: bool,
@@ -383,6 +383,10 @@ pub fn scope_end(token: ScopeToken) {
 }
 
 /// Begins a scope and returns a guard that ends it on drop.
+///
+/// Bind the guard to a named variable, such as `_scope`: `let _ = scope(..)`
+/// drops it at once and records an empty scope.
+#[must_use = "the scope lasts as long as this guard: bind it with `let _scope = ...`; `let _ = ...` ends the scope at once"]
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
 pub fn scope(desc: &'static ScopeDesc, context: ContextHandle) -> ScopeGuard {
@@ -390,6 +394,9 @@ pub fn scope(desc: &'static ScopeDesc, context: ContextHandle) -> ScopeGuard {
 }
 
 /// Begins a guarded scope carrying per-instance arguments.
+///
+/// Bind the guard to a named variable; see [`scope`].
+#[must_use = "the scope lasts as long as this guard: bind it with `let _scope = ...`; `let _ = ...` ends the scope at once"]
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
 pub fn scope_with(desc: &'static ScopeDesc, context: ContextHandle, args: &Args) -> ScopeGuard {

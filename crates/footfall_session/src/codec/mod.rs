@@ -279,6 +279,17 @@ pub(crate) fn decode_snapshot_summary(cursor: &mut Cursor<'_>) -> io::Result<Own
     ))
 }
 
+fn decode_bool(cursor: &mut Cursor<'_>, what: &str) -> io::Result<bool> {
+    match decode_u8(cursor)? {
+        0 => Ok(false),
+        1 => Ok(true),
+        tag => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid {what}: {tag}"),
+        )),
+    }
+}
+
 fn encode_context_ids(bytes: &mut Vec<u8>, ids: &[ContextId]) -> io::Result<()> {
     encode_len(bytes, ids.len())?;
     for id in ids {
@@ -303,6 +314,7 @@ pub(crate) fn encode_snapshot_metadata(
     encode_string(bytes, metadata.process_name())?;
     encode_optional_string(bytes, metadata.session_name())?;
     encode_u64(bytes, metadata.instance_id());
+    encode_u32(bytes, metadata.process_id());
     encode_u64(bytes, metadata.wall_clock_anchor_micros());
     encode_string(bytes, metadata.producer_version())?;
     let capture = metadata.capture();
@@ -310,6 +322,10 @@ pub(crate) fn encode_snapshot_metadata(
     encode_u64(bytes, usize_to_u64(capture.counter_capacity()));
     encode_u64(bytes, usize_to_u64(capture.event_capacity()));
     encode_u64(bytes, usize_to_u64(capture.context_capacity()));
+    encode_u8(
+        bytes,
+        u8::from(capture.counter_samples()) | (u8::from(capture.compiled_out()) << 1),
+    );
     Ok(())
 }
 
@@ -317,6 +333,7 @@ pub(crate) fn decode_snapshot_metadata(cursor: &mut Cursor<'_>) -> io::Result<Sn
     let process_name = decode_string(cursor)?;
     let session_name = decode_optional_string(cursor, "session name")?;
     let instance_id = decode_u64(cursor)?;
+    let process_id = decode_u32(cursor)?;
     let wall_clock_anchor_micros = decode_u64(cursor)?;
     let producer_version = decode_string(cursor)?;
     let capture = CaptureSettings::new(
@@ -325,8 +342,19 @@ pub(crate) fn decode_snapshot_metadata(cursor: &mut Cursor<'_>) -> io::Result<Sn
         decode_u64_as_usize(cursor)?,
         decode_u64_as_usize(cursor)?,
     );
+    let flags = decode_u8(cursor)?;
+    if flags & !0b11 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unknown capture flags: {flags:#04x}"),
+        ));
+    }
+    let capture = capture
+        .with_counter_samples(flags & 0b01 != 0)
+        .with_compiled_out(flags & 0b10 != 0);
     let metadata = SnapshotMetadata::new(process_name)
         .with_instance_id(instance_id)
+        .with_process_id(process_id)
         .with_wall_clock_anchor_micros(wall_clock_anchor_micros)
         .with_producer_version(producer_version)
         .with_capture(capture);
@@ -424,6 +452,7 @@ pub(crate) fn encode_contexts(
     encode_len(bytes, contexts.len())?;
     for context in contexts {
         encode_u64(bytes, context.id().get());
+        encode_u8(bytes, u8::from(context.is_released()));
         encode_len(bytes, context.entries().len())?;
         for entry in context.entries() {
             encode_string(bytes, entry.key())?;
@@ -440,6 +469,7 @@ pub(crate) fn encode_borrowed_contexts(
     encode_len(bytes, contexts.len())?;
     for context in contexts {
         encode_u64(bytes, context.id().get());
+        encode_u8(bytes, u8::from(context.is_released()));
         encode_len(bytes, context.context().len())?;
         for entry in context.context().iter() {
             encode_string(bytes, entry.key().name())?;
@@ -454,6 +484,7 @@ pub(crate) fn decode_contexts(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedCo
     let mut contexts = Vec::with_capacity(len);
     for _ in 0..len {
         let id = ContextId::new(decode_u64(cursor)?);
+        let released = decode_bool(cursor, "context released flag")?;
         let entry_len =
             decode_bounded_len(cursor, MAX_CONTEXT_ENTRIES_PER_CONTEXT, "context entries")?;
         let mut entries = Vec::with_capacity(entry_len);
@@ -463,7 +494,7 @@ pub(crate) fn decode_contexts(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedCo
                 decode_label_value(cursor)?,
             ));
         }
-        contexts.push(OwnedContextSnapshot::new(id, entries));
+        contexts.push(OwnedContextSnapshot::new(id, entries).with_released(released));
     }
     Ok(contexts)
 }
@@ -844,16 +875,20 @@ pub(crate) fn decode_args(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedArgEnt
 pub(crate) fn encode_drops(bytes: &mut Vec<u8>, drops: Drops) {
     encode_u64(bytes, drops.refused_contexts());
     encode_u64(bytes, drops.unattributed());
+    encode_u64(bytes, drops.updated_after_release());
     encode_u64(bytes, drops.counter_updates());
     encode_u64(bytes, drops.evicted_events());
+    encode_u64(bytes, drops.retired_rows());
 }
 
 pub(crate) fn decode_drops(cursor: &mut Cursor<'_>) -> io::Result<Drops> {
     Ok(Drops::new()
         .with_refused_contexts(decode_u64(cursor)?)
         .with_unattributed(decode_u64(cursor)?)
+        .with_updated_after_release(decode_u64(cursor)?)
         .with_counter_updates(decode_u64(cursor)?)
-        .with_evicted_events(decode_u64(cursor)?))
+        .with_evicted_events(decode_u64(cursor)?)
+        .with_retired_rows(decode_u64(cursor)?))
 }
 
 pub(crate) fn encode_label_value(bytes: &mut Vec<u8>, value: &OwnedLabelValue) -> io::Result<()> {

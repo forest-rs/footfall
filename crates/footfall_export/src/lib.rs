@@ -55,7 +55,7 @@ pub fn write_chrome_trace_json(snapshot: &OwnedSnapshot, writer: &mut impl Write
 
     events.push(build_metadata_event(
         "process_name",
-        1,
+        trace_pid(snapshot),
         0,
         "name",
         snapshot.metadata().process_name(),
@@ -63,7 +63,7 @@ pub fn write_chrome_trace_json(snapshot: &OwnedSnapshot, writer: &mut impl Write
     if let Some(session_name) = snapshot.metadata().session_name() {
         events.push(build_metadata_event(
             "process_labels",
-            1,
+            trace_pid(snapshot),
             0,
             "labels",
             session_name,
@@ -71,7 +71,7 @@ pub fn write_chrome_trace_json(snapshot: &OwnedSnapshot, writer: &mut impl Write
     }
     events.push(build_metadata_event(
         "thread_name",
-        1,
+        trace_pid(snapshot),
         AGGREGATE_TID,
         "name",
         "footfall",
@@ -88,7 +88,7 @@ pub fn write_chrome_trace_json(snapshot: &OwnedSnapshot, writer: &mut impl Write
             .map_or_else(|| format!("thread {thread_id}"), String::from);
         events.push(build_metadata_event(
             "thread_name",
-            1,
+            trace_pid(snapshot),
             thread_id,
             "name",
             &name,
@@ -117,6 +117,7 @@ pub fn write_chrome_trace_json(snapshot: &OwnedSnapshot, writer: &mut impl Write
 
     if unmatched_scope_ends > 0 {
         events.push(build_internal_counter_event(
+            snapshot,
             snapshot.captured_at_micros(),
             "footfall_unmatched_scope_ends",
             unmatched_scope_ends,
@@ -127,11 +128,17 @@ pub fn write_chrome_trace_json(snapshot: &OwnedSnapshot, writer: &mut impl Write
     for (name, count) in [
         ("footfall_refused_contexts", drops.refused_contexts()),
         ("footfall_unattributed", drops.unattributed()),
+        (
+            "footfall_updated_after_release",
+            drops.updated_after_release(),
+        ),
         ("footfall_dropped_counter_updates", drops.counter_updates()),
         ("footfall_evicted_events", drops.evicted_events()),
+        ("footfall_retired_rows", drops.retired_rows()),
     ] {
         if count > 0 {
             events.push(build_internal_counter_event(
+                snapshot,
                 snapshot.captured_at_micros(),
                 name,
                 count,
@@ -197,10 +204,15 @@ fn build_capture_window_event(snapshot: &OwnedSnapshot) -> String {
     json.push(',');
     write_json_field_str(&mut json, "ph", "i").expect("string write should succeed");
     json.push_str(",\"s\":\"g\",");
-    write_json_field_u64(&mut json, "ts", snapshot.captured_at_micros())
-        .expect("string write should succeed");
+    write_json_field_u64(
+        &mut json,
+        "ts",
+        wall_micros(snapshot, snapshot.captured_at_micros()),
+    )
+    .expect("string write should succeed");
     json.push(',');
-    write_json_field_u64(&mut json, "pid", 1).expect("string write should succeed");
+    write_json_field_u64(&mut json, "pid", trace_pid(snapshot))
+        .expect("string write should succeed");
     json.push(',');
     write_json_field_u64(&mut json, "tid", AGGREGATE_TID).expect("string write should succeed");
     json.push_str(",\"args\":{");
@@ -238,8 +250,13 @@ fn build_capture_window_event(snapshot: &OwnedSnapshot) -> String {
         ("window_missed", window.missed()),
         ("refused_contexts", drops.refused_contexts()),
         ("unattributed", drops.unattributed()),
+        ("updated_after_release", drops.updated_after_release()),
         ("dropped_counter_updates", drops.counter_updates()),
         ("evicted_events", drops.evicted_events()),
+        ("retired_rows", drops.retired_rows()),
+        ("process_id", u64::from(metadata.process_id())),
+        ("counter_samples", u64::from(capture.counter_samples())),
+        ("compiled_out", u64::from(capture.compiled_out())),
     ] {
         json.push(',');
         write_json_field_u64(&mut json, name, value).expect("string write should succeed");
@@ -257,9 +274,13 @@ fn build_contexts_event(snapshot: &OwnedSnapshot) -> Result<String, fmt::Error> 
     json.push(',');
     write_json_field_str(&mut json, "ph", "i")?;
     json.push_str(",\"s\":\"g\",");
-    write_json_field_u64(&mut json, "ts", snapshot.captured_at_micros())?;
+    write_json_field_u64(
+        &mut json,
+        "ts",
+        wall_micros(snapshot, snapshot.captured_at_micros()),
+    )?;
     json.push(',');
-    write_json_field_u64(&mut json, "pid", 1)?;
+    write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
     json.push(',');
     write_json_field_u64(&mut json, "tid", AGGREGATE_TID)?;
     json.push_str(",\"args\":{");
@@ -273,6 +294,25 @@ fn build_contexts_event(snapshot: &OwnedSnapshot) -> Result<String, fmt::Error> 
     }
     json.push_str("}}");
     Ok(json)
+}
+
+/// The trace `pid`: the producer's process id, so traces from several
+/// processes stay apart, or `1` when there is none.
+fn trace_pid(snapshot: &OwnedSnapshot) -> u64 {
+    match snapshot.metadata().process_id() {
+        0 => 1,
+        process_id => u64::from(process_id),
+    }
+}
+
+/// Converts a time since runtime creation into wall-clock microseconds
+/// since the Unix epoch, so traces from several processes share one
+/// timeline.
+fn wall_micros(snapshot: &OwnedSnapshot, at_micros: u64) -> u64 {
+    snapshot
+        .metadata()
+        .wall_clock_anchor_micros()
+        .saturating_add(at_micros)
 }
 
 fn usize_to_u64(value: usize) -> u64 {
@@ -308,9 +348,13 @@ fn build_counter_event(
     json.push(',');
     write_json_field_str(&mut json, "ph", "C")?;
     json.push(',');
-    write_json_field_u64(&mut json, "ts", counter.updated_at_micros())?;
+    write_json_field_u64(
+        &mut json,
+        "ts",
+        wall_micros(snapshot, counter.updated_at_micros()),
+    )?;
     json.push(',');
-    write_json_field_u64(&mut json, "pid", 1)?;
+    write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
     json.push(',');
     write_json_field_u64(&mut json, "tid", AGGREGATE_TID)?;
     // Counter args become plotted series, so they carry only the value.
@@ -343,9 +387,13 @@ fn build_histogram_event(
     json.push(',');
     write_json_field_str(&mut json, "ph", "i")?;
     json.push_str(",\"s\":\"t\",");
-    write_json_field_u64(&mut json, "ts", histogram.updated_at_micros())?;
+    write_json_field_u64(
+        &mut json,
+        "ts",
+        wall_micros(snapshot, histogram.updated_at_micros()),
+    )?;
     json.push(',');
-    write_json_field_u64(&mut json, "pid", 1)?;
+    write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
     json.push(',');
     write_json_field_u64(&mut json, "tid", AGGREGATE_TID)?;
     json.push_str(",\"args\":{");
@@ -408,7 +456,12 @@ fn histogram_percentile(histogram: &OwnedHistogramSnapshot, quantile: f64) -> u6
     histogram.max()
 }
 
-fn build_internal_counter_event(at_micros: u64, name: &str, value: u64) -> String {
+fn build_internal_counter_event(
+    snapshot: &OwnedSnapshot,
+    at_micros: u64,
+    name: &str,
+    value: u64,
+) -> String {
     let mut json = String::new();
     json.push('{');
     write_json_field_str(&mut json, "name", name).expect("string write should succeed");
@@ -417,9 +470,11 @@ fn build_internal_counter_event(at_micros: u64, name: &str, value: u64) -> Strin
     json.push(',');
     write_json_field_str(&mut json, "ph", "C").expect("string write should succeed");
     json.push(',');
-    write_json_field_u64(&mut json, "ts", at_micros).expect("string write should succeed");
+    write_json_field_u64(&mut json, "ts", wall_micros(snapshot, at_micros))
+        .expect("string write should succeed");
     json.push(',');
-    write_json_field_u64(&mut json, "pid", 1).expect("string write should succeed");
+    write_json_field_u64(&mut json, "pid", trace_pid(snapshot))
+        .expect("string write should succeed");
     json.push(',');
     write_json_field_u64(&mut json, "tid", AGGREGATE_TID).expect("string write should succeed");
     json.push_str(",\"args\":{\"value\":");
@@ -465,9 +520,9 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_str(&mut json, "ph", "B")?;
             json.push(',');
-            write_json_field_u64(&mut json, "ts", event.at_micros())?;
+            write_json_field_u64(&mut json, "ts", wall_micros(snapshot, event.at_micros()))?;
             json.push(',');
-            write_json_field_u64(&mut json, "pid", 1)?;
+            write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
             json.push(',');
             write_json_field_u64(&mut json, "tid", event.thread_id())?;
             json.push_str(",\"args\":{");
@@ -492,9 +547,9 @@ fn build_timed_observation(
             json.push('{');
             write_json_field_str(&mut json, "ph", "E")?;
             json.push(',');
-            write_json_field_u64(&mut json, "ts", event.at_micros())?;
+            write_json_field_u64(&mut json, "ts", wall_micros(snapshot, event.at_micros()))?;
             json.push(',');
-            write_json_field_u64(&mut json, "pid", 1)?;
+            write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
             json.push(',');
             write_json_field_u64(&mut json, "tid", tid)?;
             json.push('}');
@@ -566,9 +621,9 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_str(&mut json, "ph", "i")?;
             json.push_str(",\"s\":\"t\",");
-            write_json_field_u64(&mut json, "ts", event.at_micros())?;
+            write_json_field_u64(&mut json, "ts", wall_micros(snapshot, event.at_micros()))?;
             json.push(',');
-            write_json_field_u64(&mut json, "pid", 1)?;
+            write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
             json.push(',');
             write_json_field_u64(&mut json, "tid", event.thread_id())?;
             json.push_str(",\"args\":{");
@@ -594,9 +649,9 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_str(&mut json, "ph", flow_phase_code(*phase))?;
             json.push_str(",\"bp\":\"e\",");
-            write_json_field_u64(&mut json, "ts", event.at_micros())?;
+            write_json_field_u64(&mut json, "ts", wall_micros(snapshot, event.at_micros()))?;
             json.push(',');
-            write_json_field_u64(&mut json, "pid", 1)?;
+            write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
             json.push(',');
             write_json_field_u64(&mut json, "tid", event.thread_id())?;
             json.push(',');
@@ -626,9 +681,9 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_str(&mut json, "ph", "i")?;
             json.push_str(",\"s\":\"t\",");
-            write_json_field_u64(&mut json, "ts", event.at_micros())?;
+            write_json_field_u64(&mut json, "ts", wall_micros(snapshot, event.at_micros()))?;
             json.push(',');
-            write_json_field_u64(&mut json, "pid", 1)?;
+            write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
             json.push(',');
             write_json_field_u64(&mut json, "tid", event.thread_id())?;
             json.push_str(",\"args\":{");
@@ -672,9 +727,9 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_str(&mut json, "ph", "C")?;
             json.push(',');
-            write_json_field_u64(&mut json, "ts", event.at_micros())?;
+            write_json_field_u64(&mut json, "ts", wall_micros(snapshot, event.at_micros()))?;
             json.push(',');
-            write_json_field_u64(&mut json, "pid", 1)?;
+            write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
             json.push(',');
             write_json_field_u64(&mut json, "tid", AGGREGATE_TID)?;
             json.push_str(",\"args\":{");
@@ -708,9 +763,9 @@ fn build_resource_event(
     json.push(',');
     write_json_field_str(&mut json, "ph", "i")?;
     json.push_str(",\"s\":\"t\",");
-    write_json_field_u64(&mut json, "ts", at_micros)?;
+    write_json_field_u64(&mut json, "ts", wall_micros(snapshot, at_micros))?;
     json.push(',');
-    write_json_field_u64(&mut json, "pid", 1)?;
+    write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
     json.push(',');
     write_json_field_u64(&mut json, "tid", thread_id)?;
     json.push_str(",\"args\":{");
@@ -967,6 +1022,21 @@ mod tests {
             .into_iter()
             .fold(builder, |builder, event| builder.event(event))
             .build()
+    }
+
+    #[test]
+    fn traces_use_the_process_id_and_wall_clock_time() {
+        let snapshot = Snapshot::builder(
+            SnapshotMetadata::new("app")
+                .with_process_id(42)
+                .with_wall_clock_anchor_micros(1_000_000),
+        )
+        .event(timed(0, 5, 1, begin("work", 1)))
+        .build();
+
+        let json = to_chrome_trace_json(&snapshot.into());
+        assert!(json.contains("\"ts\":1000005,\"pid\":42,"), "{json}");
+        assert!(json.contains("\"process_id\":42"));
     }
 
     #[test]

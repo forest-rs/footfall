@@ -103,7 +103,17 @@ pub const MESSAGE_TEXT_MAX_BYTES: usize = 256;
 /// runtime needs the room and no retained event can refer to it: that is,
 /// once every event recorded before its release has been evicted. Retiring
 /// it removes its counter rows too, so their final values are only visible to
-/// readers that read before then.
+/// readers that read before then, and [`Drops::retired_rows`] counts them.
+/// Size [`context_capacity`](RuntimeBuilder::context_capacity) for the live
+/// contexts plus the released ones the event buffer still refers to; snapshots
+/// mark released contexts with [`ContextSnapshot::is_released`].
+///
+/// A handle must not be used after its context is released. When it is
+/// anyway, events recorded with it go to the root context and are counted in
+/// [`Drops::unattributed`], whether or not the context has been retired yet.
+/// Counter rows cannot split one context's updates from another's, so a row
+/// updated after its context's release keeps that context and is counted in
+/// [`Drops::updated_after_release`].
 ///
 /// # Threads
 ///
@@ -114,6 +124,7 @@ pub const MESSAGE_TEXT_MAX_BYTES: usize = 256;
 #[derive(Debug)]
 pub struct Runtime {
     instance_id: u64,
+    process_id: u32,
     created_at: Instant,
     wall_clock_anchor_micros: u64,
     process_name: String,
@@ -142,6 +153,8 @@ pub struct Runtime {
     event_count: AtomicUsize,
     dropped_counters: AtomicU64,
     evicted_events: AtomicU64,
+    /// Counter and histogram rows removed with retired contexts.
+    retired_rows: AtomicU64,
     labels: Mutex<LabelState>,
     contexts: Mutex<ContextTable>,
     counter_shards: Vec<Mutex<CounterShard>>,
@@ -188,6 +201,7 @@ impl Runtime {
             .unwrap_or(Duration::ZERO);
         Self {
             instance_id: new_instance_id(wall_clock),
+            process_id: current_process_id(),
             created_at: Instant::now(),
             wall_clock_anchor_micros: duration_to_micros(wall_clock),
             process_name: process_name.unwrap_or_else(default_process_name),
@@ -204,6 +218,7 @@ impl Runtime {
             event_count: AtomicUsize::new(0),
             dropped_counters: AtomicU64::new(0),
             evicted_events: AtomicU64::new(0),
+            retired_rows: AtomicU64::new(0),
             labels: Mutex::new(LabelState {
                 session_name,
                 descriptor_ids: DescriptorIds::default(),
@@ -337,11 +352,14 @@ impl Runtime {
             instance_id: self.instance_id,
             wall_clock_anchor_micros: self.wall_clock_anchor_micros,
             producer_version: String::from(PRODUCER_VERSION),
+            process_id: self.process_id,
             capture: CaptureSettings {
                 level: self.level(),
                 counter_capacity: self.counter_capacity,
                 event_capacity: self.event_capacity,
                 context_capacity: self.context_capacity,
+                counter_samples: self.counter_samples,
+                compiled_out: cfg!(footfall_compile_out),
             },
         }
     }
@@ -370,7 +388,7 @@ impl Runtime {
         // Each recording thread writes its own shard, so one key can appear
         // in several shards; merge them, resolving handles the table does not
         // know to the root context on the way.
-        let mut unresolved_contexts = 0_u64;
+        let mut tally = ResolveTally::default();
         let mut merged_counters: HashMap<CounterKey, CounterSnapshot> = HashMap::new();
         let mut merged_histograms: HashMap<HistogramKey, HistogramSnapshot> = HashMap::new();
         for shard in &self.counter_shards {
@@ -379,7 +397,8 @@ impl Runtime {
                 .expect("runtime counter shard should not be poisoned");
             for counter in shard.counters.values() {
                 let mut counter = counter.clone();
-                counter.context_id = contexts.resolve(counter.context_id, &mut unresolved_contexts);
+                counter.context_id =
+                    contexts.resolve_row(counter.context_id, counter.updated_at_micros, &mut tally);
                 let key = CounterKey::new(counter.desc_id, counter.context_id, counter.kind);
                 match merged_counters.get_mut(&key) {
                     Some(existing) => existing.merge(&counter),
@@ -390,8 +409,11 @@ impl Runtime {
             }
             for histogram in shard.histograms.values() {
                 let mut histogram = histogram.clone();
-                histogram.context_id =
-                    contexts.resolve(histogram.context_id, &mut unresolved_contexts);
+                histogram.context_id = contexts.resolve_row(
+                    histogram.context_id,
+                    histogram.updated_at_micros,
+                    &mut tally,
+                );
                 let key = HistogramKey {
                     desc_id: histogram.desc_id,
                     context_id: histogram.context_id,
@@ -426,8 +448,9 @@ impl Runtime {
         }
         events.sort_by_key(event_sort_key);
         for event in &mut events {
+            let sequence = event.sequence;
             if let Some(context_id) = event.observation.context_id_mut() {
-                *context_id = contexts.resolve(*context_id, &mut unresolved_contexts);
+                *context_id = contexts.resolve_event(*context_id, sequence, &mut tally);
             }
         }
         let delivered = u64::try_from(events.len()).unwrap_or(u64::MAX);
@@ -463,7 +486,9 @@ impl Runtime {
             events,
             drops: Drops {
                 refused_contexts: contexts.refused,
-                unattributed: unresolved_contexts,
+                unattributed: tally.unattributed,
+                updated_after_release: tally.updated_after_release,
+                retired_rows: self.retired_rows.load(Ordering::Relaxed),
                 counter_updates: self.dropped_counters.load(Ordering::Relaxed),
                 evicted_events: self.evicted_events.load(Ordering::Relaxed),
             },
@@ -753,15 +778,24 @@ impl Runtime {
             .lock()
             .expect("runtime admitted-key mutex should not be poisoned")
             .retain(|key| !is_retired(key.context_id()));
+        let mut retired_rows = 0_usize;
         for shard in &self.counter_shards {
             let mut shard = shard
                 .lock()
                 .expect("runtime counter shard should not be poisoned");
+            let before = shard.counters.len() + shard.histograms.len();
             shard.counters.retain(|key, _| !is_retired(key.context_id));
             shard
                 .histograms
                 .retain(|key, _| !is_retired(key.context_id));
+            retired_rows += before - (shard.counters.len() + shard.histograms.len());
         }
+        // Rows are counted per shard, so a key recorded from several threads
+        // counts once per thread.
+        self.retired_rows.fetch_add(
+            u64::try_from(retired_rows).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
         retired.len()
     }
 
@@ -1181,8 +1215,10 @@ impl EventWindow {
 pub struct Drops {
     refused_contexts: u64,
     unattributed: u64,
+    updated_after_release: u64,
     counter_updates: u64,
     evicted_events: u64,
+    retired_rows: u64,
 }
 
 impl Drops {
@@ -1192,8 +1228,10 @@ impl Drops {
         Self {
             refused_contexts: 0,
             unattributed: 0,
+            updated_after_release: 0,
             counter_updates: 0,
             evicted_events: 0,
+            retired_rows: 0,
         }
     }
 
@@ -1208,6 +1246,22 @@ impl Drops {
     #[must_use]
     pub const fn with_unattributed(mut self, count: u64) -> Self {
         self.unattributed = count;
+        self
+    }
+
+    /// Sets the number of counter and histogram rows updated after their
+    /// context was released.
+    #[must_use]
+    pub const fn with_updated_after_release(mut self, count: u64) -> Self {
+        self.updated_after_release = count;
+        self
+    }
+
+    /// Sets the number of counter and histogram rows retired with their
+    /// contexts.
+    #[must_use]
+    pub const fn with_retired_rows(mut self, count: u64) -> Self {
+        self.retired_rows = count;
         self
     }
 
@@ -1234,17 +1288,42 @@ impl Drops {
     }
 
     /// Returns the number of counter rows and events in this snapshot that
-    /// are attributed to the root context because the runtime did not know
-    /// their context handle.
+    /// are attributed to the root context instead of the context they were
+    /// recorded with.
     ///
-    /// The handle was refused (see
-    /// [`refused_contexts`](Self::refused_contexts)), used after its context
-    /// was released and retired, registered before this runtime was
-    /// installed, or never registered at all. The rows and events themselves
-    /// are kept.
+    /// An event goes to the root context when it was recorded after its
+    /// context was released, or with a handle the runtime does not know: one
+    /// refused (see [`refused_contexts`](Self::refused_contexts)), registered
+    /// before this runtime was installed, never registered, or retired. A
+    /// counter row goes there when its handle is unknown. The rows and
+    /// events themselves are kept.
     #[must_use]
     pub const fn unattributed(&self) -> u64 {
         self.unattributed
+    }
+
+    /// Returns the number of counter and histogram rows in this snapshot
+    /// that were updated after their context was released.
+    ///
+    /// Counter rows aggregate, so the runtime cannot move just the late
+    /// updates to the root context: the row keeps its released context, and
+    /// this count says its value includes updates made with a handle that
+    /// was no longer valid. Keep a `RegisteredContext` alive for as long as
+    /// its handle is used.
+    #[must_use]
+    pub const fn updated_after_release(&self) -> u64 {
+        self.updated_after_release
+    }
+
+    /// Returns the number of counter and histogram rows removed, since the
+    /// runtime was created, because their context was released and retired.
+    ///
+    /// Retiring a released context removes its rows, so totals summed across
+    /// contexts no longer include what those rows held. Counted per thread
+    /// that recorded the row.
+    #[must_use]
+    pub const fn retired_rows(&self) -> u64 {
+        self.retired_rows
     }
 
     /// Returns the number of counter, gauge, and histogram updates dropped
@@ -1267,14 +1346,16 @@ impl Drops {
         self.evicted_events
     }
 
-    /// Returns `true` when nothing was refused, dropped, evicted, or
+    /// Returns `true` when nothing was refused, dropped, evicted, retired, or
     /// misattributed.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.refused_contexts == 0
             && self.unattributed == 0
+            && self.updated_after_release == 0
             && self.counter_updates == 0
             && self.evicted_events == 0
+            && self.retired_rows == 0
     }
 }
 
@@ -1284,6 +1365,7 @@ pub struct SnapshotMetadata {
     process_name: String,
     session_name: Option<String>,
     instance_id: u64,
+    process_id: u32,
     wall_clock_anchor_micros: u64,
     producer_version: String,
     capture: CaptureSettings,
@@ -1311,6 +1393,13 @@ impl SnapshotMetadata {
     #[must_use]
     pub const fn with_instance_id(mut self, instance_id: u64) -> Self {
         self.instance_id = instance_id;
+        self
+    }
+
+    /// Sets the producer's operating-system process id.
+    #[must_use]
+    pub const fn with_process_id(mut self, process_id: u32) -> Self {
+        self.process_id = process_id;
         self
     }
 
@@ -1357,6 +1446,14 @@ impl SnapshotMetadata {
         self.instance_id
     }
 
+    /// Returns the producer's operating-system process id, or `0` on
+    /// platforms without one. Together with the process name it tells apart
+    /// producers that offer the same session id.
+    #[must_use]
+    pub const fn process_id(&self) -> u32 {
+        self.process_id
+    }
+
     /// Returns the wall-clock time of runtime creation in microseconds since
     /// the Unix epoch.
     ///
@@ -1395,6 +1492,8 @@ pub struct CaptureSettings {
     counter_capacity: usize,
     event_capacity: usize,
     context_capacity: usize,
+    counter_samples: bool,
+    compiled_out: bool,
 }
 
 impl CaptureSettings {
@@ -1411,7 +1510,40 @@ impl CaptureSettings {
             counter_capacity,
             event_capacity,
             context_capacity,
+            counter_samples: false,
+            compiled_out: false,
         }
+    }
+
+    /// Sets whether frame ends record counter samples.
+    #[must_use]
+    pub const fn with_counter_samples(mut self, enabled: bool) -> Self {
+        self.counter_samples = enabled;
+        self
+    }
+
+    /// Sets whether the producer was built with instrumentation compiled
+    /// out.
+    #[must_use]
+    pub const fn with_compiled_out(mut self, compiled_out: bool) -> Self {
+        self.compiled_out = compiled_out;
+        self
+    }
+
+    /// Returns `true` when frame ends record counter samples; see
+    /// [`RuntimeBuilder::counter_samples`]. Without them, no samples means
+    /// they were not recorded, not that no counter changed.
+    #[must_use]
+    pub const fn counter_samples(self) -> bool {
+        self.counter_samples
+    }
+
+    /// Returns `true` when the producer was built with
+    /// `--cfg footfall_compile_out`, so instrumentation emits nothing and an
+    /// empty snapshot says nothing about what ran.
+    #[must_use]
+    pub const fn compiled_out(self) -> bool {
+        self.compiled_out
     }
 
     /// Returns the capture level.
@@ -1474,13 +1606,34 @@ pub struct ContextSnapshot {
     id: ContextId,
     /// Explicit semantic context value.
     context: Context,
+    /// Whether the context has been released.
+    released: bool,
 }
 
 impl ContextSnapshot {
-    /// Creates a context row.
+    /// Creates a row for a live context.
     #[must_use]
     pub const fn new(id: ContextId, context: Context) -> Self {
-        Self { id, context }
+        Self {
+            id,
+            context,
+            released: false,
+        }
+    }
+
+    /// Marks the row's context as released.
+    #[must_use]
+    pub const fn with_released(mut self, released: bool) -> Self {
+        self.released = released;
+        self
+    }
+
+    /// Returns `true` when the context has been released, so the runtime
+    /// keeps it only until every event recorded under it is evicted; see
+    /// [`Runtime`].
+    #[must_use]
+    pub const fn is_released(&self) -> bool {
+        self.released
     }
 
     /// Returns the context id, which carries the emitting [`ContextHandle`].
@@ -2071,8 +2224,22 @@ struct ContextTable {
 #[derive(Debug)]
 struct RegisteredEntry {
     context: Context,
-    /// Event sequence number at release, or `None` while live.
-    released_at: Option<u64>,
+    /// When the context was released, or `None` while live.
+    released_at: Option<Release>,
+}
+
+/// When a context was released, in event sequence and in time.
+#[derive(Clone, Copy, Debug)]
+struct Release {
+    sequence: u64,
+    micros: u64,
+}
+
+/// Attribution problems found while resolving one snapshot.
+#[derive(Debug, Default)]
+struct ResolveTally {
+    unattributed: u64,
+    updated_after_release: u64,
 }
 
 impl ContextTable {
@@ -2110,11 +2277,11 @@ impl ContextTable {
         );
     }
 
-    fn release(&mut self, handle: ContextHandle, sequence: u64) {
+    fn release(&mut self, handle: ContextHandle, release: Release) {
         if let Some(entry) = self.entries.get_mut(&handle.get())
             && entry.released_at.is_none()
         {
-            entry.released_at = Some(sequence);
+            entry.released_at = Some(release);
             self.released += 1;
         }
     }
@@ -2125,7 +2292,7 @@ impl ContextTable {
         let mut retired = HashSet::new();
         self.entries
             .retain(|handle, entry| match entry.released_at {
-                Some(released_at) if released_at <= horizon => {
+                Some(released_at) if released_at.sequence <= horizon => {
                     retired.insert(*handle);
                     false
                 }
@@ -2137,12 +2304,60 @@ impl ContextTable {
 
     /// Returns `context_id` when the table knows it, and otherwise the root
     /// context, counting the miss.
-    fn resolve(&self, context_id: ContextId, unresolved: &mut u64) -> ContextId {
-        if context_id.get() == 0 || self.entries.contains_key(&context_id.get()) {
-            context_id
-        } else {
-            *unresolved = unresolved.saturating_add(1);
-            ContextId::new(0)
+    /// Resolves the context of a counter or histogram row last updated at
+    /// `updated_at_micros`: the row keeps a context the table knows, counted
+    /// when it was updated after the context's release, and otherwise goes
+    /// to the root context, counted as unattributed.
+    fn resolve_row(
+        &self,
+        context_id: ContextId,
+        updated_at_micros: u64,
+        tally: &mut ResolveTally,
+    ) -> ContextId {
+        if context_id.get() == 0 {
+            return context_id;
+        }
+        match self.entries.get(&context_id.get()) {
+            Some(entry) => {
+                if entry
+                    .released_at
+                    .is_some_and(|release| updated_at_micros > release.micros)
+                {
+                    tally.updated_after_release += 1;
+                }
+                context_id
+            }
+            None => {
+                tally.unattributed += 1;
+                ContextId::new(0)
+            }
+        }
+    }
+
+    /// Resolves the context of the event numbered `sequence`: an event
+    /// recorded with a handle the table does not know, or after its context
+    /// was released, goes to the root context, counted as unattributed.
+    fn resolve_event(
+        &self,
+        context_id: ContextId,
+        sequence: u64,
+        tally: &mut ResolveTally,
+    ) -> ContextId {
+        if context_id.get() == 0 {
+            return context_id;
+        }
+        match self.entries.get(&context_id.get()) {
+            Some(entry)
+                if entry
+                    .released_at
+                    .is_none_or(|release| sequence < release.sequence) =>
+            {
+                context_id
+            }
+            _ => {
+                tally.unattributed += 1;
+                ContextId::new(0)
+            }
         }
     }
 
@@ -2150,11 +2365,13 @@ impl ContextTable {
         let root = ContextSnapshot {
             id: ContextId::new(0),
             context: Context::root(),
+            released: false,
         };
         let mut contexts: Vec<_> = core::iter::once(root)
             .chain(self.entries.iter().map(|(handle, entry)| ContextSnapshot {
                 id: ContextId::new(*handle),
                 context: entry.context,
+                released: entry.released_at.is_some(),
             }))
             .collect();
         contexts.sort_by_key(|context| context.id);
@@ -2222,11 +2439,14 @@ impl Backend for Runtime {
         // Events numbered from here on were recorded after the release, so
         // once everything before it is evicted no retained event needs the
         // context.
-        let sequence = self.next_event_sequence.load(Ordering::SeqCst);
+        let release = Release {
+            sequence: self.next_event_sequence.load(Ordering::SeqCst),
+            micros: self.now_micros(),
+        };
         self.contexts
             .lock()
             .expect("runtime context mutex should not be poisoned")
-            .release(handle, sequence);
+            .release(handle, release);
     }
 
     fn counter_add(&self, desc: &'static CounterDesc, context: ContextHandle, value: u64) {
@@ -2480,6 +2700,16 @@ fn build_event_shards(count: usize) -> Vec<Mutex<EventShard>> {
 
 /// `footfall_runtime`'s version, reported as the producer of every snapshot.
 const PRODUCER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Returns the operating-system process id, or `0` where there is none.
+fn current_process_id() -> u32 {
+    // `std::process::id` panics on WASI, which has no processes.
+    if cfg!(target_os = "wasi") {
+        0
+    } else {
+        std::process::id()
+    }
+}
 
 /// Returns a random, nonzero runtime instance id.
 fn new_instance_id(wall_clock: Duration) -> u64 {
@@ -2807,6 +3037,47 @@ mod tests {
     }
 
     #[test]
+    fn a_handle_used_after_release_is_counted_not_silently_misattributed() {
+        let runtime = test_runtime(8, 16);
+        static OPS: CounterDesc = CounterDesc::count("ops");
+        let marker = |context_id| Observation::FrameMarker {
+            kind: MarkerKind::Frame,
+            phase: MarkerPhase::Begin,
+            context_id,
+        };
+        let owner = register(&runtime, &Context::root().with(&PASS, 1_u32));
+        runtime.push_event_at(marker(owner.id()), 1);
+        runtime.counter_add_at(&OPS, owner, 1, 1);
+        runtime.context_released(owner);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+
+        // The owner is gone, but its handle is used again.
+        let late = runtime.now_micros();
+        runtime.push_event_at(marker(owner.id()), late);
+        runtime.counter_add_at(&OPS, owner, 10, late);
+
+        let snapshot = runtime.snapshot();
+        let contexts: Vec<_> = snapshot
+            .events
+            .iter()
+            .filter_map(|event| event.observation.context_id())
+            .collect();
+        assert_eq!(
+            contexts,
+            [owner.id(), ContextId::new(0)],
+            "the event before release keeps its context, the one after goes to root"
+        );
+        assert_eq!(snapshot.drops.unattributed(), 1);
+        assert_eq!(snapshot.counters[0].context_id, owner.id());
+        assert_eq!(snapshot.drops.updated_after_release(), 1);
+        assert!(
+            snapshot
+                .context(owner.id())
+                .is_some_and(super::ContextSnapshot::is_released)
+        );
+    }
+
+    #[test]
     fn retired_contexts_free_their_counter_keys() {
         let runtime = Runtime::builder()
             .counter_capacity(1)
@@ -2825,6 +3096,7 @@ mod tests {
         assert_eq!(snapshot.counters[0].context_id, second.id());
         assert_eq!(snapshot.counters[0].value, 5);
         assert_eq!(snapshot.drops.counter_updates(), 0);
+        assert_eq!(snapshot.drops.retired_rows(), 1, "the first context's row");
     }
 
     #[test]
@@ -3042,7 +3314,12 @@ mod tests {
         assert_eq!(
             metadata.capture,
             CaptureSettings::new(InstrumentationLevel::Scoped, 8, 16, 32)
+                .with_counter_samples(true)
+                .with_compiled_out(cfg!(footfall_compile_out))
         );
+        if !cfg!(target_os = "wasi") {
+            assert_ne!(metadata.process_id, 0, "the process id is recorded");
+        }
     }
 
     #[test]
