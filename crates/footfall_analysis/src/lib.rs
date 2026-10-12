@@ -13,6 +13,10 @@
 //! - [`frames`] pairs frame markers into [`Frame`]s with their durations and
 //!   the change in each counter over the frame, from the counter samples the
 //!   runtime records at frame ends.
+//! - [`SpanTracker`] and [`FrameTracker`] do the same across consecutive
+//!   snapshots, such as a subscription's windows, carrying open scopes,
+//!   open frames, and the last counter samples from one to the next, and
+//!   reporting gaps and producer restarts as a [`Continuity`].
 //!
 //! ```
 //! use footfall_analysis::{Spans, frames};
@@ -37,7 +41,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use footfall_core::{ContextId, CounterDescId, MarkerKind, MarkerPhase, ScopeToken, Unit};
 use footfall_runtime::CounterKind;
-use footfall_session::{OwnedArgEntry, OwnedLabelValue, OwnedObservation, OwnedSnapshot};
+use footfall_session::OwnedObservation;
+pub use footfall_session::{OwnedArgEntry, OwnedLabelValue, OwnedSnapshot};
 
 /// One scope that began and ended within a snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -163,83 +168,7 @@ impl Spans {
     /// Pairs the scopes in `snapshot`.
     #[must_use]
     pub fn from_snapshot(snapshot: &OwnedSnapshot) -> Self {
-        struct Begun {
-            name: String,
-            context_id: ContextId,
-            thread_id: u64,
-            begin_micros: u64,
-            depth: usize,
-            child_micros: u64,
-            args: Vec<OwnedArgEntry>,
-        }
-
-        let mut begun: HashMap<ScopeToken, Begun> = HashMap::new();
-        // Open scopes per thread, innermost last, for nesting and self time.
-        let mut stacks: HashMap<u64, Vec<ScopeToken>> = HashMap::new();
-        let mut spans = Self::default();
-        for event in snapshot.events() {
-            match event.observation() {
-                OwnedObservation::ScopeBegin {
-                    name,
-                    context_id,
-                    token,
-                    args,
-                    ..
-                } => {
-                    let stack = stacks.entry(event.thread_id()).or_default();
-                    begun.insert(
-                        *token,
-                        Begun {
-                            name: name.clone(),
-                            context_id: *context_id,
-                            thread_id: event.thread_id(),
-                            begin_micros: event.at_micros(),
-                            depth: stack.len(),
-                            child_micros: 0,
-                            args: args.clone(),
-                        },
-                    );
-                    stack.push(*token);
-                }
-                OwnedObservation::ScopeEnd { token } => {
-                    let Some(scope) = begun.remove(token) else {
-                        spans.unmatched_ends += 1;
-                        continue;
-                    };
-                    let duration = event.at_micros().saturating_sub(scope.begin_micros);
-                    if let Some(stack) = stacks.get_mut(&scope.thread_id) {
-                        stack.retain(|open| open != token);
-                        if let Some(parent) = stack.last().and_then(|parent| begun.get_mut(parent))
-                        {
-                            parent.child_micros = parent.child_micros.saturating_add(duration);
-                        }
-                    }
-                    spans.spans.push(Span {
-                        name: scope.name,
-                        context_id: scope.context_id,
-                        thread_id: scope.thread_id,
-                        begin_micros: scope.begin_micros,
-                        end_micros: event.at_micros(),
-                        depth: scope.depth,
-                        child_micros: scope.child_micros,
-                        args: scope.args,
-                    });
-                }
-                _ => {}
-            }
-        }
-        spans.open = begun
-            .into_values()
-            .map(|scope| OpenSpan {
-                name: scope.name,
-                context_id: scope.context_id,
-                thread_id: scope.thread_id,
-                begin_micros: scope.begin_micros,
-            })
-            .collect();
-        spans.open.sort_by_key(|span| span.begin_micros);
-        spans.spans.sort_by_key(|span| span.begin_micros);
-        spans
+        SpanTracker::new().push(snapshot)
     }
 
     /// Returns the completed scopes, by begin time.
@@ -299,6 +228,162 @@ impl Spans {
             }
         }
         stats
+    }
+}
+
+/// A scope begun in an earlier snapshot, waiting for its end.
+#[derive(Clone, Debug)]
+struct Begun {
+    name: String,
+    context_id: ContextId,
+    thread_id: u64,
+    begin_micros: u64,
+    depth: usize,
+    child_micros: u64,
+    args: Vec<OwnedArgEntry>,
+}
+
+/// Pairs scopes across consecutive snapshots of one runtime, such as the
+/// windows a subscription delivers, without keeping the snapshots.
+///
+/// Each [`push`](Self::push) returns the scopes that ended in that snapshot,
+/// including ones that began in an earlier one, and the scopes still open.
+/// The tracker starts over when a snapshot comes from another runtime
+/// instance, since its scope tokens mean something else, or when events
+/// between two snapshots were evicted, since scope ends may be among them;
+/// [`push`](Self::push) reports both in [`Continuity`].
+#[derive(Clone, Debug, Default)]
+pub struct SpanTracker {
+    instance_id: Option<u64>,
+    next_sequence: u64,
+    begun: HashMap<ScopeToken, Begun>,
+    /// Open scopes per thread, innermost last, for nesting and self time.
+    stacks: HashMap<u64, Vec<ScopeToken>>,
+    continuity: Continuity,
+}
+
+/// How a snapshot followed the ones a tracker saw before it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Continuity {
+    /// The first snapshot the tracker saw.
+    #[default]
+    First,
+    /// It continues the previous snapshot with no events missing.
+    Continuous,
+    /// Events between the previous snapshot and this one were evicted or
+    /// skipped, so the tracker started over.
+    Gap,
+    /// It comes from another runtime instance, so the tracker started over.
+    Restarted,
+}
+
+impl SpanTracker {
+    /// Creates a tracker that has seen no snapshot.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns how the last pushed snapshot followed the one before it.
+    #[must_use]
+    pub const fn continuity(&self) -> Continuity {
+        self.continuity
+    }
+
+    /// Pairs the scopes of `snapshot` with those still open from earlier
+    /// snapshots.
+    pub fn push(&mut self, snapshot: &OwnedSnapshot) -> Spans {
+        self.continuity = continuity(&mut self.instance_id, self.next_sequence, snapshot);
+        if matches!(self.continuity, Continuity::Gap | Continuity::Restarted) {
+            self.begun.clear();
+            self.stacks.clear();
+        }
+        self.next_sequence = snapshot.window().next();
+
+        let mut spans = Spans::default();
+        for event in snapshot.events() {
+            match event.observation() {
+                OwnedObservation::ScopeBegin {
+                    name,
+                    context_id,
+                    token,
+                    args,
+                    ..
+                } => {
+                    let stack = self.stacks.entry(event.thread_id()).or_default();
+                    self.begun.insert(
+                        *token,
+                        Begun {
+                            name: name.clone(),
+                            context_id: *context_id,
+                            thread_id: event.thread_id(),
+                            begin_micros: event.at_micros(),
+                            depth: stack.len(),
+                            child_micros: 0,
+                            args: args.clone(),
+                        },
+                    );
+                    stack.push(*token);
+                }
+                OwnedObservation::ScopeEnd { token } => {
+                    let Some(scope) = self.begun.remove(token) else {
+                        spans.unmatched_ends += 1;
+                        continue;
+                    };
+                    let duration = event.at_micros().saturating_sub(scope.begin_micros);
+                    if let Some(stack) = self.stacks.get_mut(&scope.thread_id) {
+                        stack.retain(|open| open != token);
+                        if let Some(parent) =
+                            stack.last().and_then(|parent| self.begun.get_mut(parent))
+                        {
+                            parent.child_micros = parent.child_micros.saturating_add(duration);
+                        }
+                    }
+                    spans.spans.push(Span {
+                        name: scope.name,
+                        context_id: scope.context_id,
+                        thread_id: scope.thread_id,
+                        begin_micros: scope.begin_micros,
+                        end_micros: event.at_micros(),
+                        depth: scope.depth,
+                        child_micros: scope.child_micros,
+                        args: scope.args,
+                    });
+                }
+                _ => {}
+            }
+        }
+        spans.open = self
+            .begun
+            .values()
+            .map(|scope| OpenSpan {
+                name: scope.name.clone(),
+                context_id: scope.context_id,
+                thread_id: scope.thread_id,
+                begin_micros: scope.begin_micros,
+            })
+            .collect();
+        spans.open.sort_by_key(|span| span.begin_micros);
+        spans.spans.sort_by_key(|span| span.begin_micros);
+        spans
+    }
+}
+
+/// Classifies how `snapshot` follows the previous one and records its
+/// instance.
+fn continuity(
+    instance_id: &mut Option<u64>,
+    next_sequence: u64,
+    snapshot: &OwnedSnapshot,
+) -> Continuity {
+    let instance = snapshot.metadata().instance_id();
+    let window = snapshot.window();
+    let previous = instance_id.replace(instance);
+    match previous {
+        None => Continuity::First,
+        Some(previous) if previous != instance => Continuity::Restarted,
+        Some(_) if window.since() != next_sequence || window.missed() > 0 => Continuity::Gap,
+        Some(_) => Continuity::Continuous,
     }
 }
 
@@ -369,6 +454,7 @@ impl SpanStats {
 /// One frame, from a frame begin marker to the next frame end marker.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame {
+    sequence: u64,
     context_id: ContextId,
     begin_micros: u64,
     end_micros: u64,
@@ -376,6 +462,14 @@ pub struct Frame {
 }
 
 impl Frame {
+    /// Returns the event sequence number of the frame's begin marker, which
+    /// identifies the frame within its runtime instance across snapshots,
+    /// captures, and consumers.
+    #[must_use]
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
     /// Returns the context of the frame begin marker.
     #[must_use]
     pub const fn context_id(&self) -> ContextId {
@@ -485,74 +579,130 @@ impl FrameCounter {
 /// Each frame end closes the most recent frame begin. Counter samples that
 /// follow a frame end, on the same thread at the same time, become the
 /// frame's [`counters`](Frame::counters). A frame whose begin fell before the
-/// snapshot's window is left out.
+/// snapshot's window is left out; to follow frames across consecutive
+/// snapshots, use a [`FrameTracker`].
 #[must_use]
 pub fn frames(snapshot: &OwnedSnapshot) -> Vec<Frame> {
-    let mut frames = Vec::new();
-    let mut open: Vec<(ContextId, u64)> = Vec::new();
-    let mut previous: HashMap<(CounterDescId, ContextId), u64> = HashMap::new();
-    // Every event the runtime recorded is here, so a counter with no
-    // earlier sample was zero before.
-    let complete_history = snapshot.window().since() == 0 && snapshot.window().missed() == 0;
-    // The frame end whose samples are being collected: thread and time.
-    let mut collecting: Option<(u64, u64)> = None;
-    for event in snapshot.events() {
-        match event.observation() {
-            OwnedObservation::FrameMarker {
-                kind: MarkerKind::Frame,
-                phase,
-                context_id,
-            } => {
-                collecting = None;
-                match phase {
-                    MarkerPhase::Begin => open.push((*context_id, event.at_micros())),
-                    MarkerPhase::End => {
-                        if let Some((context_id, begin_micros)) = open.pop() {
-                            frames.push(Frame {
-                                context_id,
-                                begin_micros,
-                                end_micros: event.at_micros(),
-                                counters: Vec::new(),
-                            });
-                            collecting = Some((event.thread_id(), event.at_micros()));
+    FrameTracker::new().push(snapshot)
+}
+
+/// Pairs frames across consecutive snapshots of one runtime, such as the
+/// windows a subscription delivers, without keeping the snapshots.
+///
+/// Each [`push`](Self::push) returns the frames that ended in that snapshot,
+/// including ones that began in an earlier one, with counter changes computed
+/// from the last sample the tracker saw, even in an earlier snapshot. Like a
+/// [`SpanTracker`], it starts over after a gap or a restart, reported by
+/// [`continuity`](Self::continuity).
+#[derive(Clone, Debug, Default)]
+pub struct FrameTracker {
+    instance_id: Option<u64>,
+    next_sequence: u64,
+    /// Begun frames: begin sequence, context, and time.
+    open: Vec<(u64, ContextId, u64)>,
+    previous: HashMap<(CounterDescId, ContextId), u64>,
+    /// Whether every event since the runtime started has been seen, so a
+    /// counter without a previous sample was zero before.
+    complete_history: bool,
+    continuity: Continuity,
+}
+
+impl FrameTracker {
+    /// Creates a tracker that has seen no snapshot.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns how the last pushed snapshot followed the one before it.
+    #[must_use]
+    pub const fn continuity(&self) -> Continuity {
+        self.continuity
+    }
+
+    /// Pairs the frames of `snapshot` with those still open from earlier
+    /// snapshots.
+    pub fn push(&mut self, snapshot: &OwnedSnapshot) -> Vec<Frame> {
+        self.continuity = continuity(&mut self.instance_id, self.next_sequence, snapshot);
+        match self.continuity {
+            Continuity::First => {
+                self.complete_history =
+                    snapshot.window().since() == 0 && snapshot.window().missed() == 0;
+            }
+            Continuity::Continuous => {}
+            Continuity::Gap | Continuity::Restarted => {
+                self.open.clear();
+                self.previous.clear();
+                self.complete_history = false;
+            }
+        }
+        self.next_sequence = snapshot.window().next();
+
+        let mut frames = Vec::new();
+        // The frame end whose samples are being collected: thread and time.
+        let mut collecting: Option<(u64, u64)> = None;
+        for event in snapshot.events() {
+            match event.observation() {
+                OwnedObservation::FrameMarker {
+                    kind: MarkerKind::Frame,
+                    phase,
+                    context_id,
+                } => {
+                    collecting = None;
+                    match phase {
+                        MarkerPhase::Begin => {
+                            self.open
+                                .push((event.sequence(), *context_id, event.at_micros()));
+                        }
+                        MarkerPhase::End => {
+                            if let Some((sequence, context_id, begin_micros)) = self.open.pop() {
+                                frames.push(Frame {
+                                    sequence,
+                                    context_id,
+                                    begin_micros,
+                                    end_micros: event.at_micros(),
+                                    counters: Vec::new(),
+                                });
+                                collecting = Some((event.thread_id(), event.at_micros()));
+                            }
                         }
                     }
                 }
-            }
-            OwnedObservation::CounterSample {
-                desc_id,
-                name,
-                unit,
-                context_id,
-                kind,
-                value,
-            } => {
-                let key = (*desc_id, *context_id);
-                let change = match kind {
-                    CounterKind::Counter => match previous.get(&key) {
-                        Some(before) => Some(value.saturating_sub(*before)),
-                        None if complete_history => Some(*value),
-                        None => None,
-                    },
-                    _ => None,
-                };
-                previous.insert(key, *value);
-                if collecting == Some((event.thread_id(), event.at_micros()))
-                    && let Some(frame) = frames.last_mut()
-                {
-                    frame.counters.push(FrameCounter {
-                        desc_id: *desc_id,
-                        name: name.clone(),
-                        unit: *unit,
-                        context_id: *context_id,
-                        kind: *kind,
-                        value: *value,
-                        change,
-                    });
+                OwnedObservation::CounterSample {
+                    desc_id,
+                    name,
+                    unit,
+                    context_id,
+                    kind,
+                    value,
+                } => {
+                    let key = (*desc_id, *context_id);
+                    let change = match kind {
+                        CounterKind::Counter => match self.previous.get(&key) {
+                            Some(before) => Some(value.saturating_sub(*before)),
+                            None if self.complete_history => Some(*value),
+                            None => None,
+                        },
+                        _ => None,
+                    };
+                    self.previous.insert(key, *value);
+                    if collecting == Some((event.thread_id(), event.at_micros()))
+                        && let Some(frame) = frames.last_mut()
+                    {
+                        frame.counters.push(FrameCounter {
+                            desc_id: *desc_id,
+                            name: name.clone(),
+                            unit: *unit,
+                            context_id: *context_id,
+                            kind: *kind,
+                            value: *value,
+                            change,
+                        });
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
+        frames
     }
-    frames
 }
