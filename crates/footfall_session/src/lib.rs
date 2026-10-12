@@ -32,7 +32,7 @@ pub use snapshot::{
 };
 
 /// Current protocol version for Footfall session messages.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(2, 0);
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 
 /// Semantic protocol version for a stream of session messages.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

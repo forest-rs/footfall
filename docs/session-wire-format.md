@@ -76,7 +76,7 @@ Each encoded envelope starts with:
 4. `u64 chunk_index`
 5. `u8 payload_tag`
 
-Current codec version is `2.0`. The payload tags are:
+Current codec version is `1.0`. The payload tags are:
 
 - `0`: `SnapshotStart`
 - `1`: `Contexts`
@@ -106,8 +106,7 @@ payload for that tag:
 - `2`: bool, `u8` (`0` false, `1` true)
 - `3`: string
 
-Label keys are user-defined, so they travel by name. Version `2.0` replaced the
-`1.x` encoding, where each key was a `u8` tag into a fixed vocabulary.
+Label keys are user-defined, so they travel by name.
 
 Context id `0` is the empty root context. Other context ids are the producer's
 registered context handles: opaque integers, sparse rather than dense, stable
@@ -180,7 +179,9 @@ chunk snapshots to keep latency and consumer memory bounded.
 
 ## Compatibility Rule
 
-Changes that add payload tags, reorder snapshot publication, change field
-encoding, or change the meaning of existing tags require a protocol version
-bump and a migration note. Consumers must already handle chunked publication and
-dropped-data summaries, so changing chunk sizes does not require a version bump.
+The protocol stays at `1.0` until Footfall is first published, so changes
+before then do not bump it. After that, changes that add payload tags, reorder
+snapshot publication, change field encoding, or change the meaning of existing
+tags require a protocol version bump. Consumers must already handle chunked
+publication and dropped-data summaries, so changing chunk sizes does not
+require a version bump.
