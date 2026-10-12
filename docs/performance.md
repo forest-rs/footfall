@@ -34,6 +34,7 @@ in `target/criterion`.
   - `runtime`: `footfall_runtime` installed directly, plus the
     `footfall_tracing` layer as the global `tracing` subscriber
   - `fanout`: `footfall_fanout` over the runtime and the core no-op backend
+  - `capture`: `footfall_runtime` holding only a seeded capture
 - Each case gets 1 s of warmup and 3 s of measurement. Criterion reports a
   point estimate of the time per iteration with a 95% confidence interval.
 - The runtime is never reset. Cases that buffer events fill the event buffer
@@ -72,41 +73,87 @@ machines.
 - Machine: Apple M3 Max, 16 cores, 64 GB
 - OS: macOS 27.0.1
 - Toolchain: rustc 1.98.1
-- Branch: `context-handles`
+- Branch: `analysis`, the tip of the stack that moved the runtime to cursor
+  reads
 
 | Case | Estimate | 95% interval |
 | --- | ---: | ---: |
-| none/counter_add | 0.44 ns | 0.44 ns – 0.45 ns |
-| none/scope begin+end | 0.57 ns | 0.57 ns – 0.57 ns |
-| none/scope guard | 0.62 ns | 0.62 ns – 0.63 ns |
-| none/message | 0.42 ns | 0.42 ns – 0.42 ns |
-| none/context register+release | 2.68 ns | 2.68 ns – 2.69 ns |
-| none/context build/1 labels | 11.24 ns | 11.22 ns – 11.26 ns |
-| none/context build/4 labels | 18.27 ns | 18.25 ns – 18.30 ns |
-| none/context build/8 labels | 50.11 ns | 50.01 ns – 50.22 ns |
-| runtime/off/counter_add | 0.45 ns | 0.45 ns – 0.45 ns |
-| runtime/off/scope begin+end | 0.57 ns | 0.56 ns – 0.57 ns |
-| runtime/counters/counter_add | 44.81 ns | 44.76 ns – 44.88 ns |
-| runtime/counters/gauge_set | 44.44 ns | 44.40 ns – 44.48 ns |
-| runtime/counters/histogram_record | 41.76 ns | 41.74 ns – 41.78 ns |
-| runtime/counters/counter_add 1024 rotating contexts | 47.55 ns | 47.50 ns – 47.61 ns |
-| runtime/counters/context register+release | 102.05 ns | 101.61 ns – 102.48 ns |
-| runtime/counters/counter_add with register+release per call | 163.44 ns | 162.92 ns – 164.01 ns |
-| runtime/counters/counter_add threads/1 | 44.53 ns | 44.49 ns – 44.58 ns |
-| runtime/counters/counter_add threads/2 | 26.16 ns | 24.07 ns – 28.68 ns |
-| runtime/counters/counter_add threads/4 | 15.11 ns | 13.72 ns – 16.61 ns |
-| runtime/counters/counter_add threads/8 | 12.64 ns | 11.94 ns – 13.37 ns |
-| runtime/scoped/scope begin+end | 69.47 ns | 69.41 ns – 69.52 ns |
-| runtime/scoped/scope guard | 70.34 ns | 70.28 ns – 70.40 ns |
-| runtime/scoped/message | 37.10 ns | 36.98 ns – 37.20 ns |
-| runtime/scoped/message_with 2 args | 36.98 ns | 36.82 ns – 37.15 ns |
-| runtime/scoped/tracing span enter+exit | 197.91 ns | 197.73 ns – 198.12 ns |
-| runtime/scoped/tracing event | 104.35 ns | 104.28 ns – 104.43 ns |
-| runtime/trace/resource_update | 32.41 ns | 32.38 ns – 32.45 ns |
-| runtime/capture/snapshot 128 frames | 32.2 µs | 31.5 µs – 32.8 µs |
-| runtime/capture/chrome trace export 128 frames | 279.7 µs | 279.3 µs – 280.3 µs |
-| fanout/counters/counter_add | 45.41 ns | 45.29 ns – 45.52 ns |
-| fanout/scoped/scope begin+end | 91.02 ns | 90.87 ns – 91.18 ns |
+| none/counter_add | 0.42 ns | 0.42 ns – 0.42 ns |
+| none/scope begin+end | 0.54 ns | 0.53 ns – 0.55 ns |
+| none/scope guard | 0.62 ns | 0.62 ns – 0.62 ns |
+| none/message | 0.42 ns | 0.41 ns – 0.42 ns |
+| none/context register+release | 2.66 ns | 2.66 ns – 2.67 ns |
+| none/context build/1 labels | 11.20 ns | 11.18 ns – 11.21 ns |
+| none/context build/4 labels | 18.05 ns | 18.04 ns – 18.06 ns |
+| none/context build/8 labels | 49.72 ns | 49.65 ns – 49.78 ns |
+| runtime/off/counter_add | 0.44 ns | 0.44 ns – 0.44 ns |
+| runtime/off/scope begin+end | 0.57 ns | 0.57 ns – 0.57 ns |
+| runtime/counters/counter_add | 44.76 ns | 44.60 ns – 44.87 ns |
+| runtime/counters/gauge_set | 44.83 ns | 44.81 ns – 44.85 ns |
+| runtime/counters/histogram_record | 41.53 ns | 41.51 ns – 41.57 ns |
+| runtime/counters/counter_add 1024 rotating contexts | 47.02 ns | 46.99 ns – 47.04 ns |
+| runtime/counters/context register+release | 103.07 ns | 102.70 ns – 103.45 ns |
+| runtime/counters/counter_add with register+release per call | 299.35 ns | 295.18 ns – 303.60 ns |
+| runtime/counters/counter_add threads/1 | 42.93 ns | 42.34 ns – 43.44 ns |
+| runtime/counters/counter_add threads/2 | 22.58 ns | 22.41 ns – 22.72 ns |
+| runtime/counters/counter_add threads/4 | 11.62 ns | 11.60 ns – 11.64 ns |
+| runtime/counters/counter_add threads/8 | 10.70 ns | 10.25 ns – 11.11 ns |
+| runtime/scoped/scope begin+end | 77.79 ns | 77.70 ns – 77.90 ns |
+| runtime/scoped/scope guard | 77.68 ns | 77.59 ns – 77.81 ns |
+| runtime/scoped/message | 43.20 ns | 43.10 ns – 43.31 ns |
+| runtime/scoped/message_with 2 args | 41.65 ns | 41.62 ns – 41.70 ns |
+| runtime/scoped/tracing span enter+exit | 210.01 ns | 209.71 ns – 210.36 ns |
+| runtime/scoped/tracing event | 113.89 ns | 113.77 ns – 114.04 ns |
+| runtime/trace/resource_update | 37.27 ns | 37.22 ns – 37.34 ns |
+| runtime/capture/snapshot 128 frames | 47.2 µs | 47.1 µs – 47.2 µs |
+| runtime/capture/chrome trace export 128 frames | 413.1 µs | 412.2 µs – 414.0 µs |
+| fanout/counters/counter_add | 45.12 ns | 45.09 ns – 45.16 ns |
+| fanout/scoped/scope begin+end | 94.33 ns | 94.25 ns – 94.44 ns |
+
+### Effect of the Cursor Runtime
+
+Criterion point estimates before and after the stack that replaced drained
+capture sessions with cursor reads over a buffer that keeps the newest
+events, compared against a baseline saved on `main` on the machine above.
+The two runs measure different states for buffered events: `main` reset the
+runtime between chunks, so its emissions never reached a full buffer, while
+the stack never resets, so every timed emission also evicts the oldest
+event. The capture cases now run on a runtime of their own and the seeded
+capture includes a counter sample per frame.
+
+| Case | Before | After |
+| --- | ---: | ---: |
+| none/counter_add | 0.42 ns | 0.42 ns |
+| none/scope begin+end | 0.50 ns | 0.54 ns |
+| none/scope guard | 0.65 ns | 0.62 ns |
+| none/message | 0.41 ns | 0.42 ns |
+| none/context register+release | 2.66 ns | 2.66 ns |
+| none/context build/1 labels | 11.23 ns | 11.20 ns |
+| none/context build/4 labels | 18.43 ns | 18.05 ns |
+| none/context build/8 labels | 49.93 ns | 49.72 ns |
+| runtime/off/counter_add | 0.42 ns | 0.44 ns |
+| runtime/off/scope begin+end | 0.50 ns | 0.57 ns |
+| runtime/counters/counter_add | 44.32 ns | 44.76 ns |
+| runtime/counters/gauge_set | 44.22 ns | 44.83 ns |
+| runtime/counters/histogram_record | 41.38 ns | 41.53 ns |
+| runtime/counters/counter_add 1024 rotating contexts | 47.18 ns | 47.02 ns |
+| runtime/counters/context register+release | 99.83 ns | 103.07 ns |
+| runtime/counters/counter_add with register+release per call | 163.85 ns | 299.35 ns |
+| runtime/counters/counter_add threads/1 | 44.63 ns | 42.93 ns |
+| runtime/counters/counter_add threads/2 | 22.83 ns | 22.58 ns |
+| runtime/counters/counter_add threads/4 | 12.38 ns | 11.62 ns |
+| runtime/counters/counter_add threads/8 | 11.74 ns | 10.70 ns |
+| runtime/scoped/scope begin+end | 69.65 ns | 77.79 ns |
+| runtime/scoped/scope guard | 69.65 ns | 77.68 ns |
+| runtime/scoped/message | 36.97 ns | 43.20 ns |
+| runtime/scoped/message_with 2 args | 36.59 ns | 41.65 ns |
+| runtime/scoped/tracing span enter+exit | 196.62 ns | 210.01 ns |
+| runtime/scoped/tracing event | 104.17 ns | 113.89 ns |
+| runtime/trace/resource_update | 32.29 ns | 37.27 ns |
+| runtime/capture/snapshot 128 frames | 29.0 µs | 47.2 µs |
+| runtime/capture/chrome trace export 128 frames | 275.8 µs | 413.1 µs |
+| fanout/counters/counter_add | 44.82 ns | 45.12 ns |
+| fanout/scoped/scope begin+end | 90.38 ns | 94.33 ns |
 
 ### Effect of the Hot-Path Changes
 
@@ -186,17 +233,22 @@ in the results above.
 - With no backend, or with the runtime at `Off`, a call costs under 1 ns:
   one relaxed atomic load and a branch inlined at the call site. Building
   with `RUSTFLAGS="--cfg footfall_compile_out"` removes even that.
-- Every captured observation costs roughly 30 to 70 ns: a timestamp, an
+- Every captured observation costs roughly 35 to 80 ns: a timestamp, an
   uncontended per-thread shard lock, and an aggregate lookup or event append.
-  Before context handles it was 170 to 210 ns, most of it hashing and
-  interning the `Context` under one runtime-wide lock.
+  With a full event buffer, which a long capture always reaches, an event
+  also evicts the recording thread's oldest event, 4 to 6 ns more than an
+  append into free space. Before context handles an observation cost 170 to
+  210 ns, most of it hashing and interning the `Context` under one
+  runtime-wide lock.
 - Counter throughput now grows with threads: per-op wall time at 2, 4, and 8
   threads is below the single-thread cost, where before it was one and a
   half to three times above it. Threads land in separate shards and share no
   lock on the counter path.
-- Registering a context costs about 100 ns with the runtime installed, so
-  registering per call, as in the anti-pattern case, gives back most of the
-  gain. Register once per owner.
+- Registering a context costs about 100 ns with the runtime installed.
+  Registering per call, as in the anti-pattern case, costs about 300 ns per
+  update, because each update then also admits a new counter key that the
+  runtime later retires. Register once per owner.
 - The event path still shares two atomics across threads, the event-capacity
-  reservation and the recording sequence, and snapshot merge and Chrome
-  export remain the largest costs.
+  reservation and the recording sequence. A snapshot reads only its window,
+  found by binary search in each thread's buffer, so reading recent events
+  from a large buffer stays cheap; Chrome export remains the largest cost.
