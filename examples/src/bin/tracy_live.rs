@@ -3,7 +3,7 @@
 
 //! The demo renderer, shown live in Tracy while Footfall captures it too.
 //!
-//! Start the Tracy profiler and connect to this program: scopes appear as
+//! Start the Tracy 0.14 profiler and connect to this program: scopes appear as
 //! zones, counters as plots, and frame markers as frames. A fan-out backend
 //! sends every emission to both Tracy and the runtime.
 //!
@@ -50,7 +50,8 @@ fn main() {
         args.frames, args.fps
     );
     println!(
-        "Open the Tracy profiler and connect to {HINT}tracy_live{HINT:#}; Ctrl-C stops early.\n"
+        "Open the {HINT}Tracy 0.14{HINT:#} profiler and connect to {HINT}tracy_live{HINT:#}; \
+         other Tracy versions cannot connect. Ctrl-C stops early.\n"
     );
 
     let stop = Arc::new(AtomicBool::new(false));

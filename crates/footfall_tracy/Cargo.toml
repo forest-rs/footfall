@@ -14,9 +14,10 @@ description = "A Footfall backend that shows scopes, counters, and frames live i
 
 [features]
 default = ["enable", "broadcast"]
-# `delayed-init` starts the Tracy profiler on first use, by a `TracyBackend`,
-# rather than before `main` in every program that links this crate.
-enable = ["tracy-client/delayed-init", "tracy-client/enable"]
+# `manual-lifetime` starts the Tracy profiler on first use, by a
+# `TracyBackend`, rather than before `main` in every program that links this
+# crate.
+enable = ["tracy-client/enable", "tracy-client/manual-lifetime"]
 broadcast = ["enable", "tracy-client/broadcast"]
 ondemand = ["enable", "tracy-client/ondemand"]
 only-ipv4 = ["enable", "tracy-client/only-ipv4"]
@@ -24,7 +25,12 @@ only-localhost = ["enable", "tracy-client/only-localhost"]
 
 [dependencies]
 footfall_core = { features = ["std"], workspace = true }
+# The Tracy version, which the profiler must match, is set in the workspace
+# Cargo.toml; see the note there before updating these.
 tracy-client = { features = [], workspace = true }
+# Not used directly: depending on it pins the Tracy protocol version, which
+# tracy-client alone leaves open.
+tracy-client-sys = { workspace = true }
 
 [lib]
 path = "src/lib.rs"

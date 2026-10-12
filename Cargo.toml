@@ -41,7 +41,13 @@ footfall_session = { default-features = false, path = "crates/footfall_session",
 footfall_session_wtransport = { default-features = false, path = "crates/footfall_session_wtransport", version = "0.1.0" }
 footfall_tracing = { default-features = false, path = "crates/footfall_tracing", version = "0.1.0" }
 footfall_tracy = { default-features = false, path = "crates/footfall_tracy", version = "0.1.0" }
-tracy-client = { default-features = false, version = "0.18.4" }
+# These choose the Tracy protocol version: tracy-client-sys 0.30 is Tracy
+# 0.14, and the Tracy profiler must be the same version. When updating them,
+# update the Tracy version in crates/footfall_tracy/README.md, the crate docs
+# in crates/footfall_tracy/src/lib.rs, examples/README.md, CHANGELOG.md, and
+# the docs and output of examples/src/bin/tracy_live.rs.
+tracy-client = { default-features = false, version = "0.19.0" }
+tracy-client-sys = { default-features = false, version = "0.30.0" }
 
 [workspace.lints]
 # LINEBENDER LINT SET - Cargo.toml - v8
