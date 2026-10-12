@@ -20,6 +20,18 @@ pub enum InstrumentationLevel {
 }
 
 impl InstrumentationLevel {
+    /// Returns the level's stable lowercase name: `"off"`, `"counters"`,
+    /// `"scoped"`, or `"trace"`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Counters => "counters",
+            Self::Scoped => "scoped",
+            Self::Trace => "trace",
+        }
+    }
+
     /// Returns `true` when counters are enabled at this level.
     #[must_use]
     pub const fn captures_counters(self) -> bool {

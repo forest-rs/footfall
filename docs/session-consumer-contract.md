@@ -28,13 +28,42 @@ The important types are:
 Snapshot publication has a fixed shape:
 
 1. `SnapshotStart`
-2. zero or more `Contexts` chunks
-3. zero or more `Counters` chunks
-4. zero or more `Histograms` chunks
-5. zero or more `Events` chunks
-6. `SnapshotEnd`
+2. at most one `Threads` envelope
+3. zero or more `Contexts` chunks
+4. zero or more `Counters` chunks
+5. zero or more `Histograms` chunks
+6. zero or more `Events` chunks
+7. `SnapshotEnd`
 
 That ordering is the contract a consumer should rely on.
+
+## What a Snapshot Is
+
+A producer's runtime keeps a recent window of history, not a session that
+someone drains, so any number of consumers can read it without affecting one
+another:
+
+- Counters, gauges, and histograms are cumulative since the runtime was
+  created. Every snapshot carries their current values; to see change over
+  time, compare two snapshots.
+- Events are numbered by a sequence that counts every event the runtime
+  recorded. A snapshot covers a window of that sequence: `since` up to
+  `next`. Request the next snapshot with the previous one's
+  `next_cursor()`, and you receive only newer events.
+- The runtime keeps a bounded number of events and evicts the oldest to make
+  room. `missed` in the window counts events in the range that were evicted
+  before you read them; read more often, or ask for a larger event capacity,
+  if it is not zero.
+- Every snapshot names the runtime's random `instance_id`. Context, descriptor,
+  and thread ids and event sequence numbers are only meaningful within one
+  instance. A cursor from an earlier instance, for example from before the
+  producer restarted, reads from the start, and the snapshot's instance id
+  tells you to discard what you cached.
+
+`SnapshotStart` also says which `footfall_runtime` version produced the
+snapshot and the level and capacities it was capturing with. The level tells
+you what an empty snapshot means: no events at the `counters` level means
+scopes were not being captured, not that none ran.
 
 ## Required Consumer Behavior
 
@@ -44,9 +73,12 @@ A conforming consumer should:
 - accept chunked publication
 - build a context table from `Contexts`
 - resolve counter and event `context_id`s through that table by id, not by
-  position; ids are sparse producer handles, and a context can keep its id
-  across snapshots and sessions
-- treat `SnapshotEnd` dropped counts as real loss accounting, not noise
+  position; ids are sparse producer handles that stay fixed for the life of
+  the producer's runtime instance
+- keep the cursor from each snapshot and pass it to the next request
+- reset its caches when the instance id changes
+- treat the window's `missed` count and the `SnapshotEnd` totals as real loss
+  accounting, not noise
 
 It should not assume:
 
@@ -104,7 +136,7 @@ It needs:
 - contexts by id
 - counters by descriptor and context
 - resource lifecycle events
-- dropped-data totals
+- missed-event and drop totals
 
 That is enough to build:
 

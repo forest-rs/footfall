@@ -381,8 +381,8 @@ on snapshot":
   release, and snapshots
 - each recording thread writes counters and events into its own shard
 - snapshots merge shards and resolve handles at a safe boundary
-- released contexts stay resolvable until their session ends; live ones
-  survive session resets
+- released contexts stay resolvable until every event recorded before their
+  release has been evicted, and are retired only when the room is needed
 
 ### Memory Model
 

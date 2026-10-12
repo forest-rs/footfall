@@ -10,8 +10,9 @@ use footfall_core::{
     ResourceId, ResourceKindId, ScopeDescId, ScopeToken, Unit,
 };
 use footfall_runtime::{
-    ContextSnapshot, CounterKind, CounterSnapshot, HISTOGRAM_BUCKET_COUNT, HistogramSnapshot,
-    Observation, Snapshot, SnapshotMetadata, TimedObservation,
+    ContextSnapshot, CounterKind, CounterSnapshot, Drops, EventCursor, EventWindow,
+    HISTOGRAM_BUCKET_COUNT, HistogramSnapshot, Observation, Snapshot, SnapshotMetadata,
+    ThreadSnapshot, TimedObservation,
 };
 
 use crate::{PROTOCOL_VERSION, ProtocolVersion};
@@ -82,25 +83,16 @@ impl Default for Chunking {
 /// Header common to every session envelope.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EnvelopeHeader {
-    /// Protocol version used by this envelope.
     protocol_version: ProtocolVersion,
-    /// Monotonic session sequence copied from the runtime snapshot.
-    session_sequence: u64,
-    /// Zero-based chunk index within the snapshot publication.
     chunk_index: u64,
 }
 
 impl EnvelopeHeader {
-    /// Creates a new `EnvelopeHeader`.
+    /// Creates an envelope header.
     #[must_use]
-    pub const fn new(
-        protocol_version: ProtocolVersion,
-        session_sequence: u64,
-        chunk_index: u64,
-    ) -> Self {
+    pub const fn new(protocol_version: ProtocolVersion, chunk_index: u64) -> Self {
         Self {
             protocol_version,
-            session_sequence,
             chunk_index,
         }
     }
@@ -111,12 +103,6 @@ impl EnvelopeHeader {
         self.protocol_version
     }
 
-    /// Returns the monotonic session sequence copied from the runtime snapshot.
-    #[must_use]
-    pub const fn session_sequence(&self) -> u64 {
-        self.session_sequence
-    }
-
     /// Returns the zero-based chunk index within the snapshot publication.
     #[must_use]
     pub const fn chunk_index(&self) -> u64 {
@@ -124,129 +110,126 @@ impl EnvelopeHeader {
     }
 }
 
-/// Borrowed description of one snapshot window.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SnapshotSummary<'a> {
-    /// Snapshot metadata identifying the process and session.
-    metadata: &'a SnapshotMetadata,
-    /// Snapshot start time relative to runtime creation.
-    capture_start_micros: u64,
-    /// Snapshot end time relative to runtime creation.
-    captured_at_micros: u64,
-    /// Number of canonical contexts in the snapshot.
-    context_count: usize,
-    /// Number of counters in the snapshot.
-    counter_count: usize,
-    /// Number of histograms in the snapshot.
-    histogram_count: usize,
-    /// Number of timestamped events in the snapshot.
-    event_count: usize,
+/// Number of rows of each kind a published snapshot carries.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RowCounts {
+    threads: usize,
+    contexts: usize,
+    counters: usize,
+    histograms: usize,
+    events: usize,
 }
 
-impl<'a> SnapshotSummary<'a> {
-    /// Creates a new `SnapshotSummary`.
+impl RowCounts {
+    /// Creates row counts.
     #[must_use]
     pub const fn new(
-        metadata: &'a SnapshotMetadata,
-        capture_start_micros: u64,
-        captured_at_micros: u64,
-        context_count: usize,
-        counter_count: usize,
-        histogram_count: usize,
-        event_count: usize,
+        threads: usize,
+        contexts: usize,
+        counters: usize,
+        histograms: usize,
+        events: usize,
     ) -> Self {
         Self {
-            metadata,
-            capture_start_micros,
-            captured_at_micros,
-            context_count,
-            counter_count,
-            histogram_count,
-            event_count,
+            threads,
+            contexts,
+            counters,
+            histograms,
+            events,
         }
     }
 
-    /// Returns the snapshot metadata identifying the process and session.
+    /// Returns the row counts of a runtime snapshot.
+    #[must_use]
+    pub fn of(snapshot: &Snapshot) -> Self {
+        Self::new(
+            snapshot.threads().len(),
+            snapshot.contexts().len(),
+            snapshot.counters().len(),
+            snapshot.histograms().len(),
+            snapshot.events().len(),
+        )
+    }
+
+    /// Returns the number of thread rows.
+    #[must_use]
+    pub const fn threads(&self) -> usize {
+        self.threads
+    }
+
+    /// Returns the number of context rows.
+    #[must_use]
+    pub const fn contexts(&self) -> usize {
+        self.contexts
+    }
+
+    /// Returns the number of counter rows.
+    #[must_use]
+    pub const fn counters(&self) -> usize {
+        self.counters
+    }
+
+    /// Returns the number of histogram rows.
+    #[must_use]
+    pub const fn histograms(&self) -> usize {
+        self.histograms
+    }
+
+    /// Returns the number of event rows.
+    #[must_use]
+    pub const fn events(&self) -> usize {
+        self.events
+    }
+}
+
+/// Borrowed description of one published snapshot, sent before its rows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SnapshotSummary<'a> {
+    metadata: &'a SnapshotMetadata,
+    captured_at_micros: u64,
+    window: EventWindow,
+    counts: RowCounts,
+}
+
+impl<'a> SnapshotSummary<'a> {
+    /// Creates a snapshot summary.
+    #[must_use]
+    pub const fn new(
+        metadata: &'a SnapshotMetadata,
+        captured_at_micros: u64,
+        window: EventWindow,
+        counts: RowCounts,
+    ) -> Self {
+        Self {
+            metadata,
+            captured_at_micros,
+            window,
+            counts,
+        }
+    }
+
+    /// Returns the metadata identifying the producing runtime.
     #[must_use]
     pub const fn metadata(&self) -> &'a SnapshotMetadata {
         self.metadata
     }
 
-    /// Returns the snapshot start time relative to runtime creation.
-    #[must_use]
-    pub const fn capture_start_micros(&self) -> u64 {
-        self.capture_start_micros
-    }
-
-    /// Returns the snapshot end time relative to runtime creation.
+    /// Returns the time since runtime creation when the snapshot was taken.
     #[must_use]
     pub const fn captured_at_micros(&self) -> u64 {
         self.captured_at_micros
     }
 
-    /// Returns the number of canonical contexts in the snapshot.
+    /// Returns the range of event sequence numbers the snapshot covers.
     #[must_use]
-    pub const fn context_count(&self) -> usize {
-        self.context_count
+    pub const fn window(&self) -> EventWindow {
+        self.window
     }
 
-    /// Returns the number of counters in the snapshot.
+    /// Returns how many rows of each kind follow.
     #[must_use]
-    pub const fn counter_count(&self) -> usize {
-        self.counter_count
-    }
-
-    /// Returns the number of histograms in the snapshot.
-    #[must_use]
-    pub const fn histogram_count(&self) -> usize {
-        self.histogram_count
-    }
-
-    /// Returns the number of timestamped events in the snapshot.
-    #[must_use]
-    pub const fn event_count(&self) -> usize {
-        self.event_count
-    }
-}
-
-/// Snapshot loss accounting carried at the end of publication.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DroppedSummary {
-    /// Number of observations dropped because a new context could not be interned.
-    contexts: u64,
-    /// Number of counter updates dropped due to counter-key capacity pressure.
-    counters: u64,
-    /// Number of events dropped due to event-capacity pressure.
-    events: u64,
-}
-
-impl DroppedSummary {
-    /// Creates a new `DroppedSummary`.
-    #[must_use]
-    pub const fn new(contexts: u64, counters: u64, events: u64) -> Self {
-        Self {
-            contexts,
-            counters,
-            events,
-        }
-    }
-
-    /// Returns the number of observations dropped because a new context could not be interned.
-    #[must_use]
-    pub const fn contexts(&self) -> u64 {
-        self.contexts
-    }
-
-    /// Returns the number of counter updates dropped due to counter-key capacity pressure.
-    #[must_use]
-    pub const fn counters(&self) -> u64 {
-        self.counters
-    }
-
-    /// Returns the number of events dropped due to event-capacity pressure.
-    #[must_use]
-    pub const fn events(&self) -> u64 {
-        self.events
+    pub const fn counts(&self) -> RowCounts {
+        self.counts
     }
 }
 
@@ -283,8 +266,10 @@ impl<'a> Envelope<'a> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum Payload<'a> {
-    /// Describes the snapshot window before chunk data arrives.
+    /// Describes the snapshot before its rows arrive.
     SnapshotStart(SnapshotSummary<'a>),
+    /// The threads that recorded the snapshot's events.
+    Threads(&'a [ThreadSnapshot]),
     /// One chunk of canonical context rows.
     Contexts(&'a [ContextSnapshot]),
     /// One chunk of aggregated counter rows.
@@ -293,8 +278,9 @@ pub enum Payload<'a> {
     Histograms(&'a [HistogramSnapshot]),
     /// One chunk of timestamped event rows.
     Events(&'a [TimedObservation]),
-    /// Finishes publication with dropped-data totals.
-    SnapshotEnd(DroppedSummary),
+    /// Finishes publication with what the producer could not keep or
+    /// attribute.
+    SnapshotEnd(Drops),
 }
 
 /// Consumer of versioned session envelopes.
@@ -306,145 +292,60 @@ pub trait Consumer {
     fn consume(&mut self, envelope: Envelope<'_>) -> Result<(), Self::Error>;
 }
 
-/// Owned form of [`SnapshotMetadata`] suitable for transport and storage.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OwnedSnapshotMetadata {
-    /// Process name used by exporters.
-    process_name: String,
-    /// Optional capture-session label.
-    session_name: Option<String>,
-    /// Monotonic sequence number of the capture session.
-    session_sequence: u64,
-    /// Wall-clock time of runtime creation in microseconds since the Unix
-    /// epoch; adding it to any snapshot timestamp yields wall-clock time.
-    wall_clock_anchor_micros: u64,
-}
-
-impl OwnedSnapshotMetadata {
-    /// Creates a new `OwnedSnapshotMetadata`.
-    #[must_use]
-    pub const fn new(
-        process_name: String,
-        session_name: Option<String>,
-        session_sequence: u64,
-        wall_clock_anchor_micros: u64,
-    ) -> Self {
-        Self {
-            process_name,
-            session_name,
-            session_sequence,
-            wall_clock_anchor_micros,
-        }
-    }
-
-    /// Returns the process name used by exporters.
-    #[must_use]
-    pub fn process_name(&self) -> &str {
-        &self.process_name
-    }
-
-    /// Returns the optional capture-session label.
-    #[must_use]
-    pub fn session_name(&self) -> Option<&str> {
-        self.session_name.as_deref()
-    }
-
-    /// Returns the monotonic sequence number of the capture session.
-    #[must_use]
-    pub const fn session_sequence(&self) -> u64 {
-        self.session_sequence
-    }
-
-    /// Returns the wall-clock time of runtime creation in microseconds since the Unix
-    /// epoch; adding it to any snapshot timestamp yields wall-clock time.
-    #[must_use]
-    pub const fn wall_clock_anchor_micros(&self) -> u64 {
-        self.wall_clock_anchor_micros
-    }
-}
-
-/// Owned description of one snapshot window.
+/// Owned description of one published snapshot, sent before its rows.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedSnapshotSummary {
-    /// Snapshot metadata identifying the process and session.
-    metadata: OwnedSnapshotMetadata,
-    /// Snapshot start time relative to runtime creation.
-    capture_start_micros: u64,
-    /// Snapshot end time relative to runtime creation.
+    metadata: SnapshotMetadata,
     captured_at_micros: u64,
-    /// Number of canonical contexts in the snapshot.
-    context_count: usize,
-    /// Number of counters in the snapshot.
-    counter_count: usize,
-    /// Number of histograms in the snapshot.
-    histogram_count: usize,
-    /// Number of timestamped events in the snapshot.
-    event_count: usize,
+    window: EventWindow,
+    counts: RowCounts,
 }
 
 impl OwnedSnapshotSummary {
-    /// Creates a new `OwnedSnapshotSummary`.
+    /// Creates a snapshot summary.
     #[must_use]
     pub const fn new(
-        metadata: OwnedSnapshotMetadata,
-        capture_start_micros: u64,
+        metadata: SnapshotMetadata,
         captured_at_micros: u64,
-        context_count: usize,
-        counter_count: usize,
-        histogram_count: usize,
-        event_count: usize,
+        window: EventWindow,
+        counts: RowCounts,
     ) -> Self {
         Self {
             metadata,
-            capture_start_micros,
             captured_at_micros,
-            context_count,
-            counter_count,
-            histogram_count,
-            event_count,
+            window,
+            counts,
         }
     }
 
-    /// Returns the snapshot metadata identifying the process and session.
+    /// Returns the metadata identifying the producing runtime.
     #[must_use]
-    pub const fn metadata(&self) -> &OwnedSnapshotMetadata {
+    pub const fn metadata(&self) -> &SnapshotMetadata {
         &self.metadata
     }
 
-    /// Returns the snapshot start time relative to runtime creation.
-    #[must_use]
-    pub const fn capture_start_micros(&self) -> u64 {
-        self.capture_start_micros
-    }
-
-    /// Returns the snapshot end time relative to runtime creation.
+    /// Returns the time since runtime creation when the snapshot was taken.
     #[must_use]
     pub const fn captured_at_micros(&self) -> u64 {
         self.captured_at_micros
     }
 
-    /// Returns the number of canonical contexts in the snapshot.
+    /// Returns the range of event sequence numbers the snapshot covers.
     #[must_use]
-    pub const fn context_count(&self) -> usize {
-        self.context_count
+    pub const fn window(&self) -> EventWindow {
+        self.window
     }
 
-    /// Returns the number of counters in the snapshot.
+    /// Returns the cursor to request the next snapshot from.
     #[must_use]
-    pub const fn counter_count(&self) -> usize {
-        self.counter_count
+    pub const fn next_cursor(&self) -> EventCursor {
+        EventCursor::new(self.metadata.instance_id(), self.window.next())
     }
 
-    /// Returns the number of histograms in the snapshot.
+    /// Returns how many rows of each kind follow.
     #[must_use]
-    pub const fn histogram_count(&self) -> usize {
-        self.histogram_count
-    }
-
-    /// Returns the number of timestamped events in the snapshot.
-    #[must_use]
-    pub const fn event_count(&self) -> usize {
-        self.event_count
+    pub const fn counts(&self) -> RowCounts {
+        self.counts
     }
 }
 
@@ -754,6 +655,8 @@ impl OwnedHistogramSnapshot {
 pub struct OwnedTimedObservation {
     /// Observation time in microseconds since runtime creation.
     at_micros: u64,
+    /// Runtime-assigned recording sequence number.
+    sequence: u64,
     /// Runtime-assigned id of the thread that recorded the observation.
     thread_id: u64,
     /// Observation payload.
@@ -763,9 +666,15 @@ pub struct OwnedTimedObservation {
 impl OwnedTimedObservation {
     /// Creates a new `OwnedTimedObservation`.
     #[must_use]
-    pub const fn new(at_micros: u64, thread_id: u64, observation: OwnedObservation) -> Self {
+    pub const fn new(
+        at_micros: u64,
+        sequence: u64,
+        thread_id: u64,
+        observation: OwnedObservation,
+    ) -> Self {
         Self {
             at_micros,
+            sequence,
             thread_id,
             observation,
         }
@@ -775,6 +684,13 @@ impl OwnedTimedObservation {
     #[must_use]
     pub const fn at_micros(&self) -> u64 {
         self.at_micros
+    }
+
+    /// Returns the runtime-assigned recording sequence number: unique within
+    /// one runtime instance, and the position cursors and windows count in.
+    #[must_use]
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
     }
 
     /// Returns the runtime-assigned id of the thread that recorded the observation.
@@ -915,8 +831,10 @@ impl OwnedSessionEnvelope {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum OwnedSessionPayload {
-    /// Describes the snapshot window before chunk data arrives.
+    /// Describes the snapshot before its rows arrive.
     SnapshotStart(OwnedSnapshotSummary),
+    /// The threads that recorded the snapshot's events.
+    Threads(Vec<ThreadSnapshot>),
     /// One chunk of canonical context rows.
     Contexts(Vec<OwnedContextSnapshot>),
     /// One chunk of aggregated counter rows.
@@ -925,8 +843,9 @@ pub enum OwnedSessionPayload {
     Histograms(Vec<OwnedHistogramSnapshot>),
     /// One chunk of timestamped event rows.
     Events(Vec<OwnedTimedObservation>),
-    /// Finishes publication with dropped-data totals.
-    SnapshotEnd(DroppedSummary),
+    /// Finishes publication with what the producer could not keep or
+    /// attribute.
+    SnapshotEnd(Drops),
 }
 
 /// Publishes one runtime snapshot to a consumer using a transport-neutral envelope stream.
@@ -937,29 +856,30 @@ pub fn publish_snapshot<C: Consumer>(
 ) -> Result<(), C::Error> {
     let mut chunk_index = 0_u64;
     consumer.consume(Envelope {
-        header: EnvelopeHeader {
-            protocol_version: PROTOCOL_VERSION,
-            session_sequence: snapshot.metadata().session_sequence(),
-            chunk_index,
-        },
+        header: envelope_header(chunk_index),
         payload: Payload::SnapshotStart(SnapshotSummary {
             metadata: snapshot.metadata(),
-            capture_start_micros: snapshot.capture_start_micros(),
             captured_at_micros: snapshot.captured_at_micros(),
-            context_count: snapshot.contexts().len(),
-            counter_count: snapshot.counters().len(),
-            histogram_count: snapshot.histograms().len(),
-            event_count: snapshot.events().len(),
+            window: snapshot.window(),
+            counts: RowCounts::of(snapshot),
         }),
     })?;
     chunk_index = chunk_index.saturating_add(1);
+
+    if !snapshot.threads().is_empty() {
+        consumer.consume(Envelope {
+            header: envelope_header(chunk_index),
+            payload: Payload::Threads(snapshot.threads()),
+        })?;
+        chunk_index = chunk_index.saturating_add(1);
+    }
 
     for contexts in snapshot
         .contexts()
         .chunks(normalized_chunk_size(chunking.max_contexts))
     {
         consumer.consume(Envelope {
-            header: envelope_header(snapshot, chunk_index),
+            header: envelope_header(chunk_index),
             payload: Payload::Contexts(contexts),
         })?;
         chunk_index = chunk_index.saturating_add(1);
@@ -970,7 +890,7 @@ pub fn publish_snapshot<C: Consumer>(
         .chunks(normalized_chunk_size(chunking.max_counters))
     {
         consumer.consume(Envelope {
-            header: envelope_header(snapshot, chunk_index),
+            header: envelope_header(chunk_index),
             payload: Payload::Counters(counters),
         })?;
         chunk_index = chunk_index.saturating_add(1);
@@ -981,7 +901,7 @@ pub fn publish_snapshot<C: Consumer>(
         .chunks(normalized_chunk_size(chunking.max_histograms))
     {
         consumer.consume(Envelope {
-            header: envelope_header(snapshot, chunk_index),
+            header: envelope_header(chunk_index),
             payload: Payload::Histograms(histograms),
         })?;
         chunk_index = chunk_index.saturating_add(1);
@@ -992,22 +912,15 @@ pub fn publish_snapshot<C: Consumer>(
         .chunks(normalized_chunk_size(chunking.max_events))
     {
         consumer.consume(Envelope {
-            header: envelope_header(snapshot, chunk_index),
+            header: envelope_header(chunk_index),
             payload: Payload::Events(events),
         })?;
         chunk_index = chunk_index.saturating_add(1);
     }
 
     consumer.consume(Envelope {
-        header: envelope_header(snapshot, chunk_index),
-        payload: Payload::SnapshotEnd(DroppedSummary {
-            contexts: snapshot
-                .drops()
-                .refused_contexts()
-                .saturating_add(snapshot.drops().unattributed()),
-            counters: snapshot.drops().counter_updates(),
-            events: snapshot.drops().events(),
-        }),
+        header: envelope_header(chunk_index),
+        payload: Payload::SnapshotEnd(snapshot.drops()),
     })
 }
 
@@ -1020,10 +933,9 @@ pub fn collect_snapshot(snapshot: &Snapshot, chunking: Chunking) -> Vec<OwnedSes
     collector.envelopes
 }
 
-fn envelope_header(snapshot: &Snapshot, chunk_index: u64) -> EnvelopeHeader {
+const fn envelope_header(chunk_index: u64) -> EnvelopeHeader {
     EnvelopeHeader {
         protocol_version: PROTOCOL_VERSION,
-        session_sequence: snapshot.metadata().session_sequence(),
         chunk_index,
     }
 }
@@ -1045,20 +957,13 @@ impl Envelope<'_> {
             payload: match self.payload {
                 Payload::SnapshotStart(summary) => {
                     OwnedSessionPayload::SnapshotStart(OwnedSnapshotSummary {
-                        metadata: OwnedSnapshotMetadata {
-                            process_name: String::from(summary.metadata.process_name()),
-                            session_name: summary.metadata.session_name().map(String::from),
-                            session_sequence: summary.metadata.session_sequence(),
-                            wall_clock_anchor_micros: summary.metadata.wall_clock_anchor_micros(),
-                        },
-                        capture_start_micros: summary.capture_start_micros,
+                        metadata: summary.metadata.clone(),
                         captured_at_micros: summary.captured_at_micros,
-                        context_count: summary.context_count,
-                        counter_count: summary.counter_count,
-                        histogram_count: summary.histogram_count,
-                        event_count: summary.event_count,
+                        window: summary.window,
+                        counts: summary.counts,
                     })
                 }
+                Payload::Threads(threads) => OwnedSessionPayload::Threads(threads.to_vec()),
                 Payload::Contexts(contexts) => OwnedSessionPayload::Contexts(
                     contexts.iter().map(owned_context_snapshot).collect(),
                 ),
@@ -1156,6 +1061,7 @@ fn owned_histogram_snapshot(histogram: &HistogramSnapshot) -> OwnedHistogramSnap
 fn owned_timed_observation(observation: &TimedObservation) -> Option<OwnedTimedObservation> {
     Some(OwnedTimedObservation {
         at_micros: observation.at_micros(),
+        sequence: observation.sequence(),
         thread_id: observation.thread_id(),
         observation: owned_observation(observation.observation())?,
     })
@@ -1258,11 +1164,11 @@ mod tests {
 
     static FRAME: LabelKey = LabelKey::new("frame");
     use footfall_runtime::{
-        ContextSnapshot, CounterKind, CounterSnapshot, Observation, Snapshot, SnapshotMetadata,
-        TimedObservation,
+        ContextSnapshot, CounterKind, CounterSnapshot, Drops, EventWindow, Observation, Snapshot,
+        SnapshotMetadata, ThreadSnapshot, TimedObservation,
     };
 
-    use super::{Chunking, Consumer, DroppedSummary, Envelope, Payload, publish_snapshot};
+    use super::{Chunking, Consumer, Envelope, Payload, publish_snapshot};
     use crate::PROTOCOL_VERSION;
 
     #[test]
@@ -1277,10 +1183,16 @@ mod tests {
         histogram.record(16, 21);
         let metadata = SnapshotMetadata::new("demo")
             .with_session_name("capture")
-            .with_session_sequence(3)
+            .with_instance_id(7)
             .with_wall_clock_anchor_micros(1_700_000_000_000_000);
         let snapshot = Snapshot::builder(metadata)
-            .capture_window(10, 30)
+            .captured_at_micros(30)
+            .window(EventWindow::new(0, 2, 0))
+            .thread(ThreadSnapshot::new(
+                1,
+                Some(alloc::string::String::from("main")),
+            ))
+            .thread(ThreadSnapshot::new(2, None))
             .context(ContextSnapshot::new(ContextId::new(0), Context::root()))
             .context(ContextSnapshot::new(
                 ContextId::new(1),
@@ -1322,10 +1234,10 @@ mod tests {
                 },
             ))
             .drops(
-                footfall_runtime::Drops::new()
+                Drops::new()
                     .with_refused_contexts(1)
                     .with_counter_updates(2)
-                    .with_events(3),
+                    .with_evicted_events(3),
             )
             .build();
 
@@ -1338,6 +1250,7 @@ mod tests {
             consumer.payloads,
             vec![
                 "start",
+                "threads:2",
                 "contexts:1",
                 "contexts:1",
                 "counters:1",
@@ -1350,11 +1263,12 @@ mod tests {
         );
         assert_eq!(
             consumer.dropped,
-            Some(DroppedSummary {
-                contexts: 1,
-                counters: 2,
-                events: 3,
-            })
+            Some(
+                Drops::new()
+                    .with_refused_contexts(1)
+                    .with_counter_updates(2)
+                    .with_evicted_events(3)
+            )
         );
     }
 
@@ -1362,7 +1276,7 @@ mod tests {
     struct RecordingConsumer {
         protocol_version: Option<crate::ProtocolVersion>,
         payloads: Vec<&'static str>,
-        dropped: Option<DroppedSummary>,
+        dropped: Option<Drops>,
     }
 
     impl Consumer for RecordingConsumer {
@@ -1373,8 +1287,15 @@ mod tests {
             match envelope.payload {
                 Payload::SnapshotStart(summary) => {
                     assert_eq!(summary.metadata.process_name(), "demo");
-                    assert_eq!(summary.context_count, 2);
+                    assert_eq!(summary.counts.contexts(), 2);
+                    assert_eq!(summary.window.next(), 2);
                     self.payloads.push("start");
+                }
+                Payload::Threads(rows) => {
+                    self.payloads.push(match rows.len() {
+                        2 => "threads:2",
+                        _ => "threads:n",
+                    });
                 }
                 Payload::Contexts(rows) => {
                     self.payloads.push(match rows.len() {

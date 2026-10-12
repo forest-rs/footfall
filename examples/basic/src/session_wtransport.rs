@@ -46,7 +46,7 @@ async fn main() {
                         .await
                         .expect("discovery response should succeed");
                 }
-                SessionRequestKind::Snapshot { session_id }
+                SessionRequestKind::Snapshot { session_id, .. }
                     if session_id == served_announcement.id() =>
                 {
                     let snapshot = capture.capture_frame(11);
@@ -58,7 +58,7 @@ async fn main() {
                         served_snapshot = true;
                     }
                 }
-                SessionRequestKind::Snapshot { session_id } => {
+                SessionRequestKind::Snapshot { session_id, .. } => {
                     request
                         .respond_error(&format!("unknown session `{session_id}`"))
                         .await
@@ -81,7 +81,7 @@ async fn main() {
         .into_iter()
         .find(|session| session.id() == announcement.id())
         .expect("published session should be discoverable");
-    let envelopes = fetch_local_session(discovered.id())
+    let envelopes = fetch_local_session(discovered.id(), None)
         .await
         .expect("session client should fetch one snapshot");
     server_task

@@ -120,8 +120,9 @@ Avoid building instrumentation around ad hoc strings when an id or integer will 
 
 ## Getting Data Out
 
-A runtime snapshot holds everything captured so far: contexts, counters,
-histograms, and timestamped events. Read it directly, or export it:
+A runtime keeps a recent window of history that anyone can read without
+draining it. A snapshot holds the current contexts, counters, and histograms,
+and the retained events; read it directly, or export it:
 
 ```rust
 use footfall_runtime::Runtime;
@@ -129,6 +130,19 @@ use footfall_runtime::Runtime;
 fn write_trace(runtime: &Runtime) -> std::io::Result<()> {
     let snapshot = runtime.snapshot();
     footfall_export::write_chrome_trace_file(&snapshot, "trace.json")
+}
+```
+
+To capture one region of work, take a cursor first and read only what was
+recorded after it:
+
+```rust
+use footfall_runtime::Runtime;
+
+fn capture_region(runtime: &Runtime, work: impl FnOnce()) -> footfall_runtime::Snapshot {
+    let cursor = runtime.cursor();
+    work();
+    runtime.snapshot_since(cursor)
 }
 ```
 
@@ -146,9 +160,11 @@ and size each capacity for what the app emits:
   contexts each is recorded under. Recording a counter under a context per
   frame or per item multiplies the keys it needs.
 - `event_capacity`: two events per scope plus one per marker, flow step,
-  message, or resource change, over the span you want to keep.
-- `context_capacity`: registered contexts, live and released, within one
-  session.
+  message, or resource change, over the span of history you want to keep.
+  When it is full, the oldest events are evicted.
+- `context_capacity`: registered contexts, live and recently released.
+  Released contexts are retired, with their counter rows, once no retained
+  event refers to them.
 
 Each `Drops` count names the capacity to raise.
 

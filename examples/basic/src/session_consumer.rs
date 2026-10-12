@@ -34,7 +34,7 @@ async fn main() {
     let announcement = select_session(argument.as_deref())
         .await
         .unwrap_or_else(|error| panic!("{error}"));
-    let envelopes = fetch_local_session(announcement.id())
+    let envelopes = fetch_local_session(announcement.id(), None)
         .await
         .expect("session client should fetch one snapshot");
     let summary = summarize(&envelopes);

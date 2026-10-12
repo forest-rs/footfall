@@ -17,6 +17,12 @@ mod live;
 #[cfg(feature = "std")]
 mod snapshot;
 
+/// Runtime types that session envelopes carry as they are, re-exported so
+/// consumers can name them without depending on `footfall_runtime`.
+#[cfg(feature = "std")]
+pub use footfall_runtime::{
+    CaptureSettings, Drops, EventCursor, EventWindow, SnapshotMetadata, ThreadSnapshot,
+};
 pub use live::{
     SessionError, SessionErrorCode, SessionMessage, SessionMethod, SessionRequest,
     SessionRequestId, SessionResponse, SessionResult, SessionStreamEnd, SessionStreamId,
@@ -24,11 +30,10 @@ pub use live::{
 };
 #[cfg(feature = "std")]
 pub use snapshot::{
-    Chunking, Consumer, DroppedSummary, Envelope, EnvelopeHeader, OwnedArgEntry, OwnedContextEntry,
+    Chunking, Consumer, Envelope, EnvelopeHeader, OwnedArgEntry, OwnedContextEntry,
     OwnedContextSnapshot, OwnedCounterSnapshot, OwnedHistogramSnapshot, OwnedLabelValue,
-    OwnedObservation, OwnedSessionEnvelope, OwnedSessionPayload, OwnedSnapshotMetadata,
-    OwnedSnapshotSummary, OwnedTimedObservation, Payload, SnapshotSummary, collect_snapshot,
-    publish_snapshot,
+    OwnedObservation, OwnedSessionEnvelope, OwnedSessionPayload, OwnedSnapshotSummary,
+    OwnedTimedObservation, Payload, RowCounts, SnapshotSummary, collect_snapshot, publish_snapshot,
 };
 
 /// Current protocol version for Footfall session messages.

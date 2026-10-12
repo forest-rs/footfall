@@ -1,9 +1,10 @@
 # WebTransport Session Wire Format
 
-This document records the concrete wire format used by
-`footfall_session_wtransport`. The semantic contract is still the
-transport-neutral envelope model in `footfall_session`; this format is the current
-localhost WebTransport encoding of that model.
+This document is the byte-level specification of the format used by
+`footfall_session_wtransport`, complete enough to write a client in another
+language. The semantic model is the transport-neutral envelope model in
+`footfall_session`; see the [consumer contract](session-consumer-contract.md)
+for what the values mean and how to use them.
 
 ## Transport
 
@@ -16,21 +17,34 @@ The default local endpoint is:
   each connection attempt
 - Streams: one bidirectional stream per discovery or snapshot request
 
-All integer fields are little-endian. Strings are encoded as `u32 byte_len`
-followed by UTF-8 bytes.
+## Primitive Encodings
+
+- Integers are little-endian: `u8`, `u16`, `u32`, `u64`, and `i64`
+  (two's complement).
+- `string` is a `u32` byte length followed by that many bytes of UTF-8.
+- `option<T>` is a `u8` presence tag, `0` for absent or `1` for present,
+  followed by a `T` when present.
+- `count` is a `u32` element count followed by that many elements.
 
 ## Requests
 
 Discovery request:
 
-1. magic bytes `FFALLD01`
-2. end stream
+| Field | Type | Notes |
+|---|---|---|
+| magic | 8 bytes | `FFALLD01` |
 
 Snapshot request:
 
-1. magic bytes `FFALLS01`
-2. session id string
-3. end stream
+| Field | Type | Notes |
+|---|---|---|
+| magic | 8 bytes | `FFALLS01` |
+| session id | `string` | from a discovery announcement |
+| since | `option<cursor>` | absent for everything retained |
+
+A `cursor` is `u64 instance_id` then `u64 sequence`: the instance id and next
+sequence from a previous snapshot's `SnapshotStart`. The client finishes its
+send side after the request.
 
 ## Responses
 
@@ -42,126 +56,194 @@ The first response byte is a response tag:
 
 Discovery response payload:
 
-1. `u64 session_count`
-2. repeated session announcements
+1. `u64` session count
+2. that many session announcements
 
 Each session announcement is:
 
-1. session id string
-2. process name string
-3. session name tag, where `0` means absent and `1` means present
-4. session name string when present
+1. session id `string`
+2. process name `string`
+3. session name `option<string>`
 
 Snapshot response payload:
 
-1. `u64 envelope_count`
-2. repeated envelope frames
-
-Each envelope frame is:
-
-1. `u32 frame_len`
-2. exactly `frame_len` encoded envelope bytes
+1. `u64` envelope count
+2. that many envelope frames, each a `u32` frame length followed by exactly
+   that many bytes of encoded envelope
 
 Error response payload:
 
-1. error message string
+1. error message `string`
 
-## Envelope Frame
+## Envelopes
 
-Each encoded envelope starts with:
+Each encoded envelope is a header, a `u8` payload tag, and the payload:
 
-1. `u16 protocol_major`
-2. `u16 protocol_minor`
-3. `u64 session_sequence`
-4. `u64 chunk_index`
-5. `u8 payload_tag`
+| Field | Type |
+|---|---|
+| protocol major | `u16` |
+| protocol minor | `u16` |
+| chunk index | `u64` |
+| payload tag | `u8` |
+| payload | per tag |
 
-Current codec version is `1.0`. The payload tags are:
+The current protocol version is `1.0`. Payload tags, in publication order:
 
-- `0`: `SnapshotStart`
-- `1`: `Contexts`
-- `2`: `Counters`
-- `3`: `Events`
-- `4`: `SnapshotEnd`
-- `5`: `Histograms`
+| Tag | Payload | Occurs |
+|---|---|---|
+| `0` | `SnapshotStart` | once, first |
+| `1` | `Threads` | at most once |
+| `2` | `Contexts` | zero or more chunks |
+| `3` | `Counters` | zero or more chunks |
+| `4` | `Histograms` | zero or more chunks |
+| `5` | `Events` | zero or more chunks |
+| `6` | `SnapshotEnd` | once, last |
 
-Publication order is `SnapshotStart`, `Contexts`, `Counters`, `Histograms`,
-`Events`, `SnapshotEnd`; the `Histograms` tag is numerically last only because
-it was added after the original five.
+Chunk indexes count from `0` at `SnapshotStart` and increase by one per
+envelope.
 
 A decoder rejects unsupported versions, unknown tags, truncated payloads, and
 trailing bytes after a valid payload. Minor versions are additive: a decoder
 accepts envelopes with its own major version and an equal or older minor
 version, and rejects a different major version or a newer minor version.
 
-## Row Fields Worth Calling Out
+### SnapshotStart
 
-Context rows carry a `u64` context id, a `u32` label count bounded by
-`footfall_core::CONTEXT_INLINE_CAPACITY`, and that many labels. Each label is
-the key name string followed by a tagged label value: a `u8` tag, then the
-payload for that tag:
+| Field | Type | Notes |
+|---|---|---|
+| process name | `string` | |
+| session name | `option<string>` | |
+| instance id | `u64` | random per runtime; see below |
+| wall-clock anchor | `u64` | microseconds since the Unix epoch at runtime creation |
+| producer version | `string` | version of `footfall_runtime` |
+| level | `u8` | `0` off, `1` counters, `2` scoped, `3` trace |
+| counter capacity | `u64` | |
+| event capacity | `u64` | |
+| context capacity | `u64` | |
+| captured at | `u64` | microseconds since runtime creation |
+| window since | `u64` | first event sequence covered |
+| window next | `u64` | sequence the next read starts from |
+| window missed | `u64` | events in the window evicted before the read |
+| thread rows | `u32` | rows in `Threads` |
+| context rows | `u32` | rows across `Contexts` chunks |
+| counter rows | `u32` | rows across `Counters` chunks |
+| histogram rows | `u32` | rows across `Histograms` chunks |
+| event rows | `u32` | rows across `Events` chunks |
 
-- `0`: unsigned, `u64`
-- `1`: signed, `i64`
-- `2`: bool, `u8` (`0` false, `1` true)
-- `3`: string
+### Threads
 
-Label keys are user-defined, so they travel by name.
+A `count` of thread rows, each `u64` thread id followed by the thread's
+operating-system name as `option<string>`.
 
-Context id `0` is the empty root context. Other context ids are the producer's
-registered context handles: opaque integers, sparse rather than dense, stable
-for as long as the producer keeps the context registered, and therefore stable
-across that producer's snapshots and sessions. Resolve them through the
-`Contexts` rows of the same snapshot, never by position. Counter, histogram,
-and event rows only reference ids present in those rows; observations whose
-handle the producer could not resolve arrive attributed to `0` and are counted
-in the dropped-contexts total.
+### Contexts
 
-Snapshot metadata carries a `u64` wall-clock anchor after the session
-sequence: the wall-clock time of runtime creation in microseconds since the
-Unix epoch. All snapshot timestamps are relative to runtime creation, so
-`anchor + at_micros` yields wall-clock time for any row.
+A `count` of context rows. Each row is a `u64` context id and a `count` of
+labels, at most `footfall_core::CONTEXT_INLINE_CAPACITY`; each label is a key
+name `string` followed by a label value.
 
-Counter rows carry a `u8` unit tag after the descriptor name:
+A label value is a `u8` tag and its payload:
 
-- `0`: bytes
-- `1`: count
-- `2`: nanos
-- `3`: micros
-- `4`: ratio
-- `5`: items
+| Tag | Kind | Payload |
+|---|---|---|
+| `0` | unsigned | `u64` |
+| `1` | signed | `i64` |
+| `2` | bool | `u8`, `0` false or `1` true |
+| `3` | string | `string` |
 
-Descriptor ids in counter, histogram, scope-begin, message, and resource
-rows are opaque, session-scoped `u64` values: dense integers from `1`, shared
-across descriptor kinds, assigned by the producer in first-seen order and
-reset when the capture session resets. They are never memory addresses.
-Consumers may use them to group rows within one session but must not compare
-them across sessions; the descriptor name travels next to every id.
+### Counters
 
-Event rows carry a `u64` runtime-assigned thread id after the timestamp. Ids
-are small integers assigned in first-emission order within one process
-lifetime; they are not OS thread ids.
+A `count` of counter rows:
 
-Event rows are published in snapshot order: by timestamp, with ties broken by
-recording order. Events recorded by one thread keep their program order even
-when they share a timestamp, so consumers must preserve row order across
-`Events` chunks rather than re-sorting by timestamp and observation kind.
+| Field | Type | Notes |
+|---|---|---|
+| descriptor id | `u64` | |
+| name | `string` | |
+| unit | `u8` | see below |
+| context id | `u64` | |
+| kind | `u8` | `0` counter (cumulative sum), `1` gauge (last value) |
+| value | `u64` | |
+| updated at | `u64` | microseconds since runtime creation |
 
-Scope-begin rows end with a per-instance argument list: a `u8` count bounded
-by `footfall_core::ARGS_INLINE_CAPACITY`, followed by that many entries of key
-string plus tagged label value (the same value encoding used by context
-labels).
+Units:
 
-Histogram rows carry descriptor id, name string, unit tag, and context id,
-followed by `count`, `sum`, `min`, `max`, all
-`footfall_runtime::HISTOGRAM_BUCKET_COUNT` bucket values, and the last update
-time, each as `u64`.
+| Tag | Unit |
+|---|---|
+| `0` | bytes |
+| `1` | count |
+| `2` | nanoseconds |
+| `3` | microseconds |
+| `4` | ratio, in parts per million (`1_000_000` is `1.0`) |
+| `5` | items |
 
-Event rows use a `u8` observation tag: `0` scope begin, `1` scope end, `2`
-resource create, `3` resource update, `4` resource drop, `5` frame marker,
-`6` flow, `7` message. Message rows carry descriptor id, name string, context
-id, text string (truncated by producers to
-`footfall_runtime::MESSAGE_TEXT_MAX_BYTES`), and a per-instance argument list.
+### Histograms
+
+A `count` of histogram rows: descriptor id `u64`, name `string`, unit `u8`,
+context id `u64`, then `count`, `sum`, `min`, and `max` as `u64`, then
+`footfall_runtime::HISTOGRAM_BUCKET_COUNT` (64) bucket counts as `u64`, then
+the last update time as `u64`. Bucket `i` counts samples whose bit length is
+`i`; `min` is meaningless while `count` is zero.
+
+### Events
+
+A `count` of event rows. Each row is `u64` timestamp (microseconds since
+runtime creation), `u64` sequence, `u64` thread id, then a `u8` observation
+tag and its fields:
+
+| Tag | Observation | Fields |
+|---|---|---|
+| `0` | scope begin | descriptor id `u64`, name `string`, context id `u64`, token `u64`, args |
+| `1` | scope end | token `u64` |
+| `2` | resource create | kind id `u64`, kind name `string`, resource id `u64`, context id `u64`, size `u64` |
+| `3` | resource update | kind id `u64`, kind name `string`, resource id `u64`, context id `u64`, size `u64` |
+| `4` | resource drop | kind id `u64`, kind name `string`, resource id `u64`, context id `u64` |
+| `5` | marker | kind `u8` (`0` frame, `1` transaction, `2` pass), phase `u8` (`0` begin, `1` end), context id `u64` |
+| `6` | flow | flow id `u64`, phase `u8` (`0` begin, `1` step, `2` end), context id `u64` |
+| `7` | message | descriptor id `u64`, name `string`, context id `u64`, text `string`, args |
+
+`args` is a `u8` entry count, at most `footfall_core::ARGS_INLINE_CAPACITY`,
+followed by that many entries of key `string` and label value. Message text is
+truncated by producers to `footfall_runtime::MESSAGE_TEXT_MAX_BYTES`.
+
+### SnapshotEnd
+
+| Field | Type | Notes |
+|---|---|---|
+| refused contexts | `u64` | registrations refused, since runtime creation |
+| unattributed | `u64` | rows in this snapshot attributed to the root context |
+| counter updates | `u64` | updates dropped for lack of a counter key, since runtime creation |
+| evicted events | `u64` | events evicted to make room, since runtime creation |
+
+## Identities and Ordering
+
+The instance id identifies one runtime from creation to exit. Context ids,
+descriptor ids, thread ids, and event sequence numbers are only meaningful
+within one instance; a consumer that sees a new instance id must drop what it
+cached from the old one.
+
+Context id `0` is the empty root context. Other context ids are the
+producer's registered context handles: opaque, sparse, and stable while the
+producer keeps the context. Resolve them through the `Contexts` rows of the
+same snapshot, never by position. Counter, histogram, and event rows only
+reference ids present in those rows; rows whose handle the producer could not
+resolve arrive attributed to `0` and are counted as unattributed.
+
+Descriptor ids are dense integers from `1`, shared across descriptor kinds and
+assigned in first-seen order, fixed for the life of the instance. They are
+never memory addresses. The descriptor name travels next to every id.
+
+Thread ids are small integers assigned in first-emission order within one
+process lifetime; they are not operating-system thread ids.
+
+Event sequence numbers count every event the instance recorded, from `0`. A
+snapshot's events are the retained ones numbered from window since up to
+window next; window missed counts the rest of that range, which were evicted
+before the read. Event rows are published by timestamp, with ties broken by
+sequence, so events recorded by one thread keep their program order even when
+they share a timestamp. Keep row order across `Events` chunks rather than
+re-sorting by timestamp and observation kind.
+
+All timestamps are microseconds on a monotonic clock that starts at runtime
+creation; adding the wall-clock anchor yields wall-clock time.
 
 ## Payload Limits
 
@@ -171,7 +253,7 @@ The codec enforces these bounds before allocating dynamic payload data:
 - encoded envelope frame: 16 MiB
 - envelopes per snapshot response: 1,000,000
 - session announcements per discovery response: 4,096
-- rows per context, counter, histogram, or event envelope: 65,536
+- rows per thread, context, counter, histogram, or event envelope: 65,536
 - labels per context row: `footfall_core::CONTEXT_INLINE_CAPACITY`
 
 These are protocol limits, not tuning recommendations. Producers should still
@@ -183,5 +265,4 @@ The protocol stays at `1.0` until Footfall is first published, so changes
 before then do not bump it. After that, changes that add payload tags, reorder
 snapshot publication, change field encoding, or change the meaning of existing
 tags require a protocol version bump. Consumers must already handle chunked
-publication and dropped-data summaries, so changing chunk sizes does not
-require a version bump.
+publication, so changing chunk sizes does not require a version bump.

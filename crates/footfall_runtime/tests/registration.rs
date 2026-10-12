@@ -62,8 +62,10 @@ fn contexts_register_through_the_installed_backend() {
 
     let released = transparent.handle();
     drop(transparent);
-    let drained = runtime.drain_snapshot();
-    assert!(drained.context(released.id()).is_some());
-    assert!(runtime.snapshot().context(released.id()).is_none());
-    assert!(runtime.snapshot().context(opaque.id()).is_some());
+    let snapshot = runtime.snapshot();
+    assert!(
+        snapshot.context(released.id()).is_some(),
+        "released contexts stay until the runtime needs the room"
+    );
+    assert!(snapshot.context(opaque.id()).is_some());
 }

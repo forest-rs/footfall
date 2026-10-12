@@ -66,14 +66,8 @@ pub const WARM_UP: Duration = Duration::from_secs(1);
 /// Criterion measurement time per case.
 pub const MEASUREMENT: Duration = Duration::from_secs(3);
 
-/// Iterations timed between runtime resets.
-///
-/// Criterion grows its iteration counts until a sample fills the measurement
-/// time, which for fast cases would overflow any fixed event buffer and
-/// measure the drop path instead. [`time_chunked`] resets the runtime, outside
-/// the timed region, every `CHUNK_ITERS` iterations.
-pub const CHUNK_ITERS: u64 = 1 << 16;
-/// Runtime event capacity: room for one chunk of two-event cases, with margin.
+/// Runtime event capacity. Buffering cases fill it during warm-up and then
+/// evict one event per event recorded.
 pub const EVENT_CAPACITY: usize = 1 << 18;
 /// Runtime counter capacity: room for the rotating-context cases.
 pub const COUNTER_CAPACITY: usize = 1 << 14;
@@ -147,27 +141,6 @@ pub fn seed_snapshot(base: Context) -> Vec<RegisteredContext> {
             registered
         })
         .collect()
-}
-
-/// Times `iters` calls of `op`, calling `reset` outside the timed region
-/// before every chunk of at most [`CHUNK_ITERS`] calls.
-///
-/// Use this from Criterion's `iter_custom` for cases that fill a runtime
-/// buffer, so every timed call takes the same path.
-pub fn time_chunked(iters: u64, mut reset: impl FnMut(), mut op: impl FnMut()) -> Duration {
-    let mut total = Duration::ZERO;
-    let mut remaining = iters;
-    while remaining > 0 {
-        let chunk = remaining.min(CHUNK_ITERS);
-        reset();
-        let start = Instant::now();
-        for _ in 0..chunk {
-            op();
-        }
-        total += start.elapsed();
-        remaining -= chunk;
-    }
-    total
 }
 
 /// Times `threads` threads that each emit `iters` counter updates under

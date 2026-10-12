@@ -27,7 +27,7 @@ fn spans_and_events_reach_the_runtime() {
         tracing::info!(bytes = 4096_u64, status = "warm", "uploaded atlas");
     });
 
-    let snapshot = runtime.drain_snapshot();
+    let snapshot = runtime.snapshot();
     let (begin, span_context) = snapshot
         .events()
         .iter()
@@ -96,14 +96,9 @@ fn spans_and_events_reach_the_runtime() {
     );
     assert_eq!(message.1.get("status"), None);
 
-    assert!(
-        runtime.snapshot().context(span_context).is_none(),
-        "closing the span releases its context, purged once the session ends"
-    );
-
     // Bridge descriptors are distinct from application descriptors, even
-    // with the same name, and from those of another layer. Snapshot ids are
-    // only comparable within one session, so record all three in the next.
+    // with the same name, and from those of another layer.
+    let cursor = runtime.cursor();
     let second_layer = Dispatch::new(tracing_subscriber::registry().with(FootfallLayer::default()));
     {
         let _app = scope(&APP_SCOPE, ContextHandle::ROOT);
@@ -115,7 +110,7 @@ fn spans_and_events_reach_the_runtime() {
         });
     }
     let mut ids: Vec<_> = runtime
-        .snapshot()
+        .snapshot_since(cursor)
         .events()
         .iter()
         .filter_map(scope_begin_desc_id)
@@ -125,7 +120,7 @@ fn spans_and_events_reach_the_runtime() {
     ids.dedup();
     assert_eq!(ids.len(), 3, "no two descriptors share an id");
     assert!(
-        ids.iter().all(|id| (1..=3).contains(&id.get())),
+        ids.iter().all(|id| (1..=8).contains(&id.get())),
         "snapshot descriptor ids are dense, not addresses: {ids:?}"
     );
 }

@@ -68,12 +68,16 @@ pub fn write_chrome_trace_json(snapshot: &Snapshot, writer: &mut impl Write) -> 
         .map(|event| event.thread_id())
         .collect();
     for thread_id in threads {
+        let name = snapshot
+            .thread(thread_id)
+            .and_then(|thread| thread.name())
+            .map_or_else(|| format!("thread {thread_id}"), String::from);
         events.push(build_metadata_event(
             "thread_name",
             1,
             thread_id,
             "name",
-            &format!("thread {thread_id}"),
+            &name,
         ));
     }
     events.push(build_capture_window_event(snapshot));
@@ -108,7 +112,7 @@ pub fn write_chrome_trace_json(snapshot: &Snapshot, writer: &mut impl Write) -> 
         ("footfall_refused_contexts", drops.refused_contexts()),
         ("footfall_unattributed", drops.unattributed()),
         ("footfall_dropped_counter_updates", drops.counter_updates()),
-        ("footfall_dropped_events", drops.events()),
+        ("footfall_evicted_events", drops.evicted_events()),
     ] {
         if count > 0 {
             events.push(build_internal_counter_event(
@@ -181,47 +185,52 @@ fn build_capture_window_event(snapshot: &Snapshot) -> String {
     json.push(',');
     write_json_field_u64(&mut json, "tid", AGGREGATE_TID).expect("string write should succeed");
     json.push_str(",\"args\":{");
-    write_json_field_u64(
+    let metadata = snapshot.metadata();
+    let capture = metadata.capture();
+    let window = snapshot.window();
+    // The instance id is a full 64-bit value, which JSON numbers cannot
+    // carry exactly, so it travels as hex text.
+    write_json_field_str(
         &mut json,
-        "capture_start_micros",
-        snapshot.capture_start_micros(),
+        "instance_id",
+        &format!("{:016x}", metadata.instance_id()),
     )
     .expect("string write should succeed");
     json.push(',');
-    write_json_field_u64(
-        &mut json,
-        "capture_end_micros",
-        snapshot.captured_at_micros(),
-    )
-    .expect("string write should succeed");
+    write_json_field_str(&mut json, "producer_version", metadata.producer_version())
+        .expect("string write should succeed");
     json.push(',');
-    write_json_field_u64(
-        &mut json,
-        "session_sequence",
-        snapshot.metadata().session_sequence(),
-    )
-    .expect("string write should succeed");
-    json.push(',');
-    write_json_field_u64(
-        &mut json,
-        "wall_clock_anchor_micros",
-        snapshot.metadata().wall_clock_anchor_micros(),
-    )
-    .expect("string write should succeed");
-    // Drop totals are always present, so a reader can tell "nothing was
-    // dropped" from "this export does not say".
+    write_json_field_str(&mut json, "level", capture.level().as_str())
+        .expect("string write should succeed");
+    // Totals are always present, so a reader can tell "nothing was dropped"
+    // from "this export does not say".
     let drops = snapshot.drops();
-    for (name, count) in [
+    for (name, value) in [
+        ("captured_at_micros", snapshot.captured_at_micros()),
+        (
+            "wall_clock_anchor_micros",
+            metadata.wall_clock_anchor_micros(),
+        ),
+        ("counter_capacity", usize_to_u64(capture.counter_capacity())),
+        ("event_capacity", usize_to_u64(capture.event_capacity())),
+        ("context_capacity", usize_to_u64(capture.context_capacity())),
+        ("window_since", window.since()),
+        ("window_next", window.next()),
+        ("window_missed", window.missed()),
         ("refused_contexts", drops.refused_contexts()),
         ("unattributed", drops.unattributed()),
         ("dropped_counter_updates", drops.counter_updates()),
-        ("dropped_events", drops.events()),
+        ("evicted_events", drops.evicted_events()),
     ] {
         json.push(',');
-        write_json_field_u64(&mut json, name, count).expect("string write should succeed");
+        write_json_field_u64(&mut json, name, value).expect("string write should succeed");
     }
     json.push_str("}}");
     json
+}
+
+fn usize_to_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 fn build_counter_event(
@@ -774,8 +783,8 @@ mod tests {
         MarkerPhase, ScopeToken, Unit,
     };
     use footfall_runtime::{
-        ContextSnapshot, CounterKind, CounterSnapshot, Drops, Observation, Snapshot,
-        SnapshotMetadata, TimedObservation,
+        ContextSnapshot, CounterKind, CounterSnapshot, Drops, EventWindow, Observation, Snapshot,
+        SnapshotMetadata, ThreadSnapshot, TimedObservation,
     };
 
     static FRAME: LabelKey = LabelKey::new("frame");
@@ -786,10 +795,12 @@ mod tests {
     fn exporter_emits_metadata_context_tracks_and_scope_pairing() {
         let metadata = SnapshotMetadata::new("footfall")
             .with_session_name("recording")
-            .with_session_sequence(3)
+            .with_instance_id(0xabc)
             .with_wall_clock_anchor_micros(1_700_000_000_000_000);
         let snapshot = Snapshot::builder(metadata)
-            .capture_window(0, 30)
+            .captured_at_micros(30)
+            .window(EventWindow::new(0, 9, 1))
+            .thread(ThreadSnapshot::new(3, Some(String::from("render"))))
             .context(ContextSnapshot::new(ContextId::new(0), Context::root()))
             .context(ContextSnapshot::new(
                 ContextId::new(1),
@@ -848,7 +859,7 @@ mod tests {
                 Drops::new()
                     .with_refused_contexts(1)
                     .with_counter_updates(1)
-                    .with_events(2),
+                    .with_evicted_events(2),
             )
             .build();
 
@@ -857,7 +868,9 @@ mod tests {
         assert!(json.contains("\"process_labels\""));
         assert!(json.contains("frame=7 / pass=1"));
         assert!(json.contains("\"tid\":3"));
-        assert!(json.contains("\"name\":\"thread 3\""));
+        assert!(json.contains("\"name\":\"render\""));
+        assert!(json.contains("\"instance_id\":\"0000000000000abc\""));
+        assert!(json.contains("\"window_next\":9,\"window_missed\":1"));
         assert!(json.contains("\"upload_bytes [frame=7 / pass=1]\""));
         assert!(json.contains("\"ph\":\"B\""));
         assert!(json.contains("\"values\":{\"items\":3}"));
