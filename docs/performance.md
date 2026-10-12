@@ -110,6 +110,17 @@ machines.
 | fanout/counters/counter_add | 45.12 ns | 45.09 ns – 45.16 ns |
 | fanout/scoped/scope begin+end | 94.33 ns | 94.25 ns – 94.44 ns |
 
+### Since These Results
+
+The changes after `analysis` (the third trial's fixes, the `footfall` facade,
+the compact wire encoding, and the examples) do not touch the emission hot
+path. On 2026-10-12, interleaved runs of `main` and the pre-publish branch
+under the same background load agreed within noise: `counter_add` 45.6–45.9
+against 46.1 ns, `scope begin+end` 80.0–80.5 against 80.1–80.2 ns, `message`
+44.0–44.5 against 43.9–44.1 ns, and `context register+release` 107–108
+against 110–115 ns. The machine was too busy that day for new absolute
+figures, so the table above stands until a quiet run replaces it.
+
 ### Effect of the Cursor Runtime
 
 Criterion point estimates before and after the stack that replaced drained

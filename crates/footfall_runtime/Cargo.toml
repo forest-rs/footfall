@@ -10,7 +10,7 @@ homepage.workspace = true
 readme = "README.md"
 keywords.workspace = true
 categories.workspace = true
-description = "Bounded runtime collection for the Footfall observability family."
+description = "Bounded in-process capture for Footfall: counters, a window of recent events, and cursor reads that never drain."
 
 [dependencies]
 footfall_core = { features = ["std"], workspace = true }

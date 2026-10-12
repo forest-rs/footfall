@@ -10,7 +10,7 @@ homepage.workspace = true
 readme = "README.md"
 keywords.workspace = true
 categories.workspace = true
-description = "Export bridges for the Footfall observability family."
+description = "Chrome Trace JSON export of Footfall snapshots, for Perfetto and chrome://tracing."
 
 [dependencies]
 footfall_core = { features = ["std"], workspace = true }

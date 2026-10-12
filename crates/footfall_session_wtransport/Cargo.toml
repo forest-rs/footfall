@@ -10,7 +10,7 @@ homepage.workspace = true
 readme = "README.md"
 keywords.workspace = true
 categories.workspace = true
-description = "WebTransport session adapter for the Footfall observability family."
+description = "Serve Footfall sessions over local WebTransport, and discover, fetch, and subscribe to them."
 
 [dependencies]
 footfall_core.workspace = true

@@ -1,0 +1,48 @@
+# Changelog
+
+All notable changes to the published Footfall crates are recorded here. The
+crates share one version.
+
+## 0.1.0 (unreleased)
+
+The first release.
+
+### Instrumenting
+
+- `footfall` is the entry point. Its root is the instrumentation API, `no_std`
+  with no dependencies, and features add the runtime, export, sessions,
+  analysis, WebTransport serving, the `tracing` layer, and Tracy as modules.
+- Scopes, counters, gauges, histograms, frame, pass, and transaction
+  markers, causal flows, messages, and resource lifecycles, each named by a
+  `static` descriptor and attributed to a registered semantic context.
+- `scope!` for a scope that lasts to the end of the block; `context!` and
+  `args!` for labels and per-instance arguments.
+- Instrumentation levels, and `--cfg footfall_compile_out` to compile every
+  emission away.
+
+### Capturing
+
+- `footfall_runtime`: bounded per-thread capture that keeps the newest events,
+  with cursor reads that never drain, counter samples at frame ends, and
+  accounting for everything it could not keep.
+- Snapshots record their provenance: runtime instance, process, wall-clock
+  anchor, producer version, level, and capacities.
+
+### Consuming
+
+- `footfall_session`: `OwnedSnapshot`, the one form snapshots take outside
+  the process, live or from a file; a compact versioned wire codec; and
+  capture files.
+- `footfall_session_wtransport`: serve runtimes to local tools, which find
+  every producer without configuration, then fetch snapshots or subscribe
+  to windows of changes. Graceful shutdown delivers everything recorded.
+- `footfall_analysis`: spans, frames, and per-frame counter changes, across a
+  subscription's windows, with gaps and restarts reported.
+- `footfall_export`: Chrome Trace JSON for Perfetto.
+
+### Integrations
+
+- `footfall_tracing`: existing `tracing` spans and events, captured unchanged.
+- `footfall_tracy`: a live Tracy backend.
+- `footfall_fanout`: one backend that feeds two.
+- `footfall_memory`: scratch-buffer and cache metrics built on counters.

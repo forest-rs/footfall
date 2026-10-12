@@ -10,7 +10,7 @@ homepage.workspace = true
 readme = "README.md"
 keywords.workspace = true
 categories.workspace = true
-description = "Transport-neutral session envelopes for the Footfall observability family."
+description = "Footfall snapshots outside the process: owned snapshots, a compact versioned wire codec, and capture files."
 
 [features]
 default = ["std"]
@@ -25,3 +25,6 @@ path = "src/lib.rs"
 
 [lints]
 workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
