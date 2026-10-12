@@ -8,7 +8,7 @@ use footfall::{
     resource_drop, resource_update, scope, scope_with,
 };
 use footfall_memory::{CacheMetrics, CacheStats, ScratchMetrics, TrackedScratchVec};
-use footfall_runtime::{Runtime, Snapshot};
+use footfall_runtime::Runtime;
 use footfall_tracing::FootfallLayer;
 use tracing_subscriber::layer::SubscriberExt as _;
 
@@ -21,13 +21,11 @@ static CACHE: LabelKey = LabelKey::new("cache");
 static REASON: LabelKey = LabelKey::new("reason");
 
 static RECORD_FRAME: ScopeDesc =
-    footfall::scope_desc!("record_frame", "session_demo::DemoCapture::capture_frame");
-static TESSELLATE_NODE: ScopeDesc = footfall::scope_desc!(
-    "tessellate_node",
-    "session_demo::DemoCapture::capture_frame",
-);
+    footfall::scope_desc!("record_frame", "session_demo::DemoCapture::record_frame");
+static TESSELLATE_NODE: ScopeDesc =
+    footfall::scope_desc!("tessellate_node", "session_demo::DemoCapture::record_frame",);
 static UPLOAD_ATLAS: ScopeDesc =
-    footfall::scope_desc!("upload_atlas", "session_demo::DemoCapture::capture_frame");
+    footfall::scope_desc!("upload_atlas", "session_demo::DemoCapture::record_frame");
 
 static DRAW_OPS: CounterDesc = footfall::counter_desc!(count, "draw_ops");
 static UPLOAD_BYTES: CounterDesc = footfall::counter_desc!(bytes, "upload_bytes");
@@ -62,16 +60,20 @@ impl DemoCapture {
         Self { runtime }
     }
 
-    pub(crate) fn capture_frame(&self, frame: u32) -> Snapshot {
-        let subscriber = tracing_subscriber::registry().with(FootfallLayer::default());
-        tracing::subscriber::with_default(subscriber, || self.capture_frame_with_tracing(frame))
+    pub(crate) const fn runtime(&self) -> &'static Runtime {
+        self.runtime
     }
 
-    fn capture_frame_with_tracing(&self, frame: u32) -> Snapshot {
-        // Read back only what this frame records.
-        let cursor = self.runtime.cursor();
+    /// Records one frame of demo work.
+    pub(crate) fn record_frame(&self, frame: u32) {
+        let subscriber = tracing_subscriber::registry().with(FootfallLayer::default());
+        tracing::subscriber::with_default(subscriber, || self.record_frame_with_tracing(frame));
+    }
+
+    fn record_frame_with_tracing(&self, frame: u32) {
         // Register this frame's contexts; they are released when this
-        // function returns, after the snapshot below has resolved them.
+        // function returns, and the runtime keeps them until the frame's
+        // events are evicted.
         let frame_labels = Context::root()
             .with(&FRAME, frame)
             .with(&TRANSACTION, 1_u32 + frame / 8);
@@ -172,8 +174,6 @@ impl DemoCapture {
         }
         pass_end(record_context);
         frame_end(frame_context);
-
-        self.runtime.snapshot_since(cursor)
     }
 }
 

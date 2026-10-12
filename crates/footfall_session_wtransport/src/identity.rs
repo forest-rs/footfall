@@ -178,9 +178,13 @@ impl SessionIdentity {
 
     /// Returns where the local identity's certificate is stored, as PEM.
     ///
-    /// It is `footfall/wtransport/localhost-cert.pem` under the user's state
-    /// directory: `~/Library/Application Support` on macOS, `%APPDATA%` on
-    /// Windows, and `$XDG_STATE_HOME`, or `~/.local/state`, elsewhere.
+    /// It is `wtransport/localhost-cert.pem` under Footfall's state
+    /// directory: `$FOOTFALL_STATE_DIR` when set, and otherwise `footfall`
+    /// under the user's state directory, which is
+    /// `~/Library/Application Support` on macOS, `%APPDATA%` on Windows, and
+    /// `$XDG_STATE_HOME`, or `~/.local/state`, elsewhere. Producers and
+    /// consumers must agree on it, so set `FOOTFALL_STATE_DIR` for both or
+    /// neither.
     /// Consumers that cannot use [`Self::load_localhost_certificate_hash`],
     /// such as a browser, can hash the DER certificate in this file with
     /// SHA-256 to get the pin.
@@ -200,9 +204,9 @@ impl SessionIdentity {
 
 #[derive(Debug)]
 pub(crate) struct IdentityPaths {
-    directory: PathBuf,
-    cert: PathBuf,
-    key: PathBuf,
+    pub(crate) directory: PathBuf,
+    pub(crate) cert: PathBuf,
+    pub(crate) key: PathBuf,
 }
 
 pub(crate) fn local_identity_paths() -> io::Result<IdentityPaths> {
@@ -215,6 +219,10 @@ pub(crate) fn local_identity_paths() -> io::Result<IdentityPaths> {
 }
 
 pub(crate) fn local_state_directory() -> io::Result<PathBuf> {
+    if let Some(directory) = env::var_os("FOOTFALL_STATE_DIR") {
+        return Ok(PathBuf::from(directory));
+    }
+
     #[cfg(target_os = "macos")]
     {
         home_directory().map(|home| {

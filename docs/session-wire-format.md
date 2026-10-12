@@ -15,7 +15,8 @@ The default local endpoint is:
   certificate is valid for 14 days and is rotated automatically when it is
   expired or close to expiry, so clients should re-read the pinned hash on
   each connection attempt
-- Streams: one bidirectional stream per discovery or snapshot request
+- Streams: one bidirectional stream per discovery, snapshot, or
+  subscription request
 - A session request on any path other than the server's session path is
   refused with HTTP status 404
 
@@ -43,6 +44,20 @@ Snapshot request:
 | magic | 8 bytes | `FFALLS01` |
 | session id | `string` | from a discovery announcement |
 | since | `option<cursor>` | absent for everything retained |
+
+Subscription request:
+
+| Field | Type | Notes |
+|---|---|---|
+| magic | 8 bytes | `FFALLU01` |
+| session id | `string` | from a discovery announcement |
+| since | `option<cursor>` | where the first snapshot's events start |
+| interval | `u32` | milliseconds between snapshots; servers wait at least 10 |
+
+The server answers a subscription with a sequence of snapshot responses on
+the same stream, each starting at the previous one's next cursor, until the
+client stops reading or closes the connection. It may end the sequence with
+an error response, for example for an unknown session id.
 
 A `cursor` is `u64 instance_id` then `u64 sequence`: the instance id and next
 sequence from a previous snapshot's `SnapshotStart`. The client finishes its

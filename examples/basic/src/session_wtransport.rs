@@ -1,101 +1,48 @@
 // Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! End-to-end WebTransport session demo for Footfall.
+//! End-to-end WebTransport session demo for Footfall: one process serves its
+//! runtime and reads it back through the session client.
 
 mod session_demo;
 mod session_summary;
 
-use footfall_session::Chunking;
-use footfall_session::SessionErrorCode;
-use footfall_session_wtransport::{
-    ServedRequestKind, SessionAnnouncement, SessionClient, SessionIdentity, SessionRequestKind,
-    SessionServer, SessionServerConfig, default_local_url,
-};
+use footfall_session_wtransport::{LocalSessionServer, ServedSession};
 use session_demo::DemoCapture;
 use session_summary::{print_summary, summarize};
 
 #[tokio::main]
 async fn main() {
     let capture = DemoCapture::install("session_wtransport", "wt_demo");
-    let identity = SessionIdentity::load_or_create_localhost()
+    let server = LocalSessionServer::start(vec![ServedSession::new("wt_demo", capture.runtime())])
         .await
-        .expect("local localhost identity should load or be created");
-    let server = SessionServer::bind(&identity, SessionServerConfig::local_default())
-        .expect("session server should bind");
-    let announcement = SessionAnnouncement::new(
-        "wt_demo",
-        "session_wtransport",
-        Some(String::from("wt_demo")),
-    );
-    let served_announcement = announcement.clone();
+        .expect("local session server should start");
+    println!("server: {}", server.url());
 
-    println!("server: {}", default_local_url());
-    println!("session: {}", announcement.id());
-
-    let server_task = tokio::spawn(async move {
-        let mut served_snapshot = false;
-        while !served_snapshot {
-            let request = server
-                .accept_request()
-                .await
-                .expect("session server should accept the next request");
-            match request.kind().clone() {
-                SessionRequestKind::Discover => {
-                    request
-                        .respond_discovery(core::slice::from_ref(&served_announcement))
-                        .await
-                        .expect("discovery response should succeed");
-                }
-                SessionRequestKind::Snapshot { session_id, .. }
-                    if session_id == served_announcement.id() =>
-                {
-                    let snapshot = capture.capture_frame(11);
-                    let served = request
-                        .respond_snapshot(snapshot, Chunking::new(2, 2, 2, 16))
-                        .await
-                        .expect("snapshot response should succeed");
-                    if let ServedRequestKind::Snapshot { .. } = served.kind() {
-                        served_snapshot = true;
-                    }
-                }
-                SessionRequestKind::Snapshot { session_id, .. } => {
-                    request
-                        .respond_error(
-                            SessionErrorCode::NotFound,
-                            &format!("unknown session `{session_id}`"),
-                        )
-                        .await
-                        .expect("error response should succeed");
-                }
-                _ => {
-                    request
-                        .respond_error(SessionErrorCode::Unsupported, "unsupported request")
-                        .await
-                        .expect("error response should succeed");
-                }
-            }
-        }
-    });
-
-    let client = SessionClient::local()
-        .await
-        .expect("the local identity was created above");
+    let client = server.client();
     let discovery = client
         .discover()
         .await
         .expect("session discovery should succeed");
-    let discovered = discovery
-        .session(announcement.id())
-        .expect("published session should be discoverable");
-    let snapshot = client
-        .fetch(discovered.id(), None)
-        .await
-        .expect("session client should fetch one snapshot");
-    server_task
-        .await
-        .expect("session server task should not panic");
-    let summary = summarize(&snapshot);
+    let session = discovery
+        .session("wt_demo")
+        .expect("the served session should be discoverable");
 
-    print_summary(&summary);
+    capture.record_frame(10);
+    let first = client
+        .fetch(session.id(), None)
+        .await
+        .expect("session client should fetch a snapshot");
+    println!("first read: {} events", first.events().len());
+
+    capture.record_frame(11);
+    let second = client
+        .fetch(session.id(), Some(first.next_cursor()))
+        .await
+        .expect("session client should fetch a snapshot");
+    println!(
+        "second read, from the first's cursor: {} events",
+        second.events().len()
+    );
+    print_summary(&summarize(&second));
 }

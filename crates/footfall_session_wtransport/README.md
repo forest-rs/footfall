@@ -1,11 +1,18 @@
 # footfall_session_wtransport
 
-Serves Footfall sessions over local WebTransport and fetches them from
-consumers. The producer side manages a self-signed localhost identity and
-answers discovery and snapshot requests; the consumer side, `SessionClient`,
-discovers sessions and fetches snapshots, reassembled and checked, with a
-timeout and a typed error for each way a request can fail. The byte-level encoding is
-documented in the
+Serves Footfall sessions over local WebTransport and reads them from
+consumers.
+
+- Producers call `LocalSessionServer::start` with the runtimes to offer. It
+  manages a self-signed localhost identity, picks a port, registers itself so
+  consumers can find it, and answers discovery, snapshot, and subscription
+  requests until dropped.
+- Consumers use `SessionClient`: `local_servers()` finds every local
+  producer, `discover()` lists a server's sessions, `fetch()` reads a
+  snapshot from a cursor, and `subscribe()` streams new ones. Every failure
+  is a typed `ClientError`.
+
+The byte-level encoding is documented in the
 [wire format](https://github.com/forest-rs/footfall/blob/main/docs/session-wire-format.md).
 
 Part of [Footfall](https://github.com/forest-rs/footfall). For instrumenting

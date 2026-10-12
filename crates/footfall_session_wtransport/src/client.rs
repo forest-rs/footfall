@@ -73,6 +73,45 @@ impl SessionClient {
         Ok(Self::new(default_local_url(), certificate_hash))
     }
 
+    /// Returns a client for every session server registered on this
+    /// machine, default port first; see [`LocalSessionServer`].
+    ///
+    /// A registration can outlive a producer that crashed, so a client in
+    /// the list may fail with [`ClientError::TimedOut`]; skip it.
+    pub async fn local_servers() -> Result<Vec<Self>, ClientError> {
+        let certificate_hash = SessionIdentity::load_localhost_certificate_hash()
+            .await
+            .map_err(|source| ClientError::LocalIdentity {
+                path: SessionIdentity::localhost_certificate_path().ok(),
+                source,
+            })?;
+        let directory = local_registry_directory().map_err(ClientError::Io)?;
+        let mut entries = match fs::read_dir(&directory).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(ClientError::Io(error)),
+        };
+        let mut servers = Vec::new();
+        while let Some(entry) = entries.next_entry().await.map_err(ClientError::Io)? {
+            let Some(port) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u16>().ok())
+            else {
+                continue;
+            };
+            let url = fs::read_to_string(entry.path())
+                .await
+                .map_err(ClientError::Io)?;
+            servers.push((port != DEFAULT_LOCAL_PORT, port, url.trim().to_owned()));
+        }
+        servers.sort();
+        Ok(servers
+            .into_iter()
+            .map(|(_, _, url)| Self::new(url, certificate_hash))
+            .collect())
+    }
+
     /// Sets how long each request may take.
     #[must_use]
     pub const fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -159,14 +198,7 @@ impl SessionClient {
             let mut request = Vec::with_capacity(SNAPSHOT_MAGIC.len() + session_id.len() + 21);
             request.extend_from_slice(SNAPSHOT_MAGIC);
             encode_string(&mut request, session_id).map_err(io_error)?;
-            match since {
-                Some(since) => {
-                    encode_u8(&mut request, 1);
-                    encode_u64(&mut request, since.instance_id());
-                    encode_u64(&mut request, since.sequence());
-                }
-                None => encode_u8(&mut request, 0),
-            }
+            encode_cursor(&mut request, since);
             send.write_all(&request).await.map_err(stream_error)?;
             finish_request_stream(&mut send).await.map_err(io_error)?;
 
@@ -179,6 +211,55 @@ impl SessionClient {
             }
         })
         .await
+    }
+
+    /// Subscribes to the session `session_id`: the server sends a snapshot
+    /// now and another every `interval`, each with the events recorded since
+    /// the previous one.
+    ///
+    /// `since` is where the first snapshot's events start, as for
+    /// [`fetch`](Self::fetch). Read snapshots with [`Subscription::next`];
+    /// dropping the subscription ends it. Servers wait at least 10 ms between
+    /// snapshots.
+    pub async fn subscribe(
+        &self,
+        session_id: &str,
+        since: Option<EventCursor>,
+        interval: Duration,
+    ) -> Result<Subscription, ClientError> {
+        let interval_millis = u32::try_from(interval.as_millis()).unwrap_or(u32::MAX);
+        let attempt = async {
+            let config = ClientConfig::builder()
+                .with_bind_default()
+                .with_server_certificate_hashes([self.certificate_hash.to_digest()])
+                .build();
+            let endpoint = Endpoint::client(config).map_err(ClientError::Io)?;
+            let connection = endpoint
+                .connect(&self.url)
+                .await
+                .map_err(|error| connecting_error(&self.url, error))?;
+            let (mut send, recv) = open_stream(&connection).await?;
+            let mut request = Vec::with_capacity(SUBSCRIBE_MAGIC.len() + session_id.len() + 25);
+            request.extend_from_slice(SUBSCRIBE_MAGIC);
+            encode_string(&mut request, session_id).map_err(io_error)?;
+            encode_cursor(&mut request, since);
+            encode_u32(&mut request, interval_millis);
+            send.write_all(&request).await.map_err(stream_error)?;
+            finish_request_stream(&mut send).await.map_err(io_error)?;
+            Ok(Subscription {
+                url: self.url.clone(),
+                patience: self.timeout.saturating_add(interval),
+                _endpoint: endpoint,
+                _connection: connection,
+                recv,
+            })
+        };
+        tokio::time::timeout(self.timeout, attempt)
+            .await
+            .map_err(|_| ClientError::TimedOut {
+                url: self.url.clone(),
+                after: self.timeout,
+            })?
     }
 
     /// Connects and runs one request within the timeout.
@@ -204,6 +285,53 @@ impl SessionClient {
             .map_err(|_| ClientError::TimedOut {
                 url: self.url.clone(),
                 after: self.timeout,
+            })?
+    }
+}
+
+/// A stream of snapshots from [`SessionClient::subscribe`].
+pub struct Subscription {
+    url: String,
+    patience: Duration,
+    _endpoint: Endpoint<wtransport::endpoint::endpoint_side::Client>,
+    _connection: Connection,
+    recv: RecvStream,
+}
+
+impl fmt::Debug for Subscription {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Subscription")
+            .field("url", &self.url)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Subscription {
+    /// Waits for the next snapshot.
+    ///
+    /// Each snapshot holds the events recorded since the previous one, with
+    /// current contexts, counters, and histograms; its window reports events
+    /// the producer evicted before sending them. Fails with
+    /// [`ClientError::TimedOut`] when no snapshot arrives within the
+    /// interval plus the client's timeout, and with [`ClientError::Server`]
+    /// when the server ends the subscription with an error, such as an
+    /// unknown session id.
+    pub async fn next(&mut self) -> Result<OwnedSnapshot, ClientError> {
+        let read = async {
+            match read_u8_stream(&mut self.recv).await.map_err(io_error)? {
+                RESPONSE_SNAPSHOT => read_snapshot(&mut self.recv).await,
+                RESPONSE_ERROR => Err(read_server_error(&mut self.recv).await),
+                tag => Err(ClientError::Malformed {
+                    reason: format!("unexpected subscription response tag {tag}"),
+                }),
+            }
+        };
+        tokio::time::timeout(self.patience, read)
+            .await
+            .map_err(|_| ClientError::TimedOut {
+                url: self.url.clone(),
+                after: self.patience,
             })?
     }
 }

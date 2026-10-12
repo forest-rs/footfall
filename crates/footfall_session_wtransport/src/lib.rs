@@ -10,7 +10,7 @@ use footfall_core::{
     ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, InstrumentationLevel, MarkerKind,
     MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, Unit,
 };
-use footfall_runtime::{CounterKind, Snapshot};
+use footfall_runtime::{CounterKind, Runtime, Snapshot};
 use footfall_session::{
     CaptureSettings, Chunking, Consumer, Drops, Envelope, EnvelopeHeader, EventCursor, EventWindow,
     OwnedArgEntry, OwnedContextEntry, OwnedContextSnapshot, OwnedCounterSnapshot,
@@ -22,6 +22,7 @@ use std::{
     env, fmt, io,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     path::PathBuf,
+    time::Duration,
 };
 use tokio::fs;
 use wtransport::{
@@ -34,6 +35,7 @@ use wtransport::tls::Sha256Digest;
 mod client;
 mod codec;
 mod identity;
+mod serve;
 mod server;
 #[cfg(test)]
 mod tests;
@@ -42,6 +44,7 @@ mod wire;
 pub use client::*;
 use codec::*;
 pub use identity::*;
+pub use serve::*;
 pub use server::*;
 use wire::*;
 

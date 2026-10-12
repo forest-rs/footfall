@@ -217,13 +217,24 @@ run, can switch it on for you; libraries should never set it.
 
 ## Current Local Attach Pattern
 
-If you want a separate consumer app to connect locally:
+To let a separate consumer app read the process while it runs, serve the
+runtime with `footfall_session_wtransport`:
 
-1. install `footfall_runtime`
-2. expose a local session server through `footfall_session_wtransport`
-3. let the consumer discover and fetch sessions through that server
+```rust
+use footfall_runtime::Runtime;
+use footfall_session_wtransport::{LocalSessionServer, ServedSession};
 
-The current examples are the reference shape:
+async fn serve(runtime: &'static Runtime) -> std::io::Result<LocalSessionServer> {
+    LocalSessionServer::start(vec![ServedSession::new("main", runtime)]).await
+}
+```
+
+Keep the returned server alive for as long as the process should be
+attachable. Consumers find it with `SessionClient::local_servers()`, and any
+number of them can read or subscribe at once without affecting each other or
+the runtime.
+
+The examples are the reference shape:
 
 - [session_server.rs](../examples/basic/src/session_server.rs)
 - [session_consumer.rs](../examples/basic/src/session_consumer.rs)

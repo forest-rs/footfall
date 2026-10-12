@@ -41,18 +41,21 @@ Start here:
 
 ## Local Attach
 
-The current local attach workflow is:
+The local attach workflow is:
 
-1. your process installs `footfall_runtime`
-2. your process serves sessions through `footfall_session_wtransport`
-3. a consumer connects to the fixed local server and discovers active sessions
+1. your process installs a `footfall_runtime::Runtime`
+2. it serves the runtime with `footfall_session_wtransport::LocalSessionServer`
+3. a consumer finds every local producer with `SessionClient::local_servers`,
+   then discovers, fetches, or subscribes to their sessions
 
 The examples show that flow directly:
 
 - `cargo run -p basic --bin session_wtransport` for a one-process
   serve/discover/fetch round trip
-- `cargo run -p basic --bin session_server`
-- `cargo run -p basic --bin session_consumer`
+- `cargo run -p basic --bin session_server`, which records a frame every
+  100 ms until Ctrl-C
+- `cargo run -p basic --bin session_consumer -- --list`, `-- <session-id>`, or
+  `-- --watch <session-id>` against it
 
 The session examples include direct Footfall instrumentation plus `tracing`
 spans/events bridged through `footfall_tracing`. For a compact Chrome Trace JSON
