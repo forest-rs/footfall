@@ -87,7 +87,9 @@ impl SessionServer {
     /// session's runtime from the request's cursor; subscriptions stream
     /// snapshots until the client goes away; anything else gets an error
     /// response with the matching [`SessionErrorCode`]. Failures of one
-    /// request, such as a client that disconnects, do not affect others.
+    /// request, such as a client that disconnects, do not affect others;
+    /// each is logged as a `tracing` debug event with the client's address
+    /// and the step that failed.
     ///
     /// Call it from within a Tokio runtime.
     pub async fn serve(self, sessions: Vec<ServedSession>) {
@@ -122,10 +124,19 @@ impl SessionServer {
                     let path = Arc::clone(&path);
                     let stop = stop.clone();
                     requests.spawn(async move {
-                        if let Ok(request) = read_request(incoming, &path).await {
-                            // An error here means the client went away
-                            // mid-answer, which only concerns that client.
-                            let _ = answer(request, &sessions, stop).await;
+                        // A failed request only concerns its client, so
+                        // it is logged rather than returned.
+                        let client = incoming.remote_address();
+                        let request = match read_request(incoming, &path).await {
+                            Ok(request) => request,
+                            Err(error) => {
+                                tracing::debug!(%client, %error, "session request failed");
+                                return;
+                            }
+                        };
+                        let kind = request.kind().clone();
+                        if let Err(error) = answer(request, &sessions, stop).await {
+                            tracing::debug!(%client, ?kind, %error, "session answer failed");
                         }
                     });
                 }

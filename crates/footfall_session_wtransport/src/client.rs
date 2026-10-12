@@ -18,6 +18,7 @@ use footfall_session::codec::{MAX_SESSION_ENVELOPE_BYTES, decode_envelope, varin
 use footfall_session::{
     AssembleError, EventCursor, OwnedSnapshot, ProtocolVersion, SessionErrorCode, SnapshotKind,
 };
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::{fmt, io};
 use std::{
@@ -26,6 +27,7 @@ use std::{
     time::Duration,
 };
 use tokio::fs;
+use wtransport::config::IpBindConfig;
 use wtransport::error::StreamWriteError;
 use wtransport::{ClientConfig, Connection, Endpoint, RecvStream, SendStream};
 use wtransport::{
@@ -249,7 +251,7 @@ impl SessionClient {
         self.request(|connection| async move {
             let (mut send, mut recv) = open_stream(&connection).await?;
             send.write_all(DISCOVER_MAGIC).await.map_err(stream_error)?;
-            finish_request_stream(&mut send).await.map_err(io_error)?;
+            finish_request_stream(&mut send);
 
             match read_u8_stream(&mut recv).await.map_err(io_error)? {
                 RESPONSE_DISCOVERY => {
@@ -307,7 +309,7 @@ impl SessionClient {
             encode_string(&mut request, session_id).map_err(io_error)?;
             encode_cursor(&mut request, since);
             send.write_all(&request).await.map_err(stream_error)?;
-            finish_request_stream(&mut send).await.map_err(io_error)?;
+            finish_request_stream(&mut send);
 
             match read_u8_stream(&mut recv).await.map_err(io_error)? {
                 RESPONSE_SNAPSHOT => read_snapshot(&mut recv).await.map(|(snapshot, _)| snapshot),
@@ -388,7 +390,7 @@ impl SessionClient {
             Some(Arc::new(verifier)),
         );
         let config = ClientConfig::builder()
-            .with_bind_default()
+            .with_bind_config(bind_config(&self.url))
             .with_custom_tls(tls)
             .build();
         let endpoint = Endpoint::client(config).map_err(ClientError::Io)?;
@@ -912,6 +914,29 @@ async fn read_server_error(recv: &mut RecvStream) -> ClientError {
     match read_stream_string(recv).await {
         Ok(message) => ClientError::Server { code, message },
         Err(error) => io_error(error),
+    }
+}
+
+/// Chooses the client's local address for a server URL.
+///
+/// A dual-stack wildcard socket can receive the same port number as a
+/// server bound to one IPv4 address, since the two are in different address
+/// families. The server's replies to that port then reach the server itself,
+/// and the connection never completes. Binding in the server's own family,
+/// on loopback for a loopback server, lets the system pick a port that does
+/// not collide.
+pub(crate) fn bind_config(url: &str) -> IpBindConfig {
+    let authority = url
+        .strip_prefix("https://")
+        .and_then(|rest| rest.split('/').next())
+        .and_then(|authority| authority.parse::<SocketAddr>().ok());
+    match authority {
+        Some(SocketAddr::V4(server)) if server.ip().is_loopback() => IpBindConfig::LocalV4,
+        Some(SocketAddr::V4(_)) => IpBindConfig::InAddrAnyV4,
+        Some(SocketAddr::V6(server)) if server.ip().is_loopback() => IpBindConfig::LocalV6,
+        Some(SocketAddr::V6(_)) => IpBindConfig::InAddrAnyV6,
+        // A host name may resolve to either family.
+        None => IpBindConfig::InAddrAnyDual,
     }
 }
 

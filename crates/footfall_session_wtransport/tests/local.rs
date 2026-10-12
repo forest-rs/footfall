@@ -7,34 +7,61 @@
 use footfall_runtime::Runtime;
 use footfall_session_wtransport::{LocalSessionServer, ServedSession, SessionClient};
 
+/// Runs the calling test again in a child process with a fresh
+/// `FOOTFALL_STATE_DIR`, so it neither sees nor disturbs producers already
+/// running on this machine, and returns `false` in the parent, which should
+/// then return; returns `true` in the child.
+///
+/// The child logs the server's and the transport's debug events, which the
+/// test harness prints if the test fails.
+fn in_fresh_state_dir(test: &str) -> bool {
+    if std::env::var_os("FOOTFALL_STATE_DIR").is_some() {
+        log_transport_events();
+        return true;
+    }
+    let state = std::env::temp_dir().join(format!(
+        "footfall-{test}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("the clock is after the epoch")
+            .as_nanos()
+    ));
+    let status =
+        std::process::Command::new(std::env::current_exe().expect("the test binary has a path"))
+            .args(["--exact", test])
+            .env("FOOTFALL_STATE_DIR", &state)
+            .status()
+            .expect("the test binary should run");
+    let _ = std::fs::remove_dir_all(&state);
+    assert!(status.success(), "{test} failed in the child process");
+    false
+}
+
+/// Sends debug events from the session server, WebTransport, and QUIC to the
+/// test's captured output.
+fn log_transport_events() {
+    use tracing_subscriber::filter::{LevelFilter, Targets};
+    use tracing_subscriber::prelude::*;
+    let targets = Targets::new()
+        .with_target("footfall_session_wtransport", LevelFilter::DEBUG)
+        .with_target("wtransport", LevelFilter::DEBUG)
+        .with_target("quinn", LevelFilter::DEBUG)
+        .with_target("quinn_proto", LevelFilter::DEBUG);
+    let _ = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_test_writer()
+                .with_ansi(false)
+                .with_filter(targets),
+        )
+        .try_init();
+}
+
 #[test]
 fn every_local_server_is_found_and_unregisters_on_drop() {
-    // The registry lives in Footfall's state directory. Run the check in a
-    // child process pointed at a fresh one, so it neither sees nor disturbs
-    // producers already running on this machine.
-    if std::env::var_os("FOOTFALL_STATE_DIR").is_none() {
-        let state = std::env::temp_dir().join(format!(
-            "footfall-local-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("the clock is after the epoch")
-                .as_nanos()
-        ));
-        let status = std::process::Command::new(
-            std::env::current_exe().expect("the test binary has a path"),
-        )
-        .args([
-            "--exact",
-            "every_local_server_is_found_and_unregisters_on_drop",
-        ])
-        .env("FOOTFALL_STATE_DIR", &state)
-        .status()
-        .expect("the test binary should run");
-        let _ = std::fs::remove_dir_all(&state);
-        assert!(status.success(), "the check failed in the child process");
+    if !in_fresh_state_dir("every_local_server_is_found_and_unregisters_on_drop") {
         return;
     }
-
     let tokio = tokio::runtime::Runtime::new().expect("tokio should start");
     tokio.block_on(async {
         let first_runtime: &'static Runtime =
@@ -73,30 +100,9 @@ fn every_local_server_is_found_and_unregisters_on_drop() {
 
 #[test]
 fn duplicate_session_ids_and_stale_registrations_are_reported() {
-    // As above, run in a child process with a state directory of its own.
-    if std::env::var_os("FOOTFALL_STATE_DIR").is_none() {
-        let state = std::env::temp_dir().join(format!(
-            "footfall-local-dup-test-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("the clock is after the epoch")
-                .as_nanos()
-        ));
-        let status = std::process::Command::new(
-            std::env::current_exe().expect("the test binary has a path"),
-        )
-        .args([
-            "--exact",
-            "duplicate_session_ids_and_stale_registrations_are_reported",
-        ])
-        .env("FOOTFALL_STATE_DIR", &state)
-        .status()
-        .expect("the test binary should run");
-        let _ = std::fs::remove_dir_all(&state);
-        assert!(status.success(), "the check failed in the child process");
+    if !in_fresh_state_dir("duplicate_session_ids_and_stale_registrations_are_reported") {
         return;
     }
-
     let tokio = tokio::runtime::Runtime::new().expect("tokio should start");
     tokio.block_on(async {
         // Nothing registered yet: an empty discovery, not an error.
@@ -154,31 +160,6 @@ fn duplicate_session_ids_and_stale_registrations_are_reported() {
                 .all(|session| session.announcement().instance_id() != 0)
         );
     });
-}
-
-/// Runs the calling test again in a child process with a fresh
-/// `FOOTFALL_STATE_DIR`, and returns `false` in the parent, which should then
-/// return; returns `true` in the child.
-fn in_fresh_state_dir(test: &str) -> bool {
-    if std::env::var_os("FOOTFALL_STATE_DIR").is_some() {
-        return true;
-    }
-    let state = std::env::temp_dir().join(format!(
-        "footfall-{test}-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("the clock is after the epoch")
-            .as_nanos()
-    ));
-    let status =
-        std::process::Command::new(std::env::current_exe().expect("the test binary has a path"))
-            .args(["--exact", test])
-            .env("FOOTFALL_STATE_DIR", &state)
-            .status()
-            .expect("the test binary should run");
-    let _ = std::fs::remove_dir_all(&state);
-    assert!(status.success(), "{test} failed in the child process");
-    false
 }
 
 #[test]

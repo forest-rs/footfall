@@ -69,8 +69,16 @@ pub(crate) async fn finish_response_stream(send: &mut SendStream) -> io::Result<
     map_finish_error(send.finish().await)
 }
 
-pub(crate) async fn finish_request_stream(send: &mut SendStream) -> io::Result<()> {
-    map_finish_error(send.finish().await)
+/// Ends a request without waiting for the server to acknowledge its end.
+///
+/// The response is what shows the server read the request. The server
+/// closes the connection as soon as the client has received the response,
+/// which can be before its acknowledgement of the request's end arrives,
+/// so waiting for that acknowledgement would fail requests that succeeded.
+pub(crate) fn finish_request_stream(send: &mut SendStream) {
+    // An error means the connection is already gone, which reading the
+    // response reports.
+    let _ = send.quic_stream_mut().finish();
 }
 
 pub(crate) async fn write_u8_stream(send: &mut SendStream, value: u8) -> io::Result<()> {

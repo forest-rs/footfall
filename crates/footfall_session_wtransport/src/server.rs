@@ -332,7 +332,7 @@ pub(crate) async fn read_request(
 ) -> io::Result<SessionRequest> {
     let session_request = incoming_session
         .await
-        .map_err(|error| io::Error::other(error.to_string()))?;
+        .map_err(|error| io::Error::other(format!("establishing the connection: {error}")))?;
     let authority = session_request.authority().to_owned();
     let path = session_request.path().to_owned();
     if path != expected_path {
@@ -348,11 +348,11 @@ pub(crate) async fn read_request(
     let connection = session_request
         .accept()
         .await
-        .map_err(|error| io::Error::other(error.to_string()))?;
+        .map_err(|error| io::Error::other(format!("accepting the session: {error}")))?;
     let (mut send, mut recv) = connection
         .accept_bi()
         .await
-        .map_err(|error| io::Error::other(error.to_string()))?;
+        .map_err(|error| io::Error::other(format!("accepting the request stream: {error}")))?;
 
     let mut request = [0_u8; DISCOVER_MAGIC.len()];
     recv.read_exact(&mut request).await.map_err(read_error)?;
