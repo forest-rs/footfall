@@ -9,6 +9,10 @@ pub(crate) const DEFAULT_PATH: &str = "/footfall/session";
 pub(crate) const DEFAULT_LOCAL_PORT: u16 = 43_091;
 pub(crate) const DISCOVER_MAGIC: &[u8; 8] = b"FFALLD01";
 pub(crate) const SNAPSHOT_MAGIC: &[u8; 8] = b"FFALLS01";
+pub(crate) const SUBSCRIBE_MAGIC: &[u8; 8] = b"FFALLU01";
+/// Shortest interval a server waits between subscription snapshots, so a
+/// client cannot ask it to spin.
+pub(crate) const MIN_SUBSCRIPTION_INTERVAL: Duration = Duration::from_millis(10);
 pub(crate) const CODEC_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 pub(crate) const RESPONSE_DISCOVERY: u8 = 0;
 pub(crate) const RESPONSE_SNAPSHOT: u8 = 1;
@@ -140,6 +144,33 @@ pub(crate) async fn decode_session_announcement_stream(
         process_name,
         session_name,
     })
+}
+
+/// Reads an `option<cursor>`.
+pub(crate) async fn read_cursor(recv: &mut RecvStream) -> io::Result<Option<EventCursor>> {
+    match read_u8_stream(recv).await? {
+        0 => Ok(None),
+        1 => Ok(Some(EventCursor::new(
+            read_u64(recv).await?,
+            read_u64(recv).await?,
+        ))),
+        tag => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid cursor presence tag: {tag}"),
+        )),
+    }
+}
+
+/// Appends an `option<cursor>`.
+pub(crate) fn encode_cursor(bytes: &mut Vec<u8>, cursor: Option<EventCursor>) {
+    match cursor {
+        Some(cursor) => {
+            encode_u8(bytes, 1);
+            encode_u64(bytes, cursor.instance_id());
+            encode_u64(bytes, cursor.sequence());
+        }
+        None => encode_u8(bytes, 0),
+    }
 }
 
 /// Wire tag for an error code. Codes this side does not know are sent as

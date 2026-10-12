@@ -235,6 +235,23 @@ impl Runtime {
         self.instance_id
     }
 
+    /// Returns the process name reported in snapshots.
+    #[must_use]
+    pub fn process_name(&self) -> &str {
+        &self.process_name
+    }
+
+    /// Returns the capture-session label reported in snapshots, if one is
+    /// set.
+    #[must_use]
+    pub fn session_name(&self) -> Option<String> {
+        self.labels
+            .lock()
+            .expect("runtime label mutex should not be poisoned")
+            .session_name
+            .clone()
+    }
+
     /// Returns the current runtime capture level.
     #[must_use]
     pub fn level(&self) -> InstrumentationLevel {

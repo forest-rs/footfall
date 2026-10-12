@@ -2,11 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! WebTransport session consumer demo for Footfall.
+//!
+//! `session_consumer --list` lists the sessions of every local producer,
+//! `session_consumer [<session-id>]` prints one snapshot, and
+//! `session_consumer --watch [<session-id>]` subscribes and prints what each
+//! new snapshot adds.
 
 mod session_summary;
 
 use footfall_session_wtransport::{SessionAnnouncement, SessionClient};
 use session_summary::{print_summary, summarize};
+use std::time::Duration;
 use std::{env, process};
 
 #[tokio::main]
@@ -25,6 +31,10 @@ async fn main() {
         list_sessions().await;
         return;
     }
+    let (watch, argument) = match argument.as_deref() {
+        Some("--watch") => (true, args.next()),
+        _ => (false, argument),
+    };
     if args.next().is_some() {
         usage(&program);
     }
@@ -33,6 +43,10 @@ async fn main() {
     let announcement = select_session(&client, argument.as_deref())
         .await
         .unwrap_or_else(|error| fail(&error));
+    if watch {
+        watch_session(&client, announcement.id()).await;
+        return;
+    }
     let snapshot = client
         .fetch(announcement.id(), None)
         .await
@@ -40,6 +54,30 @@ async fn main() {
 
     println!("fetched session {}", announcement.id());
     print_summary(&summarize(&snapshot));
+}
+
+async fn watch_session(client: &SessionClient, session_id: &str) {
+    let mut subscription = client
+        .subscribe(session_id, None, Duration::from_millis(500))
+        .await
+        .unwrap_or_else(|error| fail(&error.to_string()));
+    let error = loop {
+        let snapshot = match subscription.next().await {
+            Ok(snapshot) => snapshot,
+            Err(error) => break error,
+        };
+        let window = snapshot.window();
+        println!(
+            "events {}..{}: {} new, {} missed; {} counters, {} contexts",
+            window.since(),
+            window.next(),
+            snapshot.events().len(),
+            window.missed(),
+            snapshot.counters().len(),
+            snapshot.contexts().len(),
+        );
+    };
+    fail(&error.to_string());
 }
 
 async fn local_client() -> SessionClient {
@@ -54,28 +92,33 @@ fn fail(message: &str) -> ! {
 }
 
 fn usage(program: &str) -> ! {
-    eprintln!("usage: {program} [--list | <session-id>]");
+    eprintln!("usage: {program} [--list | [--watch] [<session-id>]]");
     process::exit(2);
 }
 
 async fn list_sessions() {
-    let discovery = local_client()
-        .await
-        .discover()
+    let servers = SessionClient::local_servers()
         .await
         .unwrap_or_else(|error| fail(&error.to_string()));
-    let announcements = discovery.sessions();
-    if announcements.is_empty() {
-        println!("no discovered sessions");
+    if servers.is_empty() {
+        println!("no local session servers");
         return;
     }
-    for announcement in announcements {
-        println!(
-            "{} process={} session={}",
-            announcement.id(),
-            announcement.process_name(),
-            announcement.session_name().unwrap_or("-"),
-        );
+    for server in servers {
+        match server.discover().await {
+            Ok(discovery) => {
+                for announcement in discovery.sessions() {
+                    println!(
+                        "{} {} process={} session={}",
+                        server.url(),
+                        announcement.id(),
+                        announcement.process_name(),
+                        announcement.session_name().unwrap_or("-"),
+                    );
+                }
+            }
+            Err(error) => println!("{} unavailable: {error}", server.url()),
+        }
     }
 }
 

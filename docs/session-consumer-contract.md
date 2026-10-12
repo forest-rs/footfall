@@ -148,20 +148,31 @@ The server URL itself is the attach point. Discovery is no longer file-backed.
 
 ## Local Attach Contract
 
-The current default local attach model is:
+A producer makes itself attachable with `LocalSessionServer::start`, which
+serves its runtimes on the default local port, or on an ephemeral port when
+another producer holds the default, and registers its URL in a local
+registry. Every local producer shares one self-signed identity, managed in
+Footfall's state directory, so consumers need no hash or URL prompt:
 
-- fixed local server URL
-- stable local identity managed internally
-- no hash or URL prompt in the normal consumer UX
+1. launch one or more producers
+2. `SessionClient::local_servers()` returns a client for each, default port
+   first; `SessionClient::local()` connects to the default port alone
+3. discover each server's sessions
+4. fetch or subscribe
 
-So an external local consumer should aim to feel like:
+A registration can outlive a producer that crashed; its client times out,
+and consumers skip it.
 
-1. launch producer
-2. launch consumer
-3. discover sessions
-4. attach
+## Following a Session
 
-That is the right default user experience.
+`SessionClient::subscribe(session_id, since, interval)` asks the server to
+send a snapshot now and another every `interval` on one stream, each holding
+the events recorded since the previous one. `Subscription::next` waits for
+the next. The server never queues snapshots for a slow consumer: it waits for
+the consumer to take one before preparing the next, and events evicted in
+the meantime appear in the next window's `missed` count. Polling with
+`fetch` and the previous snapshot's cursor reads the same windows on the
+consumer's schedule instead.
 
 ## What a UI Actually Needs
 

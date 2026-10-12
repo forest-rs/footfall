@@ -67,6 +67,16 @@ pub enum SessionRequestKind {
         /// retained. Pass it to `Runtime::snapshot_since`.
         since: Option<EventCursor>,
     },
+    /// Subscribe to one named session: a snapshot now, and another every
+    /// `interval` with the events recorded since the last.
+    Subscribe {
+        /// Session id advertised by discovery.
+        session_id: String,
+        /// Where the first snapshot's events start, as for `Snapshot`.
+        since: Option<EventCursor>,
+        /// How long to wait between snapshots.
+        interval: Duration,
+    },
 }
 
 impl SessionRequestKind {
@@ -75,7 +85,9 @@ impl SessionRequestKind {
     pub fn session_id(&self) -> Option<&str> {
         match self {
             Self::Discover => None,
-            Self::Snapshot { session_id, .. } => Some(session_id.as_str()),
+            Self::Snapshot { session_id, .. } | Self::Subscribe { session_id, .. } => {
+                Some(session_id.as_str())
+            }
         }
     }
 }
@@ -124,6 +136,11 @@ pub enum ServedRequestKind {
     Snapshot {
         /// Number of envelopes written to the client.
         envelope_count: usize,
+    },
+    /// Subscription that ended when the client went away.
+    Subscription {
+        /// Number of snapshots written to the client.
+        snapshot_count: usize,
     },
     /// Error response sent back to the client.
     Error,
@@ -195,8 +212,8 @@ impl SessionServerConfig {
 
 /// One-shot WebTransport server for Footfall session envelopes.
 pub struct SessionServer {
-    endpoint: Endpoint<wtransport::endpoint::endpoint_side::Server>,
-    path: String,
+    pub(crate) endpoint: Endpoint<wtransport::endpoint::endpoint_side::Server>,
+    pub(crate) path: String,
 }
 
 impl fmt::Debug for SessionServer {
@@ -239,73 +256,81 @@ impl SessionServer {
     }
 
     /// Accepts the next request for this session server.
+    ///
+    /// The request is read before this returns, so a slow client delays the
+    /// next accept; [`serve`](Self::serve) handles each request on its own
+    /// task instead.
     pub async fn accept_request(&self) -> io::Result<SessionRequest> {
-        let incoming_session = self.endpoint.accept().await;
-        let session_request = incoming_session
-            .await
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        let authority = session_request.authority().to_owned();
-        let path = session_request.path().to_owned();
-        if path != self.path {
-            // Answer 404 so the client learns the path is wrong rather than
-            // seeing the connection drop.
-            session_request.not_found().await;
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("unexpected session path: {path}"),
-            ));
-        }
-
-        let connection = session_request
-            .accept()
-            .await
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        let (mut send, mut recv) = connection
-            .accept_bi()
-            .await
-            .map_err(|error| io::Error::other(error.to_string()))?;
-
-        let mut request = [0_u8; DISCOVER_MAGIC.len()];
-        recv.read_exact(&mut request)
-            .await
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        let kind = if &request == DISCOVER_MAGIC {
-            SessionRequestKind::Discover
-        } else if &request == SNAPSHOT_MAGIC {
-            let session_id = read_stream_string(&mut recv).await?;
-            let since = match read_u8_stream(&mut recv).await? {
-                0 => None,
-                1 => Some(EventCursor::new(
-                    read_u64(&mut recv).await?,
-                    read_u64(&mut recv).await?,
-                )),
-                tag => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("invalid snapshot cursor tag: {tag}"),
-                    ));
-                }
-            };
-            SessionRequestKind::Snapshot { session_id, since }
-        } else {
-            let message = format!(
-                "unknown request {:?}; this server speaks session protocol {}.{}",
-                String::from_utf8_lossy(&request),
-                CODEC_VERSION.major(),
-                CODEC_VERSION.minor()
-            );
-            write_error(&mut send, SessionErrorCode::Unsupported, &message).await?;
-            return Err(io::Error::new(io::ErrorKind::InvalidData, message));
-        };
-
-        Ok(SessionRequest {
-            authority,
-            path,
-            _connection: connection,
-            send,
-            kind,
-        })
+        read_request(self.endpoint.accept().await, &self.path).await
     }
+}
+
+/// Completes one incoming session and reads its request.
+pub(crate) async fn read_request(
+    incoming_session: wtransport::endpoint::IncomingSession,
+    expected_path: &str,
+) -> io::Result<SessionRequest> {
+    let session_request = incoming_session
+        .await
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let authority = session_request.authority().to_owned();
+    let path = session_request.path().to_owned();
+    if path != expected_path {
+        // Answer 404 so the client learns the path is wrong rather than
+        // seeing the connection drop.
+        session_request.not_found().await;
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unexpected session path: {path}"),
+        ));
+    }
+
+    let connection = session_request
+        .accept()
+        .await
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let (mut send, mut recv) = connection
+        .accept_bi()
+        .await
+        .map_err(|error| io::Error::other(error.to_string()))?;
+
+    let mut request = [0_u8; DISCOVER_MAGIC.len()];
+    recv.read_exact(&mut request)
+        .await
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let kind = if &request == DISCOVER_MAGIC {
+        SessionRequestKind::Discover
+    } else if &request == SNAPSHOT_MAGIC {
+        let session_id = read_stream_string(&mut recv).await?;
+        let since = read_cursor(&mut recv).await?;
+        SessionRequestKind::Snapshot { session_id, since }
+    } else if &request == SUBSCRIBE_MAGIC {
+        let session_id = read_stream_string(&mut recv).await?;
+        let since = read_cursor(&mut recv).await?;
+        let interval = Duration::from_millis(u64::from(read_u32(&mut recv).await?));
+        SessionRequestKind::Subscribe {
+            session_id,
+            since,
+            interval,
+        }
+    } else {
+        let message = format!(
+            "unknown request {:?}; this server speaks session protocol {}.{}",
+            String::from_utf8_lossy(&request),
+            CODEC_VERSION.major(),
+            CODEC_VERSION.minor()
+        );
+        write_error(&mut send, SessionErrorCode::Unsupported, &message).await?;
+        return Err(io::Error::new(io::ErrorKind::InvalidData, message));
+    };
+
+    Ok(SessionRequest {
+        authority,
+        path,
+        _connection: connection,
+        send,
+        kind,
+    })
 }
 
 /// Accepted request waiting for a session server response.
@@ -405,36 +430,63 @@ impl SessionRequest {
                 .await;
         }
 
-        let mut consumer = EncodingConsumer::default();
-        publish_snapshot(&snapshot, chunking, &mut consumer)?;
-        write_u8_stream(&mut self.send, RESPONSE_SNAPSHOT).await?;
-        write_u64(
-            &mut self.send,
-            u64::try_from(consumer.frames.len())
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "too many envelopes"))?,
-        )
-        .await?;
-        for encoded in &consumer.frames {
-            write_u32(
-                &mut self.send,
-                u32::try_from(encoded.len()).map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "envelope exceeds u32 length")
-                })?,
-            )
-            .await?;
-            self.send
-                .write_all(encoded)
-                .await
-                .map_err(|error| io::Error::other(error.to_string()))?;
-        }
+        let envelope_count = write_snapshot(&mut self.send, &snapshot, chunking).await?;
         finish_response_stream(&mut self.send).await?;
 
         Ok(ServedRequest {
             authority: self.authority,
             path: self.path,
-            kind: ServedRequestKind::Snapshot {
-                envelope_count: consumer.frames.len(),
-            },
+            kind: ServedRequestKind::Snapshot { envelope_count },
+        })
+    }
+
+    /// Responds to a subscription with a snapshot of `runtime` now and
+    /// another every `interval`, each holding the events recorded since the
+    /// previous one, until the client goes away.
+    ///
+    /// The first snapshot starts at the request's cursor. A client that
+    /// reads slowly delays the next snapshot rather than queueing them, and
+    /// events evicted meanwhile are reported in the next snapshot's window.
+    pub async fn respond_subscription(
+        mut self,
+        runtime: &Runtime,
+        chunking: Chunking,
+    ) -> io::Result<ServedRequest> {
+        let SessionRequestKind::Subscribe {
+            since, interval, ..
+        } = self.kind
+        else {
+            return self
+                .respond_error(
+                    SessionErrorCode::InvalidRequest,
+                    "expected a subscription request",
+                )
+                .await;
+        };
+
+        let interval = interval.max(MIN_SUBSCRIPTION_INTERVAL);
+        let mut cursor = since;
+        let mut snapshot_count = 0_usize;
+        loop {
+            let snapshot = match cursor {
+                Some(cursor) => runtime.snapshot_since(cursor),
+                None => runtime.snapshot(),
+            };
+            cursor = Some(snapshot.next_cursor());
+            if write_snapshot(&mut self.send, &snapshot, chunking)
+                .await
+                .is_err()
+            {
+                break;
+            }
+            snapshot_count += 1;
+            tokio::time::sleep(interval).await;
+        }
+
+        Ok(ServedRequest {
+            authority: self.authority,
+            path: self.path,
+            kind: ServedRequestKind::Subscription { snapshot_count },
         })
     }
 
@@ -456,6 +508,37 @@ impl SessionRequest {
             kind: ServedRequestKind::Error,
         })
     }
+}
+
+/// Writes one snapshot response: the tag, the envelope count, and the
+/// envelope frames. Returns the envelope count.
+async fn write_snapshot(
+    send: &mut SendStream,
+    snapshot: &Snapshot,
+    chunking: Chunking,
+) -> io::Result<usize> {
+    let mut consumer = EncodingConsumer::default();
+    publish_snapshot(snapshot, chunking, &mut consumer)?;
+    write_u8_stream(send, RESPONSE_SNAPSHOT).await?;
+    write_u64(
+        send,
+        u64::try_from(consumer.frames.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "too many envelopes"))?,
+    )
+    .await?;
+    for encoded in &consumer.frames {
+        write_u32(
+            send,
+            u32::try_from(encoded.len()).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "envelope exceeds u32 length")
+            })?,
+        )
+        .await?;
+        send.write_all(encoded)
+            .await
+            .map_err(|error| io::Error::other(error.to_string()))?;
+    }
+    Ok(consumer.frames.len())
 }
 
 async fn write_error(
