@@ -118,7 +118,7 @@ pub fn write_chrome_trace_json(snapshot: &OwnedSnapshot, writer: &mut impl Write
     if unmatched_scope_ends > 0 {
         events.push(build_internal_counter_event(
             snapshot,
-            snapshot.captured_at_micros(),
+            snapshot.captured_at_nanos(),
             "footfall_unmatched_scope_ends",
             unmatched_scope_ends,
         ));
@@ -139,7 +139,7 @@ pub fn write_chrome_trace_json(snapshot: &OwnedSnapshot, writer: &mut impl Write
         if count > 0 {
             events.push(build_internal_counter_event(
                 snapshot,
-                snapshot.captured_at_micros(),
+                snapshot.captured_at_nanos(),
                 name,
                 count,
             ));
@@ -204,10 +204,10 @@ fn build_capture_window_event(snapshot: &OwnedSnapshot) -> String {
     json.push(',');
     write_json_field_str(&mut json, "ph", "i").expect("string write should succeed");
     json.push_str(",\"s\":\"g\",");
-    write_json_field_u64(
+    write_json_field_time(
         &mut json,
         "ts",
-        wall_micros(snapshot, snapshot.captured_at_micros()),
+        wall_nanos(snapshot, snapshot.captured_at_nanos()),
     )
     .expect("string write should succeed");
     json.push(',');
@@ -237,10 +237,10 @@ fn build_capture_window_event(snapshot: &OwnedSnapshot) -> String {
     // from "this export does not say".
     let drops = snapshot.drops();
     for (name, value) in [
-        ("captured_at_micros", snapshot.captured_at_micros()),
+        ("captured_at_nanos", snapshot.captured_at_nanos()),
         (
-            "wall_clock_anchor_micros",
-            metadata.wall_clock_anchor_micros(),
+            "wall_clock_anchor_nanos",
+            metadata.wall_clock_anchor_nanos(),
         ),
         ("counter_capacity", usize_to_u64(capture.counter_capacity())),
         ("event_capacity", usize_to_u64(capture.event_capacity())),
@@ -274,10 +274,10 @@ fn build_contexts_event(snapshot: &OwnedSnapshot) -> Result<String, fmt::Error> 
     json.push(',');
     write_json_field_str(&mut json, "ph", "i")?;
     json.push_str(",\"s\":\"g\",");
-    write_json_field_u64(
+    write_json_field_time(
         &mut json,
         "ts",
-        wall_micros(snapshot, snapshot.captured_at_micros()),
+        wall_nanos(snapshot, snapshot.captured_at_nanos()),
     )?;
     json.push(',');
     write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
@@ -305,14 +305,14 @@ fn trace_pid(snapshot: &OwnedSnapshot) -> u64 {
     }
 }
 
-/// Converts a time since runtime creation into wall-clock microseconds
+/// Converts a time since runtime creation into wall-clock nanoseconds
 /// since the Unix epoch, so traces from several processes share one
 /// timeline.
-fn wall_micros(snapshot: &OwnedSnapshot, at_micros: u64) -> u64 {
+fn wall_nanos(snapshot: &OwnedSnapshot, at_nanos: u64) -> u64 {
     snapshot
         .metadata()
-        .wall_clock_anchor_micros()
-        .saturating_add(at_micros)
+        .wall_clock_anchor_nanos()
+        .saturating_add(at_nanos)
 }
 
 /// Writes a counter value as its series: ratios, stored in parts per
@@ -365,10 +365,10 @@ fn build_counter_event(
     json.push(',');
     write_json_field_str(&mut json, "ph", "C")?;
     json.push(',');
-    write_json_field_u64(
+    write_json_field_time(
         &mut json,
         "ts",
-        wall_micros(snapshot, counter.updated_at_micros()),
+        wall_nanos(snapshot, counter.updated_at_nanos()),
     )?;
     json.push(',');
     write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
@@ -404,10 +404,10 @@ fn build_histogram_event(
     json.push(',');
     write_json_field_str(&mut json, "ph", "i")?;
     json.push_str(",\"s\":\"t\",");
-    write_json_field_u64(
+    write_json_field_time(
         &mut json,
         "ts",
-        wall_micros(snapshot, histogram.updated_at_micros()),
+        wall_nanos(snapshot, histogram.updated_at_nanos()),
     )?;
     json.push(',');
     write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
@@ -475,7 +475,7 @@ fn histogram_percentile(histogram: &OwnedHistogramSnapshot, quantile: f64) -> u6
 
 fn build_internal_counter_event(
     snapshot: &OwnedSnapshot,
-    at_micros: u64,
+    at_nanos: u64,
     name: &str,
     value: u64,
 ) -> String {
@@ -487,7 +487,7 @@ fn build_internal_counter_event(
     json.push(',');
     write_json_field_str(&mut json, "ph", "C").expect("string write should succeed");
     json.push(',');
-    write_json_field_u64(&mut json, "ts", wall_micros(snapshot, at_micros))
+    write_json_field_time(&mut json, "ts", wall_nanos(snapshot, at_nanos))
         .expect("string write should succeed");
     json.push(',');
     write_json_field_u64(&mut json, "pid", trace_pid(snapshot))
@@ -537,7 +537,7 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_str(&mut json, "ph", "B")?;
             json.push(',');
-            write_json_field_u64(&mut json, "ts", wall_micros(snapshot, event.at_micros()))?;
+            write_json_field_time(&mut json, "ts", wall_nanos(snapshot, event.at_nanos()))?;
             json.push(',');
             write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
             json.push(',');
@@ -564,7 +564,7 @@ fn build_timed_observation(
             json.push('{');
             write_json_field_str(&mut json, "ph", "E")?;
             json.push(',');
-            write_json_field_u64(&mut json, "ts", wall_micros(snapshot, event.at_micros()))?;
+            write_json_field_time(&mut json, "ts", wall_nanos(snapshot, event.at_nanos()))?;
             json.push(',');
             write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
             json.push(',');
@@ -580,7 +580,7 @@ fn build_timed_observation(
             ..
         } => build_resource_event(
             snapshot,
-            event.at_micros(),
+            event.at_nanos(),
             event.thread_id(),
             "resource_create",
             kind_name,
@@ -597,7 +597,7 @@ fn build_timed_observation(
             ..
         } => build_resource_event(
             snapshot,
-            event.at_micros(),
+            event.at_nanos(),
             event.thread_id(),
             "resource_update",
             kind_name,
@@ -613,7 +613,7 @@ fn build_timed_observation(
             ..
         } => build_resource_event(
             snapshot,
-            event.at_micros(),
+            event.at_nanos(),
             event.thread_id(),
             "resource_drop",
             kind_name,
@@ -638,7 +638,7 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_str(&mut json, "ph", "i")?;
             json.push_str(",\"s\":\"t\",");
-            write_json_field_u64(&mut json, "ts", wall_micros(snapshot, event.at_micros()))?;
+            write_json_field_time(&mut json, "ts", wall_nanos(snapshot, event.at_nanos()))?;
             json.push(',');
             write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
             json.push(',');
@@ -666,7 +666,7 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_str(&mut json, "ph", flow_phase_code(*phase))?;
             json.push_str(",\"bp\":\"e\",");
-            write_json_field_u64(&mut json, "ts", wall_micros(snapshot, event.at_micros()))?;
+            write_json_field_time(&mut json, "ts", wall_nanos(snapshot, event.at_nanos()))?;
             json.push(',');
             write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
             json.push(',');
@@ -698,7 +698,7 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_str(&mut json, "ph", "i")?;
             json.push_str(",\"s\":\"t\",");
-            write_json_field_u64(&mut json, "ts", wall_micros(snapshot, event.at_micros()))?;
+            write_json_field_time(&mut json, "ts", wall_nanos(snapshot, event.at_nanos()))?;
             json.push(',');
             write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
             json.push(',');
@@ -744,7 +744,7 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_str(&mut json, "ph", "C")?;
             json.push(',');
-            write_json_field_u64(&mut json, "ts", wall_micros(snapshot, event.at_micros()))?;
+            write_json_field_time(&mut json, "ts", wall_nanos(snapshot, event.at_nanos()))?;
             json.push(',');
             write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
             json.push(',');
@@ -761,7 +761,7 @@ fn build_timed_observation(
 
 fn build_resource_event(
     snapshot: &OwnedSnapshot,
-    at_micros: u64,
+    at_nanos: u64,
     thread_id: u64,
     name: &str,
     kind_name: &str,
@@ -780,7 +780,7 @@ fn build_resource_event(
     json.push(',');
     write_json_field_str(&mut json, "ph", "i")?;
     json.push_str(",\"s\":\"t\",");
-    write_json_field_u64(&mut json, "ts", wall_micros(snapshot, at_micros))?;
+    write_json_field_time(&mut json, "ts", wall_nanos(snapshot, at_nanos))?;
     json.push(',');
     write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
     json.push(',');
@@ -894,6 +894,14 @@ fn write_json_field_str(writer: &mut impl Write, key: &str, value: &str) -> fmt:
     write_json_string(writer, value)
 }
 
+/// Writes a time in nanoseconds as the microseconds Chrome traces use,
+/// with the nanoseconds as three decimal places.
+fn write_json_field_time(writer: &mut impl Write, key: &str, nanos: u64) -> fmt::Result {
+    write_json_string(writer, key)?;
+    writer.write_char(':')?;
+    writer.write_fmt(format_args!("{}.{:03}", nanos / 1000, nanos % 1000))
+}
+
 fn write_json_field_u64(writer: &mut impl Write, key: &str, value: u64) -> fmt::Result {
     write_json_string(writer, key)?;
     writer.write_char(':')?;
@@ -939,9 +947,9 @@ mod tests {
         let metadata = SnapshotMetadata::new("footfall")
             .with_session_name("recording")
             .with_instance_id(0xabc)
-            .with_wall_clock_anchor_micros(1_700_000_000_000_000);
+            .with_wall_clock_anchor_nanos(1_700_000_000_000_000);
         let snapshot = Snapshot::builder(metadata)
-            .captured_at_micros(30)
+            .captured_at_nanos(30)
             .window(EventWindow::new(0, 9, 1))
             .thread(ThreadSnapshot::new(3, Some(String::from("render"))))
             .context(ContextSnapshot::new(ContextId::new(0), Context::root()))
@@ -1064,13 +1072,14 @@ mod tests {
         let snapshot = Snapshot::builder(
             SnapshotMetadata::new("app")
                 .with_process_id(42)
-                .with_wall_clock_anchor_micros(1_000_000),
+                .with_wall_clock_anchor_nanos(1_000_000_000),
         )
-        .event(timed(0, 5, 1, begin("work", 1)))
+        .event(timed(0, 5_250, 1, begin("work", 1)))
         .build();
 
         let json = to_chrome_trace_json(&snapshot.into());
-        assert!(json.contains("\"ts\":1000005,\"pid\":42,"), "{json}");
+        // Chrome traces count microseconds; nanoseconds are the decimals.
+        assert!(json.contains("\"ts\":1000005.250,\"pid\":42,"), "{json}");
         assert!(json.contains("\"process_id\":42"));
     }
 
@@ -1084,11 +1093,11 @@ mod tests {
             kind: CounterKind::Counter,
             value: 4096,
         };
-        let snapshot = snapshot_with(vec![], vec![timed(0, 12, 1, sample)]);
+        let snapshot = snapshot_with(vec![], vec![timed(0, 12_000, 1, sample)]);
 
         let json = to_chrome_trace_json(&snapshot.into());
         assert!(json.contains(
-            "{\"name\":\"upload_bytes [frame=7]\",\"cat\":\"counter\",\"ph\":\"C\",\"ts\":12,"
+            "{\"name\":\"upload_bytes [frame=7]\",\"cat\":\"counter\",\"ph\":\"C\",\"ts\":12.000,"
         ));
         assert!(json.contains("\"args\":{\"bytes\":4096}"));
         assert!(
@@ -1099,11 +1108,11 @@ mod tests {
 
     fn timed(
         sequence: u64,
-        at_micros: u64,
+        at_nanos: u64,
         thread_id: u64,
         observation: Observation,
     ) -> TimedObservation {
-        TimedObservation::new(at_micros, sequence, thread_id, observation)
+        TimedObservation::new(at_nanos, sequence, thread_id, observation)
     }
 
     fn begin(name: &'static str, token: u64) -> Observation {
@@ -1130,12 +1139,12 @@ mod tests {
         let snapshot = snapshot_with(
             vec![],
             vec![
-                timed(0, 10, 1, begin("left", 1)),
-                timed(1, 11, 2, begin("right", 2)),
-                timed(2, 12, 1, end(1)),
-                timed(3, 13, 2, end(2)),
-                timed(4, 14, 1, begin("hop", 3)),
-                timed(5, 15, 2, end(3)),
+                timed(0, 10_000, 1, begin("left", 1)),
+                timed(1, 11_000, 2, begin("right", 2)),
+                timed(2, 12_000, 1, end(1)),
+                timed(3, 13_000, 2, end(2)),
+                timed(4, 14_000, 1, begin("hop", 3)),
+                timed(5, 15_000, 2, end(3)),
             ],
         );
 
@@ -1143,15 +1152,15 @@ mod tests {
         assert!(json.contains("\"name\":\"thread 1\""));
         assert!(json.contains("\"name\":\"thread 2\""));
         assert!(json.contains(
-            "\"name\":\"left\",\"cat\":\"scope\",\"ph\":\"B\",\"ts\":10,\"pid\":1,\"tid\":1"
+            "\"name\":\"left\",\"cat\":\"scope\",\"ph\":\"B\",\"ts\":10.000,\"pid\":1,\"tid\":1"
         ));
         assert!(json.contains(
-            "\"name\":\"right\",\"cat\":\"scope\",\"ph\":\"B\",\"ts\":11,\"pid\":1,\"tid\":2"
+            "\"name\":\"right\",\"cat\":\"scope\",\"ph\":\"B\",\"ts\":11.000,\"pid\":1,\"tid\":2"
         ));
-        assert!(json.contains("{\"ph\":\"E\",\"ts\":12,\"pid\":1,\"tid\":1}"));
-        assert!(json.contains("{\"ph\":\"E\",\"ts\":13,\"pid\":1,\"tid\":2}"));
+        assert!(json.contains("{\"ph\":\"E\",\"ts\":12.000,\"pid\":1,\"tid\":1}"));
+        assert!(json.contains("{\"ph\":\"E\",\"ts\":13.000,\"pid\":1,\"tid\":2}"));
         assert!(
-            json.contains("{\"ph\":\"E\",\"ts\":15,\"pid\":1,\"tid\":1}"),
+            json.contains("{\"ph\":\"E\",\"ts\":15.000,\"pid\":1,\"tid\":1}"),
             "a scope ended on another thread should close on its begin track"
         );
         assert!(json.contains("\"context_id\":1"));

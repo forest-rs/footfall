@@ -147,7 +147,7 @@ fn encoded_envelopes_match_golden_fixtures() {
 fn snapshot_framing_envelopes_match_golden_fixtures() {
     let metadata = SnapshotMetadata::new("demo")
         .with_instance_id(0x0102_0304_0506_0708)
-        .with_wall_clock_anchor_micros(9)
+        .with_wall_clock_anchor_nanos(9)
         .with_producer_version("0.1.0")
         .with_capture(crate::CaptureSettings::new(
             footfall_core::InstrumentationLevel::Scoped,
@@ -220,7 +220,7 @@ fn codec_round_trips_owned_session_envelopes() {
     let metadata = SnapshotMetadata::new("demo")
         .with_session_name("wt")
         .with_instance_id(0x1234_5678_9abc_def0)
-        .with_wall_clock_anchor_micros(1_700_000_000_000_000)
+        .with_wall_clock_anchor_nanos(1_700_000_000_000_000)
         .with_producer_version("0.1.0")
         .with_capture(crate::CaptureSettings::new(
             footfall_core::InstrumentationLevel::Scoped,
@@ -229,7 +229,7 @@ fn codec_round_trips_owned_session_envelopes() {
             32,
         ));
     let snapshot = Snapshot::builder(metadata)
-        .captured_at_micros(20)
+        .captured_at_nanos(20)
         .window(crate::EventWindow::new(0, 3, 1))
         .thread(ThreadSnapshot::new(2, Some(String::from("worker"))))
         .context(footfall_runtime::ContextSnapshot::new(

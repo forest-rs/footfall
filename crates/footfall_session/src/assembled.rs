@@ -205,8 +205,8 @@ impl OwnedSnapshot {
 
     /// Returns the time since runtime creation when the snapshot was taken.
     #[must_use]
-    pub const fn captured_at_micros(&self) -> u64 {
-        self.summary.captured_at_micros()
+    pub const fn captured_at_nanos(&self) -> u64 {
+        self.summary.captured_at_nanos()
     }
 
     /// Returns the range of event sequence numbers the snapshot covers.
@@ -418,7 +418,7 @@ impl OwnedSnapshot {
         self.summary = OwnedSnapshotSummary::new(
             self.summary.metadata().clone(),
             SnapshotKind::Full,
-            self.summary.captured_at_micros(),
+            self.summary.captured_at_nanos(),
             window,
             counts,
         );

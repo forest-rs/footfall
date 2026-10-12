@@ -148,10 +148,11 @@ async fn a_slow_subscriber_gets_fresh_snapshots_and_a_closed_server_says_so() {
         tokio::time::sleep(Duration::from_millis(200)).await;
         let asked_at = std::time::Instant::now();
         let snapshot = subscription.next().await.expect("a later snapshot");
-        let age = runtime_now_micros(runtime).saturating_sub(snapshot.captured_at_micros());
+        let age = runtime_now_nanos(runtime).saturating_sub(snapshot.captured_at_nanos());
         assert!(
-            age < 100_000,
-            "round {round}: snapshot is {age} µs old, so snapshots queued"
+            age < 100_000_000,
+            "round {round}: snapshot is {} ms old, so snapshots queued",
+            age / 1_000_000
         );
         assert!(asked_at.elapsed() < Duration::from_millis(150));
         assert_eq!(
@@ -175,7 +176,7 @@ async fn a_slow_subscriber_gets_fresh_snapshots_and_a_closed_server_says_so() {
     );
 }
 
-/// The runtime's clock now, in microseconds since its creation.
-fn runtime_now_micros(runtime: &Runtime) -> u64 {
-    runtime.snapshot().captured_at_micros()
+/// The runtime's clock now, in nanoseconds since its creation.
+fn runtime_now_nanos(runtime: &Runtime) -> u64 {
+    runtime.snapshot().captured_at_nanos()
 }

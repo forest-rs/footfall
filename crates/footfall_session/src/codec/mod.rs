@@ -72,7 +72,7 @@ pub fn encode_envelope(envelope: Envelope<'_>) -> io::Result<Vec<u8>> {
                 &mut bytes,
                 summary.metadata(),
                 summary.kind(),
-                summary.captured_at_micros(),
+                summary.captured_at_nanos(),
                 summary.window(),
                 summary.counts(),
             )?;
@@ -120,7 +120,7 @@ pub fn encode_owned_envelope(envelope: &OwnedSessionEnvelope) -> io::Result<Vec<
                 &mut bytes,
                 summary.metadata(),
                 summary.kind(),
-                summary.captured_at_micros(),
+                summary.captured_at_nanos(),
                 summary.window(),
                 summary.counts(),
             )?;
@@ -220,7 +220,7 @@ pub(crate) fn encode_snapshot_summary(
     bytes: &mut Vec<u8>,
     metadata: &SnapshotMetadata,
     kind: SnapshotKind,
-    captured_at_micros: u64,
+    captured_at_nanos: u64,
     window: EventWindow,
     counts: RowCounts,
 ) -> io::Result<()> {
@@ -232,7 +232,7 @@ pub(crate) fn encode_snapshot_summary(
             SnapshotKind::Changes => 1,
         },
     );
-    encode_u64(bytes, captured_at_micros);
+    encode_u64(bytes, captured_at_nanos);
     encode_u64(bytes, window.since());
     encode_u64(bytes, window.next());
     encode_u64(bytes, window.missed());
@@ -257,7 +257,7 @@ pub(crate) fn decode_snapshot_summary(cursor: &mut Cursor<'_>) -> io::Result<Own
             ));
         }
     };
-    let captured_at_micros = decode_u64(cursor)?;
+    let captured_at_nanos = decode_u64(cursor)?;
     let window = EventWindow::new(
         decode_u64(cursor)?,
         decode_u64(cursor)?,
@@ -274,7 +274,7 @@ pub(crate) fn decode_snapshot_summary(cursor: &mut Cursor<'_>) -> io::Result<Own
     Ok(OwnedSnapshotSummary::new(
         metadata,
         kind,
-        captured_at_micros,
+        captured_at_nanos,
         window,
         counts,
     ))
@@ -316,7 +316,7 @@ pub(crate) fn encode_snapshot_metadata(
     encode_optional_string(bytes, metadata.session_name())?;
     encode_u64(bytes, metadata.instance_id());
     encode_u32(bytes, metadata.process_id());
-    encode_u64(bytes, metadata.wall_clock_anchor_micros());
+    encode_u64(bytes, metadata.wall_clock_anchor_nanos());
     encode_string(bytes, metadata.producer_version())?;
     let capture = metadata.capture();
     encode_u8(bytes, encode_level(capture.level())?);
@@ -335,7 +335,7 @@ pub(crate) fn decode_snapshot_metadata(cursor: &mut Cursor<'_>) -> io::Result<Sn
     let session_name = decode_optional_string(cursor, "session name")?;
     let instance_id = decode_u64(cursor)?;
     let process_id = decode_u32(cursor)?;
-    let wall_clock_anchor_micros = decode_u64(cursor)?;
+    let wall_clock_anchor_nanos = decode_u64(cursor)?;
     let producer_version = decode_string(cursor)?;
     let capture = CaptureSettings::new(
         decode_level(decode_u8(cursor)?)?,
@@ -356,7 +356,7 @@ pub(crate) fn decode_snapshot_metadata(cursor: &mut Cursor<'_>) -> io::Result<Sn
     let metadata = SnapshotMetadata::new(process_name)
         .with_instance_id(instance_id)
         .with_process_id(process_id)
-        .with_wall_clock_anchor_micros(wall_clock_anchor_micros)
+        .with_wall_clock_anchor_nanos(wall_clock_anchor_nanos)
         .with_producer_version(producer_version)
         .with_capture(capture);
     Ok(match session_name {
@@ -538,7 +538,7 @@ pub(crate) fn encode_counters(
         encode_u64(bytes, counter.context_id().get());
         encode_u8(bytes, encode_counter_kind(counter.kind())?);
         encode_u64(bytes, counter.value());
-        encode_u64(bytes, counter.updated_at_micros());
+        encode_u64(bytes, counter.updated_at_nanos());
     }
     Ok(())
 }
@@ -555,7 +555,7 @@ pub(crate) fn encode_borrowed_counters(
         encode_u64(bytes, counter.context_id().get());
         encode_u8(bytes, encode_counter_kind(counter.kind())?);
         encode_u64(bytes, counter.value());
-        encode_u64(bytes, counter.updated_at_micros());
+        encode_u64(bytes, counter.updated_at_nanos());
     }
     Ok(())
 }
@@ -595,7 +595,7 @@ pub(crate) fn encode_histograms(
             histogram.min(),
             histogram.max(),
             histogram.buckets(),
-            histogram.updated_at_micros(),
+            histogram.updated_at_nanos(),
         );
     }
     Ok(())
@@ -618,7 +618,7 @@ pub(crate) fn encode_borrowed_histograms(
             histogram.min(),
             histogram.max(),
             histogram.buckets(),
-            histogram.updated_at_micros(),
+            histogram.updated_at_nanos(),
         );
     }
     Ok(())
@@ -631,7 +631,7 @@ pub(crate) fn encode_histogram_body(
     min: u64,
     max: u64,
     buckets: &[u64; footfall_runtime::HISTOGRAM_BUCKET_COUNT],
-    updated_at_micros: u64,
+    updated_at_nanos: u64,
 ) {
     encode_u64(bytes, count);
     encode_u64(bytes, sum);
@@ -640,7 +640,7 @@ pub(crate) fn encode_histogram_body(
     for bucket in buckets {
         encode_u64(bytes, *bucket);
     }
-    encode_u64(bytes, updated_at_micros);
+    encode_u64(bytes, updated_at_nanos);
 }
 
 pub(crate) fn decode_histograms(
@@ -686,13 +686,13 @@ pub(crate) fn encode_events(
     // Timestamps and sequence numbers are written as differences from the
     // previous row's, which are small.
     let mut names = NameWriter::default();
-    let (mut at_micros, mut sequence) = (0, 0);
+    let (mut at_nanos, mut sequence) = (0, 0);
     for event in events {
-        encode_delta(bytes, at_micros, event.at_micros());
+        encode_delta(bytes, at_nanos, event.at_nanos());
         encode_delta(bytes, sequence, event.sequence());
         encode_u64(bytes, event.thread_id());
         encode_observation(bytes, event.observation(), &mut names)?;
-        (at_micros, sequence) = (event.at_micros(), event.sequence());
+        (at_nanos, sequence) = (event.at_nanos(), event.sequence());
     }
     Ok(())
 }
@@ -705,13 +705,13 @@ pub(crate) fn encode_borrowed_events(
     // Timestamps and sequence numbers are written as differences from the
     // previous row's, which are small.
     let mut names = NameWriter::default();
-    let (mut at_micros, mut sequence) = (0, 0);
+    let (mut at_nanos, mut sequence) = (0, 0);
     for event in events {
-        encode_delta(bytes, at_micros, event.at_micros());
+        encode_delta(bytes, at_nanos, event.at_nanos());
         encode_delta(bytes, sequence, event.sequence());
         encode_u64(bytes, event.thread_id());
         encode_borrowed_observation(bytes, event.observation(), &mut names)?;
-        (at_micros, sequence) = (event.at_micros(), event.sequence());
+        (at_nanos, sequence) = (event.at_nanos(), event.sequence());
     }
     Ok(())
 }
@@ -720,12 +720,12 @@ pub(crate) fn decode_events(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedTime
     let len = decode_bounded_len(cursor, MAX_ROWS_PER_ENVELOPE, "event rows")?;
     let mut events = Vec::with_capacity(len);
     let mut names = NameReader::default();
-    let (mut at_micros, mut sequence) = (0, 0);
+    let (mut at_nanos, mut sequence) = (0, 0);
     for _ in 0..len {
-        at_micros = decode_delta(cursor, at_micros)?;
+        at_nanos = decode_delta(cursor, at_nanos)?;
         sequence = decode_delta(cursor, sequence)?;
         events.push(OwnedTimedObservation::new(
-            at_micros,
+            at_nanos,
             sequence,
             decode_u64(cursor)?,
             decode_observation(cursor, &mut names)?,

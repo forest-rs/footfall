@@ -25,6 +25,8 @@ The first release.
 - `footfall_runtime`: bounded per-thread capture that keeps the newest events,
   with cursor reads that never drain, counter samples at frame ends, and
   accounting for everything it could not keep.
+- Nanosecond timestamps on a monotonic clock that starts with the runtime,
+  so even the shortest scopes have a duration.
 - Snapshots record their provenance: runtime instance, process, wall-clock
   anchor, producer version, level, and capacities.
 
