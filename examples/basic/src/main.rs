@@ -123,6 +123,6 @@ fn main() {
     pass_end(record_context);
     frame_end(frame_context);
 
-    let snapshot = runtime.drain_snapshot();
+    let snapshot = runtime.snapshot();
     println!("{}", to_chrome_trace_json(&snapshot));
 }

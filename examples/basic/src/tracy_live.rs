@@ -83,7 +83,7 @@ fn main() {
     );
     resource_drop(&ATLAS, ATLAS_ID, final_atlas.handle());
 
-    let snapshot = runtime.drain_snapshot();
+    let snapshot = runtime.snapshot();
     let mut consumer = SummaryConsumer::default();
     publish_snapshot(&snapshot, Chunking::default(), &mut consumer)
         .expect("session publication should succeed");

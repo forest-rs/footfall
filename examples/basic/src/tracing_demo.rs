@@ -34,6 +34,6 @@ fn main() {
         tracing::info!(frame, "frame recorded");
     }
 
-    let snapshot = runtime.drain_snapshot();
+    let snapshot = runtime.snapshot();
     println!("{}", footfall_export::to_chrome_trace_json(&snapshot));
 }

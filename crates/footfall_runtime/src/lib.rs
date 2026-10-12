@@ -33,27 +33,64 @@ pub const MESSAGE_TEXT_MAX_BYTES: usize = 256;
 /// Build one with [`Runtime::builder`], which documents every setting and
 /// its default.
 ///
+/// # Reading
+///
+/// A runtime keeps a recent window of history rather than a session that
+/// someone must drain, so any number of readers can read it without
+/// interfering. [`snapshot`](Runtime::snapshot) returns everything retained;
+/// [`snapshot_since`](Runtime::snapshot_since) returns the events recorded
+/// since an [`EventCursor`], plus the cursor to read from next and how many
+/// events in between were evicted before the reader got to them:
+///
+/// ```
+/// use footfall_core::{Backend, ContextHandle, ScopeDesc};
+/// use footfall_runtime::Runtime;
+///
+/// static WORK: ScopeDesc = ScopeDesc::new("work");
+/// let runtime = Runtime::default();
+///
+/// let cursor = runtime.cursor();
+/// let token = runtime.scope_begin(&WORK, ContextHandle::ROOT, &Default::default());
+/// runtime.scope_end(token);
+///
+/// let window = runtime.snapshot_since(cursor);
+/// assert_eq!(window.events().len(), 2);
+/// assert_eq!(window.window().missed(), 0);
+/// let next = window.next_cursor();
+/// assert!(runtime.snapshot_since(next).events().is_empty());
+/// ```
+///
+/// Counters, gauges, and histograms are cumulative since the runtime was
+/// created, so every snapshot carries their current values.
+///
+/// Every runtime has a random [`instance_id`](Runtime::instance_id), carried
+/// by its snapshots and cursors. A cursor from another instance, for example
+/// one taken before the producing process restarted, reads from the start.
+///
 /// # Capacity
 ///
 /// Every buffer has a fixed capacity, and nothing the runtime keeps grows
-/// past it. What does not fit is dropped and counted, and every snapshot
-/// reports the totals in [`Snapshot::drops`]:
+/// past it:
 ///
-/// - **Counter keys.** A key is one counter, gauge, or histogram descriptor
-///   under one context. Updates to a key admitted earlier always land; the
-///   first update to a new key once
-///   [`counter_capacity`](RuntimeBuilder::counter_capacity) keys exist is
-///   dropped, as is every later update to that key. Keys are admitted once
-///   for the whole runtime, whichever threads record them.
 /// - **Events.** Once [`event_capacity`](RuntimeBuilder::event_capacity)
-///   events are retained, new events are dropped. Scope ends and frame
-///   markers are dropped like any other event, so a capture cut off by
-///   capacity can contain scopes that begin but never end.
+///   events are retained, each new event evicts the oldest event recorded by
+///   the same thread, or by another thread when the recording thread has
+///   none. Eviction makes room for recent history, so a long capture keeps
+///   its newest events, and a scope can lose its begin while keeping its end.
+/// - **Counter keys.** A key is one counter, gauge, or histogram descriptor
+///   under one context, admitted once for the whole runtime whichever threads
+///   record it. Once [`counter_capacity`](RuntimeBuilder::counter_capacity)
+///   keys exist, the runtime first retires keys of released contexts (see
+///   below) and otherwise drops updates to new keys.
 /// - **Contexts.** Once
 ///   [`context_capacity`](RuntimeBuilder::context_capacity) contexts are
-///   registered, further registrations are refused. Observations emitted
-///   with a refused handle, or with any handle the runtime does not know,
-///   are kept and attributed to the root context instead.
+///   registered, the runtime first retires released contexts and otherwise
+///   refuses the registration. Observations emitted with a refused handle,
+///   or with any handle the runtime does not know, are kept and attributed
+///   to the root context.
+///
+/// What does not fit is counted in [`Snapshot::drops`], and each count names
+/// the capacity to raise.
 ///
 /// # Contexts
 ///
@@ -61,16 +98,22 @@ pub const MESSAGE_TEXT_MAX_BYTES: usize = 256;
 /// [`footfall_core::register_context`] in a table keyed by handle. Emissions
 /// carry only the handle and never touch the table, so attribution adds no
 /// locking or hashing to the hot path; snapshots resolve handles to contexts.
-/// Released contexts stay resolvable until the session ends and are purged
-/// when the next one starts; live contexts survive session resets.
+///
+/// A released context stays in the table, with its counter rows, until the
+/// runtime needs the room and no retained event can refer to it: that is,
+/// once every event recorded before its release has been evicted. Retiring
+/// it removes its counter rows too, so their final values are only visible to
+/// readers that read before then.
 ///
 /// # Threads
 ///
 /// Each recording thread writes its own shard of counters and events, so
 /// threads updating the same counter do not contend, and snapshots merge the
-/// shards.
+/// shards. Snapshots name each thread that recorded an event after its
+/// operating-system thread name, when it has one.
 #[derive(Debug)]
 pub struct Runtime {
+    instance_id: u64,
     created_at: Instant,
     wall_clock_anchor_micros: u64,
     process_name: String,
@@ -80,7 +123,13 @@ pub struct Runtime {
     drives_max_level: AtomicBool,
     counter_capacity: usize,
     event_capacity: usize,
+    context_capacity: usize,
     next_scope_token: AtomicU64,
+    /// Sequence number of the next event.
+    ///
+    /// Allocated while holding the recording thread's event shard, so a
+    /// reader that loads it and then locks each shard sees every event
+    /// numbered below the loaded value that has not been evicted.
     next_event_sequence: AtomicU64,
     /// Counter and histogram keys admitted against `counter_capacity`.
     ///
@@ -89,8 +138,8 @@ pub struct Runtime {
     admitted_keys: Mutex<HashSet<AdmittedKey>>,
     event_count: AtomicUsize,
     dropped_counters: AtomicU64,
-    dropped_events: AtomicU64,
-    session: Mutex<SessionState>,
+    evicted_events: AtomicU64,
+    labels: Mutex<LabelState>,
     contexts: Mutex<ContextTable>,
     counter_shards: Vec<Mutex<CounterShard>>,
     event_shards: Vec<Mutex<EventShard>>,
@@ -130,27 +179,28 @@ impl Runtime {
             event_capacity,
             context_capacity,
         } = builder;
+        let wall_clock = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO);
         Self {
+            instance_id: new_instance_id(wall_clock),
             created_at: Instant::now(),
-            wall_clock_anchor_micros: duration_to_micros(
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or(Duration::ZERO),
-            ),
+            wall_clock_anchor_micros: duration_to_micros(wall_clock),
             process_name: process_name.unwrap_or_else(default_process_name),
             level: AtomicU8::new(level_to_u8(level)),
             drives_max_level: AtomicBool::new(false),
             counter_capacity,
             event_capacity,
+            context_capacity,
             next_scope_token: AtomicU64::new(1),
             next_event_sequence: AtomicU64::new(0),
             admitted_keys: Mutex::new(HashSet::new()),
             event_count: AtomicUsize::new(0),
             dropped_counters: AtomicU64::new(0),
-            dropped_events: AtomicU64::new(0),
-            session: Mutex::new(SessionState {
+            evicted_events: AtomicU64::new(0),
+            labels: Mutex::new(LabelState {
                 session_name,
-                ..SessionState::default()
+                descriptor_ids: DescriptorIds::default(),
             }),
             contexts: Mutex::new(ContextTable::new(context_capacity)),
             counter_shards: build_counter_shards(DEFAULT_SHARD_COUNT),
@@ -178,6 +228,13 @@ impl Runtime {
         Ok(runtime)
     }
 
+    /// Returns the random id that distinguishes this runtime from every
+    /// other, including runtimes in earlier runs of the same process.
+    #[must_use]
+    pub const fn instance_id(&self) -> u64 {
+        self.instance_id
+    }
+
     /// Returns the current runtime capture level.
     #[must_use]
     pub fn level(&self) -> InstrumentationLevel {
@@ -197,51 +254,72 @@ impl Runtime {
 
     /// Sets an optional capture-session label for future snapshots.
     ///
-    /// The label persists across session resets until cleared, and can be
-    /// changed after the runtime is installed as the process-wide backend.
+    /// The label can be changed after the runtime is installed as the
+    /// process-wide backend.
     pub fn set_session_name(&self, session_name: impl Into<String>) {
-        self.session
+        self.labels
             .lock()
-            .expect("runtime session mutex should not be poisoned")
+            .expect("runtime label mutex should not be poisoned")
             .session_name = Some(session_name.into());
     }
 
     /// Clears the capture-session label for future snapshots.
     pub fn clear_session_name(&self) {
-        self.session
+        self.labels
             .lock()
-            .expect("runtime session mutex should not be poisoned")
+            .expect("runtime label mutex should not be poisoned")
             .session_name = None;
     }
 
-    /// Returns a snapshot of the currently collected counters, contexts, and events.
+    /// Returns a cursor positioned after every event recorded so far.
+    ///
+    /// Pass it to [`snapshot_since`](Self::snapshot_since) to read only what
+    /// is recorded from now on, for example to capture one region of work.
+    #[must_use]
+    pub fn cursor(&self) -> EventCursor {
+        EventCursor::new(
+            self.instance_id,
+            self.next_event_sequence.load(Ordering::SeqCst),
+        )
+    }
+
+    /// Returns a snapshot of everything retained: contexts, counters,
+    /// histograms, and every event still in the buffer.
     #[must_use]
     pub fn snapshot(&self) -> Snapshot {
-        let captured_at_micros = self.now_micros();
-        self.snapshot_at(captured_at_micros)
+        self.snapshot_from(0)
     }
 
-    /// Drains the current capture state into a snapshot and starts a fresh session.
+    /// Returns a snapshot whose events are those recorded at or after
+    /// `cursor`, with the current contexts, counters, and histograms.
+    ///
+    /// [`Snapshot::window`] reports the range of event sequence numbers the
+    /// snapshot covers and how many events in that range were evicted before
+    /// this read, and [`Snapshot::next_cursor`] is where the next read should
+    /// start. A cursor from another runtime instance reads from the start.
     #[must_use]
-    pub fn drain_snapshot(&self) -> Snapshot {
-        let captured_at_micros = self.now_micros();
-        let snapshot = self.snapshot_at(captured_at_micros);
-        self.reset_at(captured_at_micros);
-        snapshot
+    pub fn snapshot_since(&self, cursor: EventCursor) -> Snapshot {
+        let since = if cursor.instance_id == self.instance_id {
+            cursor.sequence
+        } else {
+            0
+        };
+        self.snapshot_from(since)
     }
 
-    /// Clears the current capture state and starts a fresh session.
-    pub fn reset(&self) {
-        let captured_at_micros = self.now_micros();
-        self.reset_at(captured_at_micros);
-    }
-
-    fn metadata(&self, session: &SessionState) -> SnapshotMetadata {
+    fn metadata(&self, labels: &LabelState) -> SnapshotMetadata {
         SnapshotMetadata {
             process_name: self.process_name.clone(),
-            session_name: session.session_name.clone(),
-            session_sequence: session.session_sequence,
+            session_name: labels.session_name.clone(),
+            instance_id: self.instance_id,
             wall_clock_anchor_micros: self.wall_clock_anchor_micros,
+            producer_version: String::from(PRODUCER_VERSION),
+            capture: CaptureSettings {
+                level: self.level(),
+                counter_capacity: self.counter_capacity,
+                event_capacity: self.event_capacity,
+                context_capacity: self.context_capacity,
+            },
         }
     }
 
@@ -249,11 +327,19 @@ impl Runtime {
         duration_to_micros(self.created_at.elapsed())
     }
 
-    fn snapshot_at(&self, captured_at_micros: u64) -> Snapshot {
-        let mut session = self
-            .session
+    fn snapshot_from(&self, since: u64) -> Snapshot {
+        let captured_at_micros = self.now_micros();
+        // Load the watermark before locking any event shard: every event
+        // numbered below it was pushed under its shard's lock before the
+        // number was published, so the reads below see it unless it was
+        // evicted.
+        let next = self.next_event_sequence.load(Ordering::SeqCst);
+        let since = since.min(next);
+
+        let mut labels = self
+            .labels
             .lock()
-            .expect("runtime session mutex should not be poisoned");
+            .expect("runtime label mutex should not be poisoned");
         let contexts = self
             .contexts
             .lock()
@@ -298,14 +384,20 @@ impl Runtime {
         let mut counters: Vec<_> = merged_counters.into_values().collect();
         let mut histograms: Vec<_> = merged_histograms.into_values().collect();
 
-        let mut events = Vec::with_capacity(self.event_count.load(Ordering::Relaxed));
+        let mut events = Vec::new();
         for shard in &self.event_shards {
+            let shard = shard
+                .lock()
+                .expect("runtime event shard should not be poisoned");
+            // A shard's events are in sequence order, because sequence
+            // numbers are allocated under its lock, so the window is a
+            // contiguous range found by binary search.
+            let start = shard.events.partition_point(|event| event.sequence < since);
             events.extend(
                 shard
-                    .lock()
-                    .expect("runtime event shard should not be poisoned")
                     .events
-                    .iter()
+                    .range(start..)
+                    .take_while(|event| event.sequence < next)
                     .cloned(),
             );
         }
@@ -315,6 +407,14 @@ impl Runtime {
                 *context_id = contexts.resolve(*context_id, &mut unresolved_contexts);
             }
         }
+        let delivered = u64::try_from(events.len()).unwrap_or(u64::MAX);
+        let window = EventWindow {
+            since,
+            next,
+            missed: (next - since).saturating_sub(delivered),
+        };
+        let threads = thread_snapshots(&events);
+
         // Counter maps iterate in arbitrary order; sort so snapshots, and
         // the dense descriptor ids assigned below, are deterministic.
         counters.sort_by_key(|counter| {
@@ -325,14 +425,15 @@ impl Runtime {
             )
         });
         histograms.sort_by_key(|histogram| (histogram.name, histogram.context_id));
-        session
+        labels
             .descriptor_ids
             .remap(&mut events, &mut counters, &mut histograms);
 
         Snapshot {
-            metadata: self.metadata(&session),
-            capture_start_micros: session.capture_start_micros,
+            metadata: self.metadata(&labels),
             captured_at_micros,
+            window,
+            threads,
             contexts: contexts.snapshot(),
             counters,
             histograms,
@@ -341,47 +442,8 @@ impl Runtime {
                 refused_contexts: contexts.refused,
                 unattributed: unresolved_contexts,
                 counter_updates: self.dropped_counters.load(Ordering::Relaxed),
-                events: self.dropped_events.load(Ordering::Relaxed),
+                evicted_events: self.evicted_events.load(Ordering::Relaxed),
             },
-        }
-    }
-
-    fn reset_at(&self, capture_start_micros: u64) {
-        let mut session = self
-            .session
-            .lock()
-            .expect("runtime session mutex should not be poisoned");
-        session.capture_start_micros = capture_start_micros;
-        session.session_sequence = session.session_sequence.saturating_add(1);
-        session.descriptor_ids.clear();
-
-        // Scope tokens stay monotonic across session resets so a scope that
-        // straddles a drain cannot collide with tokens issued afterwards.
-        self.admitted_keys
-            .lock()
-            .expect("runtime admitted-key mutex should not be poisoned")
-            .clear();
-        self.event_count.store(0, Ordering::Relaxed);
-        self.dropped_counters.store(0, Ordering::Relaxed);
-        self.dropped_events.store(0, Ordering::Relaxed);
-
-        self.contexts
-            .lock()
-            .expect("runtime context mutex should not be poisoned")
-            .start_session();
-        for shard in &self.counter_shards {
-            let mut shard = shard
-                .lock()
-                .expect("runtime counter shard should not be poisoned");
-            shard.counters.clear();
-            shard.histograms.clear();
-        }
-        for shard in &self.event_shards {
-            shard
-                .lock()
-                .expect("runtime event shard should not be poisoned")
-                .events
-                .clear();
         }
     }
 
@@ -417,22 +479,27 @@ impl Runtime {
             desc_id: desc.id(),
             context_id,
         };
-        let mut shard = self.counter_shards[self.thread_shard_index()]
-            .lock()
-            .expect("runtime counter shard should not be poisoned");
-        if let Some(histogram) = shard.histograms.get_mut(&key) {
-            histogram.record(value, at_micros);
-            return;
+        let shard_index = self.thread_shard_index();
+        {
+            let mut shard = self.lock_counter_shard(shard_index);
+            if let Some(histogram) = shard.histograms.get_mut(&key) {
+                histogram.record(value, at_micros);
+                return;
+            }
         }
 
+        // Admission takes other locks, so it runs with the shard released.
         if !self.admit_key(AdmittedKey::Histogram(key)) {
             self.dropped_counters.fetch_add(1, Ordering::Relaxed);
             return;
         }
-
-        let mut histogram = HistogramSnapshot::new(desc.id(), desc.name(), desc.unit(), context_id);
-        histogram.record(value, at_micros);
-        shard.histograms.insert(key, histogram);
+        self.lock_counter_shard(shard_index)
+            .histograms
+            .entry(key)
+            .or_insert_with(|| {
+                HistogramSnapshot::new(desc.id(), desc.name(), desc.unit(), context_id)
+            })
+            .record(value, at_micros);
     }
 
     fn counter_update_at(
@@ -445,35 +512,42 @@ impl Runtime {
     ) {
         let context_id = context.id();
         let key = CounterKey::new(desc.id(), context_id, kind);
-        let mut shard = self.counter_shards[self.thread_shard_index()]
-            .lock()
-            .expect("runtime counter shard should not be poisoned");
-        if let Some(snapshot) = shard.counters.get_mut(&key) {
-            snapshot.value = match kind {
-                CounterKind::Counter => snapshot.value.saturating_add(value),
-                CounterKind::Gauge => value,
-            };
-            snapshot.updated_at_micros = at_micros;
-            return;
+        let shard_index = self.thread_shard_index();
+        {
+            let mut shard = self.lock_counter_shard(shard_index);
+            if let Some(snapshot) = shard.counters.get_mut(&key) {
+                snapshot.apply(value, at_micros);
+                return;
+            }
         }
 
+        // Admission takes other locks, so it runs with the shard released.
         if !self.admit_key(AdmittedKey::Counter(key)) {
             self.dropped_counters.fetch_add(1, Ordering::Relaxed);
             return;
         }
-
-        shard.counters.insert(
-            key,
-            CounterSnapshot {
+        self.lock_counter_shard(shard_index)
+            .counters
+            .entry(key)
+            .or_insert_with(|| CounterSnapshot {
                 desc_id: desc.id(),
                 name: desc.name(),
                 unit: desc.unit(),
                 context_id,
                 kind,
-                value,
+                value: match kind {
+                    CounterKind::Counter => 0,
+                    CounterKind::Gauge => value,
+                },
                 updated_at_micros: at_micros,
-            },
-        );
+            })
+            .apply(value, at_micros);
+    }
+
+    fn lock_counter_shard(&self, index: usize) -> std::sync::MutexGuard<'_, CounterShard> {
+        self.counter_shards[index]
+            .lock()
+            .expect("runtime counter shard should not be poisoned")
     }
 
     fn next_scope_token(&self) -> ScopeToken {
@@ -481,34 +555,82 @@ impl Runtime {
     }
 
     fn push_event_at(&self, observation: Observation, at_micros: u64) {
-        if !self.reserve_event_slot() {
-            self.dropped_events.fetch_add(1, Ordering::Relaxed);
-            return;
+        let shard_index = self.thread_shard_index();
+        let mut shard = self.event_shards[shard_index]
+            .lock()
+            .expect("runtime event shard should not be poisoned");
+        if !reserve_slot(&self.event_count, self.event_capacity) {
+            // Full: take the slot of the oldest event this shard holds, or of
+            // one in another shard when this one is empty.
+            if shard.events.pop_front().is_none() {
+                drop(shard);
+                if !self.evict_from_any_shard() {
+                    // Nothing to evict: the capacity is zero.
+                    self.evicted_events.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+                shard = self.event_shards[shard_index]
+                    .lock()
+                    .expect("runtime event shard should not be poisoned");
+            }
+            self.evicted_events.fetch_add(1, Ordering::Relaxed);
         }
 
-        let shard_index = self.thread_shard_index();
-        // Taking the sequence number after the slot reservation keeps it in
+        // Allocating the sequence number under the shard lock keeps it in
         // program order for the recording thread, which timestamps alone
-        // cannot guarantee at microsecond resolution.
-        let sequence = self.next_event_sequence.fetch_add(1, Ordering::Relaxed);
-        self.event_shards[shard_index]
-            .lock()
-            .expect("runtime event shard should not be poisoned")
-            .events
-            .push_back(TimedObservation {
-                at_micros,
-                sequence,
-                thread_id: current_thread_id(),
-                observation,
-            });
+        // cannot guarantee at microsecond resolution, and lets readers use
+        // the next number as a watermark; see `next_event_sequence`.
+        let sequence = self.next_event_sequence.fetch_add(1, Ordering::SeqCst);
+        shard.events.push_back(TimedObservation {
+            at_micros,
+            sequence,
+            thread_id: current_thread_id(),
+            observation,
+        });
+    }
+
+    /// Evicts the oldest event of the first non-empty shard, keeping its
+    /// capacity slot for the caller. Returns `false` when every shard is
+    /// empty.
+    fn evict_from_any_shard(&self) -> bool {
+        self.event_shards.iter().any(|shard| {
+            shard
+                .lock()
+                .expect("runtime event shard should not be poisoned")
+                .events
+                .pop_front()
+                .is_some()
+        })
     }
 
     /// Admits a key the calling thread's shard has not seen yet.
     ///
     /// A key another thread already admitted is admitted again for free, so
     /// a key costs one slot of `counter_capacity` however many threads
-    /// record it.
+    /// record it. When the capacity is reached, keys of retired contexts
+    /// make room first.
     fn admit_key(&self, key: AdmittedKey) -> bool {
+        {
+            let mut admitted = self
+                .admitted_keys
+                .lock()
+                .expect("runtime admitted-key mutex should not be poisoned");
+            if admitted.contains(&key) {
+                return true;
+            }
+            if admitted.len() < self.counter_capacity {
+                admitted.insert(key);
+                return true;
+            }
+        }
+        let mut contexts = self
+            .contexts
+            .lock()
+            .expect("runtime context mutex should not be poisoned");
+        if self.retire_released_contexts(&mut contexts) == 0 {
+            return false;
+        }
+        drop(contexts);
         let mut admitted = self
             .admitted_keys
             .lock()
@@ -516,15 +638,57 @@ impl Runtime {
         if admitted.contains(&key) {
             return true;
         }
-        if admitted.len() >= self.counter_capacity {
-            return false;
+        if admitted.len() < self.counter_capacity {
+            admitted.insert(key);
+            return true;
         }
-        admitted.insert(key);
-        true
+        false
     }
 
-    fn reserve_event_slot(&self) -> bool {
-        reserve_slot(&self.event_count, self.event_capacity)
+    /// Retires released contexts that no retained event can refer to,
+    /// removing their counter rows and admitted keys, and returns how many
+    /// it retired.
+    ///
+    /// Lock order: the context table, then each event shard in turn, then
+    /// the admitted keys, then each counter shard in turn.
+    fn retire_released_contexts(&self, contexts: &mut ContextTable) -> usize {
+        if !contexts.has_released() {
+            return 0;
+        }
+        // Every event recorded before this sequence number has been evicted.
+        let horizon = self
+            .event_shards
+            .iter()
+            .filter_map(|shard| {
+                shard
+                    .lock()
+                    .expect("runtime event shard should not be poisoned")
+                    .events
+                    .front()
+                    .map(|event| event.sequence)
+            })
+            .min()
+            .unwrap_or_else(|| self.next_event_sequence.load(Ordering::SeqCst));
+        let retired = contexts.retire_released_before(horizon);
+        if retired.is_empty() {
+            return 0;
+        }
+
+        let is_retired = |context_id: ContextId| retired.contains(&context_id.get());
+        self.admitted_keys
+            .lock()
+            .expect("runtime admitted-key mutex should not be poisoned")
+            .retain(|key| !is_retired(key.context_id()));
+        for shard in &self.counter_shards {
+            let mut shard = shard
+                .lock()
+                .expect("runtime counter shard should not be poisoned");
+            shard.counters.retain(|key, _| !is_retired(key.context_id));
+            shard
+                .histograms
+                .retain(|key, _| !is_retired(key.context_id));
+        }
+        retired.len()
     }
 
     /// Picks the shard owned by the calling thread.
@@ -640,45 +804,32 @@ impl RuntimeBuilder {
     }
 }
 
-/// Snapshot of counters, canonical contexts, and events retained by a [`Runtime`].
+/// Snapshot of contexts, counters, histograms, and events retained by a
+/// [`Runtime`].
 ///
 /// Descriptor ids in a snapshot ([`ScopeDescId`], [`CounterDescId`],
-/// [`EventDescId`], and [`ResourceKindId`]) are opaque and session-scoped:
-/// dense integers from `1`, shared across descriptor kinds, assigned in
-/// first-seen order (events, then counters, then histograms). They stay fixed
-/// for the rest of a capture session, so repeated snapshots agree, and start
-/// over when the session resets. The address-derived identity that
-/// descriptors have inside the process never appears in a snapshot.
+/// [`EventDescId`], and [`ResourceKindId`]) are opaque: dense integers from
+/// `1`, shared across descriptor kinds, assigned in first-seen order and
+/// fixed for the life of the runtime instance, so every snapshot of one
+/// instance agrees. The address-derived identity that descriptors have
+/// inside the process never appears in a snapshot.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Snapshot {
-    /// Snapshot metadata identifying the process and capture session.
     metadata: SnapshotMetadata,
-    /// Snapshot start time relative to runtime creation.
-    capture_start_micros: u64,
-    /// Time since runtime creation when the snapshot was captured.
     captured_at_micros: u64,
-    /// Registered contexts live during the session, sorted by id, starting
-    /// with the root context (id `0`).
-    ///
-    /// Ids carry the [`ContextHandle`] values the contexts were emitted with.
-    /// Contexts released during the session are included so observations
-    /// recorded before release still resolve.
+    window: EventWindow,
+    threads: Vec<ThreadSnapshot>,
     contexts: Vec<ContextSnapshot>,
-    /// Aggregated counters and gauges.
     counters: Vec<CounterSnapshot>,
-    /// Aggregated value distributions.
     histograms: Vec<HistogramSnapshot>,
-    /// Bounded sequence of timestamped observation records, ordered by
-    /// timestamp and then by recording sequence.
     events: Vec<TimedObservation>,
-    /// What the runtime could not keep or attribute during the session.
     drops: Drops,
 }
 
 impl Snapshot {
     /// Starts building a snapshot by hand, for example as a test fixture for
     /// a snapshot consumer. Runtimes produce snapshots through
-    /// [`Runtime::snapshot`] and [`Runtime::drain_snapshot`].
+    /// [`Runtime::snapshot`] and [`Runtime::snapshot_since`].
     pub fn builder(metadata: SnapshotMetadata) -> SnapshotBuilder {
         SnapshotBuilder {
             snapshot: Self {
@@ -688,59 +839,77 @@ impl Snapshot {
         }
     }
 
-    /// Returns the metadata identifying the process and capture session.
+    /// Returns the metadata identifying the producing runtime.
     #[must_use]
     pub const fn metadata(&self) -> &SnapshotMetadata {
         &self.metadata
     }
 
-    /// Returns the capture start time relative to runtime creation.
-    #[must_use]
-    pub const fn capture_start_micros(&self) -> u64 {
-        self.capture_start_micros
-    }
-
-    /// Returns the time since runtime creation when the snapshot was captured.
+    /// Returns the time since runtime creation when the snapshot was taken.
     #[must_use]
     pub const fn captured_at_micros(&self) -> u64 {
         self.captured_at_micros
     }
 
-    /// Returns the registered contexts live during the session, sorted by id
-    /// and starting with the root context (id `0`).
+    /// Returns the range of event sequence numbers this snapshot covers.
+    #[must_use]
+    pub const fn window(&self) -> EventWindow {
+        self.window
+    }
+
+    /// Returns the cursor to read the next snapshot from, with
+    /// [`Runtime::snapshot_since`].
+    #[must_use]
+    pub const fn next_cursor(&self) -> EventCursor {
+        EventCursor::new(self.metadata.instance_id, self.window.next)
+    }
+
+    /// Returns the threads that recorded this snapshot's events, sorted by
+    /// id.
+    #[must_use]
+    pub fn threads(&self) -> &[ThreadSnapshot] {
+        &self.threads
+    }
+
+    /// Returns the registered contexts the runtime holds, sorted by id and
+    /// starting with the root context (id `0`).
     ///
-    /// Ids carry the [`ContextHandle`] values the contexts were emitted with.
-    /// Contexts released during the session are included so observations
-    /// recorded before release still resolve.
+    /// Ids carry the [`ContextHandle`] values the contexts were emitted with
+    /// and stay fixed for the life of the runtime instance. Released contexts
+    /// are included until the runtime retires them, so observations recorded
+    /// before release still resolve.
     #[must_use]
     pub fn contexts(&self) -> &[ContextSnapshot] {
         &self.contexts
     }
 
-    /// Returns the aggregated counters and gauges.
+    /// Returns the counters and gauges, cumulative since the runtime was
+    /// created.
     #[must_use]
     pub fn counters(&self) -> &[CounterSnapshot] {
         &self.counters
     }
 
-    /// Returns the aggregated value distributions.
+    /// Returns the value distributions, cumulative since the runtime was
+    /// created.
     #[must_use]
     pub fn histograms(&self) -> &[HistogramSnapshot] {
         &self.histograms
     }
 
-    /// Returns the bounded sequence of timestamped observation records,
-    /// ordered by timestamp and then by recording sequence.
+    /// Returns the events in the [`window`](Self::window), ordered by
+    /// timestamp and then by recording sequence.
     #[must_use]
     pub fn events(&self) -> &[TimedObservation] {
         &self.events
     }
 
-    /// Returns what the runtime could not keep or attribute during the
-    /// session.
+    /// Returns what the runtime could not keep or attribute.
     ///
     /// Check it before trusting totals: a snapshot with drops is missing
-    /// data, and the kinds of drop say which capacity to raise.
+    /// data, and the kinds of drop say which capacity to raise. Events
+    /// missing from this snapshot's window in particular are counted by
+    /// [`EventWindow::missed`].
     #[must_use]
     pub const fn drops(&self) -> Drops {
         self.drops
@@ -754,6 +923,15 @@ impl Snapshot {
             .ok()
             .map(|index| &self.contexts[index])
     }
+
+    /// Resolves one thread by id.
+    #[must_use]
+    pub fn thread(&self, thread_id: u64) -> Option<&ThreadSnapshot> {
+        self.threads
+            .binary_search_by_key(&thread_id, |thread| thread.id)
+            .ok()
+            .map(|index| &self.threads[index])
+    }
 }
 
 /// Builds a [`Snapshot`] by hand; see [`Snapshot::builder`].
@@ -764,10 +942,21 @@ pub struct SnapshotBuilder {
 }
 
 impl SnapshotBuilder {
-    /// Sets the capture window relative to runtime creation.
-    pub const fn capture_window(mut self, start_micros: u64, captured_at_micros: u64) -> Self {
-        self.snapshot.capture_start_micros = start_micros;
+    /// Sets the time since runtime creation when the snapshot was taken.
+    pub const fn captured_at_micros(mut self, captured_at_micros: u64) -> Self {
         self.snapshot.captured_at_micros = captured_at_micros;
+        self
+    }
+
+    /// Sets the range of event sequence numbers the snapshot covers.
+    pub const fn window(mut self, window: EventWindow) -> Self {
+        self.snapshot.window = window;
+        self
+    }
+
+    /// Adds one thread row. Rows are sorted by id when the snapshot is built.
+    pub fn thread(mut self, thread: ThreadSnapshot) -> Self {
+        self.snapshot.threads.push(thread);
         self
     }
 
@@ -805,22 +994,106 @@ impl SnapshotBuilder {
     /// Finishes the snapshot.
     #[must_use]
     pub fn build(mut self) -> Snapshot {
+        self.snapshot.threads.sort_by_key(|thread| thread.id);
         self.snapshot.contexts.sort_by_key(|context| context.id);
         self.snapshot.events.sort_by_key(event_sort_key);
         self.snapshot
     }
 }
 
-/// What a [`Runtime`] could not keep or attribute during a capture session.
+/// Position in one runtime instance's event sequence; see
+/// [`Runtime::snapshot_since`].
+///
+/// A cursor names the runtime instance it belongs to, so a cursor kept across
+/// a producer restart is recognized as foreign rather than silently skipping
+/// the new instance's first events.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct EventCursor {
+    instance_id: u64,
+    sequence: u64,
+}
+
+impl EventCursor {
+    /// Creates a cursor at `sequence` in the runtime instance `instance_id`.
+    #[must_use]
+    pub const fn new(instance_id: u64, sequence: u64) -> Self {
+        Self {
+            instance_id,
+            sequence,
+        }
+    }
+
+    /// Returns the id of the runtime instance this cursor belongs to.
+    #[must_use]
+    pub const fn instance_id(self) -> u64 {
+        self.instance_id
+    }
+
+    /// Returns the sequence number of the first event the next read returns.
+    #[must_use]
+    pub const fn sequence(self) -> u64 {
+        self.sequence
+    }
+}
+
+/// The range of event sequence numbers a [`Snapshot`] covers.
+///
+/// A snapshot's events are the retained events numbered from
+/// [`since`](Self::since) up to, but not including, [`next`](Self::next).
+/// Events in that range that were evicted before the read are counted by
+/// [`missed`](Self::missed), so `next - since == events + missed`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EventWindow {
+    since: u64,
+    next: u64,
+    missed: u64,
+}
+
+impl EventWindow {
+    /// Creates a window.
+    #[must_use]
+    pub const fn new(since: u64, next: u64, missed: u64) -> Self {
+        Self {
+            since,
+            next,
+            missed,
+        }
+    }
+
+    /// Returns the first sequence number the window covers.
+    ///
+    /// This is the cursor's sequence for a read with a cursor from the same
+    /// runtime instance, and `0` for a full snapshot or a foreign cursor.
+    #[must_use]
+    pub const fn since(self) -> u64 {
+        self.since
+    }
+
+    /// Returns the sequence number after the last one the window covers,
+    /// where the next read starts.
+    #[must_use]
+    pub const fn next(self) -> u64 {
+        self.next
+    }
+
+    /// Returns how many events in the window were evicted before the read.
+    #[must_use]
+    pub const fn missed(self) -> u64 {
+        self.missed
+    }
+}
+
+/// What a [`Runtime`] could not keep or attribute.
 ///
 /// Each count names the capacity to raise; see [`Runtime`] for the overflow
-/// rules.
+/// rules. Every count except [`unattributed`](Self::unattributed) is
+/// cumulative since the runtime was created.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Drops {
     refused_contexts: u64,
     unattributed: u64,
     counter_updates: u64,
-    events: u64,
+    evicted_events: u64,
 }
 
 impl Drops {
@@ -831,7 +1104,7 @@ impl Drops {
             refused_contexts: 0,
             unattributed: 0,
             counter_updates: 0,
-            events: 0,
+            evicted_events: 0,
         }
     }
 
@@ -856,28 +1129,30 @@ impl Drops {
         self
     }
 
-    /// Sets the number of dropped events.
+    /// Sets the number of evicted events.
     #[must_use]
-    pub const fn with_events(mut self, count: u64) -> Self {
-        self.events = count;
+    pub const fn with_evicted_events(mut self, count: u64) -> Self {
+        self.evicted_events = count;
         self
     }
 
     /// Returns the number of context registrations refused because the
-    /// context table was full. Raise
+    /// context table was full of live contexts. Raise
     /// [`context_capacity`](RuntimeBuilder::context_capacity).
     #[must_use]
     pub const fn refused_contexts(&self) -> u64 {
         self.refused_contexts
     }
 
-    /// Returns the number of counter rows and events attributed to the root
-    /// context because the runtime did not know their context handle.
+    /// Returns the number of counter rows and events in this snapshot that
+    /// are attributed to the root context because the runtime did not know
+    /// their context handle.
     ///
     /// The handle was refused (see
-    /// [`refused_contexts`](Self::refused_contexts)), released and purged by
-    /// a session reset, registered before this runtime was installed, or
-    /// never registered at all. The rows and events themselves are kept.
+    /// [`refused_contexts`](Self::refused_contexts)), used after its context
+    /// was released and retired, registered before this runtime was
+    /// installed, or never registered at all. The rows and events themselves
+    /// are kept.
     #[must_use]
     pub const fn unattributed(&self) -> u64 {
         self.unattributed
@@ -891,46 +1166,43 @@ impl Drops {
         self.counter_updates
     }
 
-    /// Returns the number of events dropped because the event buffer was
-    /// full. Raise [`event_capacity`](RuntimeBuilder::event_capacity), or
-    /// lower the capture level.
+    /// Returns the number of events evicted to make room for newer ones.
+    ///
+    /// Eviction is how the runtime keeps recent history, so this grows in
+    /// any long capture; [`EventWindow::missed`] says whether a particular
+    /// reader lost events to it. Raise
+    /// [`event_capacity`](RuntimeBuilder::event_capacity), or read more
+    /// often, to keep more.
     #[must_use]
-    pub const fn events(&self) -> u64 {
-        self.events
+    pub const fn evicted_events(&self) -> u64 {
+        self.evicted_events
     }
 
-    /// Returns `true` when nothing was dropped or misattributed.
+    /// Returns `true` when nothing was refused, dropped, evicted, or
+    /// misattributed.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.refused_contexts == 0
             && self.unattributed == 0
             && self.counter_updates == 0
-            && self.events == 0
+            && self.evicted_events == 0
     }
 }
 
-/// Metadata describing the process and session that produced a snapshot.
+/// Metadata describing the runtime that produced a snapshot.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SnapshotMetadata {
-    /// Process name used by exporters.
     process_name: String,
-    /// Optional capture-session label.
     session_name: Option<String>,
-    /// Monotonic sequence number of the capture session.
-    session_sequence: u64,
-    /// Wall-clock time of runtime creation in microseconds since the Unix
-    /// epoch.
-    ///
-    /// All snapshot timestamps are relative to runtime creation, so adding
-    /// this anchor to any `*_micros` value yields wall-clock time. The anchor
-    /// lets consumers correlate captures with logs and merge sessions from
-    /// multiple processes onto one timeline.
+    instance_id: u64,
     wall_clock_anchor_micros: u64,
+    producer_version: String,
+    capture: CaptureSettings,
 }
 
 impl SnapshotMetadata {
-    /// Creates metadata for the named process with no session name, session
-    /// sequence `0`, and a zero wall-clock anchor.
+    /// Creates metadata for the named process, with every other field at its
+    /// zero value.
     #[must_use]
     pub fn new(process_name: impl Into<String>) -> Self {
         Self {
@@ -946,10 +1218,10 @@ impl SnapshotMetadata {
         self
     }
 
-    /// Sets the capture-session sequence number.
+    /// Sets the runtime instance id.
     #[must_use]
-    pub const fn with_session_sequence(mut self, session_sequence: u64) -> Self {
-        self.session_sequence = session_sequence;
+    pub const fn with_instance_id(mut self, instance_id: u64) -> Self {
+        self.instance_id = instance_id;
         self
     }
 
@@ -957,6 +1229,20 @@ impl SnapshotMetadata {
     #[must_use]
     pub const fn with_wall_clock_anchor_micros(mut self, wall_clock_anchor_micros: u64) -> Self {
         self.wall_clock_anchor_micros = wall_clock_anchor_micros;
+        self
+    }
+
+    /// Sets the producer version.
+    #[must_use]
+    pub fn with_producer_version(mut self, producer_version: impl Into<String>) -> Self {
+        self.producer_version = producer_version.into();
+        self
+    }
+
+    /// Sets the capture settings.
+    #[must_use]
+    pub const fn with_capture(mut self, capture: CaptureSettings) -> Self {
+        self.capture = capture;
         self
     }
 
@@ -972,22 +1258,123 @@ impl SnapshotMetadata {
         self.session_name.as_deref()
     }
 
-    /// Returns the monotonic sequence number of the capture session.
+    /// Returns the random id of the producing runtime instance; see
+    /// [`Runtime::instance_id`].
+    ///
+    /// Context ids, descriptor ids, thread ids, and event sequence numbers
+    /// are only comparable between snapshots with the same instance id.
     #[must_use]
-    pub const fn session_sequence(&self) -> u64 {
-        self.session_sequence
+    pub const fn instance_id(&self) -> u64 {
+        self.instance_id
     }
 
     /// Returns the wall-clock time of runtime creation in microseconds since
     /// the Unix epoch.
     ///
-    /// All snapshot timestamps are relative to runtime creation, so adding
-    /// this anchor to any `*_micros` value yields wall-clock time. The anchor
-    /// lets consumers correlate captures with logs and merge sessions from
-    /// multiple processes onto one timeline.
+    /// All snapshot timestamps are microseconds on a monotonic clock that
+    /// starts at runtime creation, so adding this anchor to any `*_micros`
+    /// value yields wall-clock time. The anchor lets consumers correlate
+    /// captures with logs and merge captures from several processes onto one
+    /// timeline.
     #[must_use]
     pub const fn wall_clock_anchor_micros(&self) -> u64 {
         self.wall_clock_anchor_micros
+    }
+
+    /// Returns the version of `footfall_runtime` that produced the snapshot.
+    #[must_use]
+    pub fn producer_version(&self) -> &str {
+        &self.producer_version
+    }
+
+    /// Returns the level and capacities the runtime was capturing with.
+    #[must_use]
+    pub const fn capture(&self) -> CaptureSettings {
+        self.capture
+    }
+}
+
+/// The level and capacities a [`Runtime`] was capturing with when it took a
+/// snapshot.
+///
+/// The level tells a reader what an empty snapshot means: no events at
+/// [`InstrumentationLevel::Counters`] means scopes were not being captured,
+/// not that none ran.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CaptureSettings {
+    level: InstrumentationLevel,
+    counter_capacity: usize,
+    event_capacity: usize,
+    context_capacity: usize,
+}
+
+impl CaptureSettings {
+    /// Creates capture settings.
+    #[must_use]
+    pub const fn new(
+        level: InstrumentationLevel,
+        counter_capacity: usize,
+        event_capacity: usize,
+        context_capacity: usize,
+    ) -> Self {
+        Self {
+            level,
+            counter_capacity,
+            event_capacity,
+            context_capacity,
+        }
+    }
+
+    /// Returns the capture level.
+    #[must_use]
+    pub const fn level(self) -> InstrumentationLevel {
+        self.level
+    }
+
+    /// Returns the counter-key capacity.
+    #[must_use]
+    pub const fn counter_capacity(self) -> usize {
+        self.counter_capacity
+    }
+
+    /// Returns the event capacity.
+    #[must_use]
+    pub const fn event_capacity(self) -> usize {
+        self.event_capacity
+    }
+
+    /// Returns the context capacity.
+    #[must_use]
+    pub const fn context_capacity(self) -> usize {
+        self.context_capacity
+    }
+}
+
+/// One thread that recorded events in a snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ThreadSnapshot {
+    id: u64,
+    name: Option<String>,
+}
+
+impl ThreadSnapshot {
+    /// Creates a thread row.
+    #[must_use]
+    pub const fn new(id: u64, name: Option<String>) -> Self {
+        Self { id, name }
+    }
+
+    /// Returns the runtime-assigned thread id that events carry; see
+    /// [`current_thread_id`].
+    #[must_use]
+    pub const fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Returns the operating-system thread name, when the thread had one.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 }
 
@@ -1023,7 +1410,7 @@ impl ContextSnapshot {
 /// One aggregated counter or gauge value.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CounterSnapshot {
-    /// Session-scoped counter descriptor id; see [`Snapshot`].
+    /// Opaque counter descriptor id; see [`Snapshot`].
     desc_id: CounterDescId,
     /// Stable descriptor name.
     name: &'static str,
@@ -1062,7 +1449,7 @@ impl CounterSnapshot {
         }
     }
 
-    /// Returns the session-scoped counter descriptor id; see [`Snapshot`].
+    /// Returns the opaque counter descriptor id; see [`Snapshot`].
     #[must_use]
     pub const fn desc_id(&self) -> CounterDescId {
         self.desc_id
@@ -1104,6 +1491,15 @@ impl CounterSnapshot {
         self.updated_at_micros
     }
 
+    /// Applies one update recorded at `at_micros`.
+    fn apply(&mut self, value: u64, at_micros: u64) {
+        self.value = match self.kind {
+            CounterKind::Counter => self.value.saturating_add(value),
+            CounterKind::Gauge => value,
+        };
+        self.updated_at_micros = at_micros;
+    }
+
     /// Folds another shard's value for the same key into this one.
     fn merge(&mut self, other: &Self) {
         match self.kind {
@@ -1141,7 +1537,7 @@ pub const HISTOGRAM_BUCKET_COUNT: usize = 64;
 /// runtime counter capacity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HistogramSnapshot {
-    /// Session-scoped counter descriptor id; see [`Snapshot`].
+    /// Opaque counter descriptor id; see [`Snapshot`].
     desc_id: CounterDescId,
     /// Stable descriptor name.
     name: &'static str,
@@ -1199,7 +1595,7 @@ impl HistogramSnapshot {
         self.updated_at_micros = self.updated_at_micros.max(other.updated_at_micros);
     }
 
-    /// Returns the session-scoped counter descriptor id; see [`Snapshot`].
+    /// Returns the opaque counter descriptor id; see [`Snapshot`].
     #[must_use]
     pub const fn desc_id(&self) -> CounterDescId {
         self.desc_id
@@ -1290,10 +1686,11 @@ pub struct TimedObservation {
     at_micros: u64,
     /// Runtime-assigned recording sequence number.
     ///
-    /// Sequence numbers increase in recording order across all threads and
-    /// stay monotonic across session resets. Snapshots order events by
-    /// timestamp and then by sequence, so events recorded by one thread
-    /// within the same microsecond keep their program order.
+    /// Sequence numbers start at `0` for each runtime instance and increase
+    /// by one per event in recording order across all threads; cursors and
+    /// [`EventWindow`]s are positions in this sequence. Snapshots order
+    /// events by timestamp and then by sequence, so events recorded by one
+    /// thread within the same microsecond keep their program order.
     sequence: u64,
     /// Runtime-assigned id of the thread that recorded the observation.
     ///
@@ -1329,10 +1726,11 @@ impl TimedObservation {
 
     /// Returns the runtime-assigned recording sequence number.
     ///
-    /// Sequence numbers increase in recording order across all threads and
-    /// stay monotonic across session resets. Snapshots order events by
-    /// timestamp and then by sequence, so events recorded by one thread
-    /// within the same microsecond keep their program order.
+    /// Sequence numbers start at `0` for each runtime instance and increase
+    /// by one per event in recording order across all threads; cursors and
+    /// [`EventWindow`]s are positions in this sequence. Snapshots order
+    /// events by timestamp and then by sequence, so events recorded by one
+    /// thread within the same microsecond keep their program order.
     #[must_use]
     pub const fn sequence(&self) -> u64 {
         self.sequence
@@ -1361,7 +1759,7 @@ impl TimedObservation {
 pub enum Observation {
     /// Scope begin event.
     ScopeBegin {
-        /// Session-scoped descriptor id for the scope; see [`Snapshot`].
+        /// Opaque descriptor id for the scope; see [`Snapshot`].
         desc_id: ScopeDescId,
         /// Stable descriptor name.
         name: &'static str,
@@ -1379,7 +1777,7 @@ pub enum Observation {
     },
     /// Resource creation event.
     ResourceCreate {
-        /// Session-scoped resource kind id; see [`Snapshot`].
+        /// Opaque resource kind id; see [`Snapshot`].
         kind_id: ResourceKindId,
         /// Stable resource kind name.
         kind_name: &'static str,
@@ -1392,7 +1790,7 @@ pub enum Observation {
     },
     /// Resource update event.
     ResourceUpdate {
-        /// Session-scoped resource kind id; see [`Snapshot`].
+        /// Opaque resource kind id; see [`Snapshot`].
         kind_id: ResourceKindId,
         /// Stable resource kind name.
         kind_name: &'static str,
@@ -1405,7 +1803,7 @@ pub enum Observation {
     },
     /// Resource drop event.
     ResourceDrop {
-        /// Session-scoped resource kind id; see [`Snapshot`].
+        /// Opaque resource kind id; see [`Snapshot`].
         kind_id: ResourceKindId,
         /// Stable resource kind name.
         kind_name: &'static str,
@@ -1434,7 +1832,7 @@ pub enum Observation {
     },
     /// Message event with bounded text.
     Message {
-        /// Session-scoped descriptor id for the message channel; see
+        /// Opaque descriptor id for the message channel; see
         /// [`Snapshot`].
         desc_id: EventDescId,
         /// Stable descriptor name.
@@ -1478,34 +1876,28 @@ impl Observation {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-struct SessionState {
-    capture_start_micros: u64,
-    session_sequence: u64,
+/// Labels and descriptor ids snapshots share.
+#[derive(Debug)]
+struct LabelState {
     session_name: Option<String>,
     descriptor_ids: DescriptorIds,
 }
 
-/// Maps descriptor addresses to dense, session-scoped snapshot ids.
+/// Maps descriptor addresses to dense snapshot ids.
 ///
 /// Descriptor identity inside the process is the descriptor's address, which
 /// must never reach a snapshot consumer: it would reveal the process memory
-/// layout to anything that can attach to a session. Snapshots therefore carry
+/// layout to anything that reads a snapshot. Snapshots therefore carry
 /// dense ids from one id space shared by every descriptor kind (scope,
 /// counter, event, and resource kind), assigned from `1` in first-seen order:
 /// events in snapshot order, then counters, then histograms. Assignments stay
-/// fixed for the rest of the session, so repeated snapshots agree, and start
-/// over when the session resets.
+/// fixed for the life of the runtime, so every snapshot agrees.
 #[derive(Clone, Debug, Default)]
 struct DescriptorIds {
     dense: HashMap<u64, u64>,
 }
 
 impl DescriptorIds {
-    fn clear(&mut self) {
-        self.dense.clear();
-    }
-
     fn dense(&mut self, address_id: u64) -> u64 {
         let next = u64::try_from(self.dense.len())
             .unwrap_or(u64::MAX)
@@ -1549,38 +1941,48 @@ impl DescriptorIds {
 /// Registered contexts, keyed by handle.
 ///
 /// Only registration, release, and snapshots touch the table; emissions carry
-/// a handle and never look it up. Released contexts stay until the session
-/// ends, so observations recorded with them before release still resolve, and
-/// are purged when the next session starts. Live contexts survive session
-/// resets, so their handles stay valid across drains.
+/// a handle and never look it up. Released contexts stay until the runtime
+/// retires them; see [`Runtime`].
 #[derive(Debug)]
 struct ContextTable {
     capacity: usize,
-    entries: BTreeMap<u64, RegisteredEntry>,
-    /// Registrations refused this session because the table was full.
+    entries: HashMap<u64, RegisteredEntry>,
+    /// Registrations refused because the table was full of live contexts.
     refused: u64,
+    /// Number of released entries still in the table.
+    released: usize,
 }
 
 #[derive(Debug)]
 struct RegisteredEntry {
     context: Context,
-    released: bool,
+    /// Event sequence number at release, or `None` while live.
+    released_at: Option<u64>,
 }
 
 impl ContextTable {
     fn new(capacity: usize) -> Self {
         Self {
             capacity,
-            entries: BTreeMap::new(),
+            entries: HashMap::new(),
             refused: 0,
+            released: 0,
         }
+    }
+
+    fn is_full(&self) -> bool {
+        self.entries.len() >= self.capacity
+    }
+
+    const fn has_released(&self) -> bool {
+        self.released > 0
     }
 
     fn register(&mut self, handle: ContextHandle, context: &Context) {
         if handle.is_root() {
             return;
         }
-        if self.entries.len() >= self.capacity {
+        if self.is_full() {
             self.refused = self.refused.saturating_add(1);
             return;
         }
@@ -1588,20 +1990,34 @@ impl ContextTable {
             handle.get(),
             RegisteredEntry {
                 context: *context,
-                released: false,
+                released_at: None,
             },
         );
     }
 
-    fn release(&mut self, handle: ContextHandle) {
-        if let Some(entry) = self.entries.get_mut(&handle.get()) {
-            entry.released = true;
+    fn release(&mut self, handle: ContextHandle, sequence: u64) {
+        if let Some(entry) = self.entries.get_mut(&handle.get())
+            && entry.released_at.is_none()
+        {
+            entry.released_at = Some(sequence);
+            self.released += 1;
         }
     }
 
-    fn start_session(&mut self) {
-        self.entries.retain(|_, entry| !entry.released);
-        self.refused = 0;
+    /// Removes contexts released before event `horizon`, returning their
+    /// handles.
+    fn retire_released_before(&mut self, horizon: u64) -> HashSet<u64> {
+        let mut retired = HashSet::new();
+        self.entries
+            .retain(|handle, entry| match entry.released_at {
+                Some(released_at) if released_at <= horizon => {
+                    retired.insert(*handle);
+                    false
+                }
+                _ => true,
+            });
+        self.released -= retired.len();
+        retired
     }
 
     /// Returns `context_id` when the table knows it, and otherwise the root
@@ -1620,12 +2036,14 @@ impl ContextTable {
             id: ContextId::new(0),
             context: Context::root(),
         };
-        core::iter::once(root)
+        let mut contexts: Vec<_> = core::iter::once(root)
             .chain(self.entries.iter().map(|(handle, entry)| ContextSnapshot {
                 id: ContextId::new(*handle),
                 context: entry.context,
             }))
-            .collect()
+            .collect();
+        contexts.sort_by_key(|context| context.id);
+        contexts
     }
 }
 
@@ -1647,6 +2065,15 @@ enum AdmittedKey {
     Histogram(HistogramKey),
 }
 
+impl AdmittedKey {
+    const fn context_id(self) -> ContextId {
+        match self {
+            Self::Counter(key) => key.context_id,
+            Self::Histogram(key) => key.context_id,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct CounterKey {
     desc_id: CounterDescId,
@@ -1666,17 +2093,25 @@ impl CounterKey {
 
 impl Backend for Runtime {
     fn context_registered(&self, handle: ContextHandle, context: &Context) {
-        self.contexts
+        let mut contexts = self
+            .contexts
             .lock()
-            .expect("runtime context mutex should not be poisoned")
-            .register(handle, context);
+            .expect("runtime context mutex should not be poisoned");
+        if contexts.is_full() {
+            self.retire_released_contexts(&mut contexts);
+        }
+        contexts.register(handle, context);
     }
 
     fn context_released(&self, handle: ContextHandle) {
+        // Events numbered from here on were recorded after the release, so
+        // once everything before it is evicted no retained event needs the
+        // context.
+        let sequence = self.next_event_sequence.load(Ordering::SeqCst);
         self.contexts
             .lock()
             .expect("runtime context mutex should not be poisoned")
-            .release(handle);
+            .release(handle, sequence);
     }
 
     fn counter_add(&self, desc: &'static CounterDesc, context: ContextHandle, value: u64) {
@@ -1873,8 +2308,35 @@ fn truncate_message_text(text: &str) -> String {
 
 static NEXT_THREAD_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Most thread names the registry keeps, so processes that spawn threads
+/// without end cannot grow it without bound; later threads go unnamed.
+const MAX_THREAD_NAMES: usize = 4096;
+
+/// Operating-system names of the threads that have recorded, by runtime id.
+static THREAD_NAMES: Mutex<BTreeMap<u64, String>> = Mutex::new(BTreeMap::new());
+
 std::thread_local! {
-    static THREAD_ID: u64 = NEXT_THREAD_ID.fetch_add(1, Ordering::Relaxed);
+    static THREAD_ID: u64 = {
+        let id = NEXT_THREAD_ID.fetch_add(1, Ordering::Relaxed);
+        if let Some(name) = std::thread::current().name()
+            && let Ok(mut names) = THREAD_NAMES.lock()
+            && names.len() < MAX_THREAD_NAMES
+        {
+            names.insert(id, String::from(name));
+        }
+        id
+    };
+}
+
+/// Returns a row for each thread that recorded one of `events`.
+fn thread_snapshots(events: &[TimedObservation]) -> Vec<ThreadSnapshot> {
+    let ids: std::collections::BTreeSet<u64> = events.iter().map(|event| event.thread_id).collect();
+    let names = THREAD_NAMES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ids.into_iter()
+        .map(|id| ThreadSnapshot::new(id, names.get(&id).cloned()))
+        .collect()
 }
 
 /// Returns the runtime-assigned id for the calling thread.
@@ -1896,6 +2358,21 @@ fn build_event_shards(count: usize) -> Vec<Mutex<EventShard>> {
     (0..count.max(1))
         .map(|_| Mutex::new(EventShard::default()))
         .collect()
+}
+
+/// `footfall_runtime`'s version, reported as the producer of every snapshot.
+const PRODUCER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Returns a random, nonzero runtime instance id.
+fn new_instance_id(wall_clock: Duration) -> u64 {
+    use std::hash::BuildHasher as _;
+    // `RandomState` is seeded from the operating system's randomness where
+    // there is one; the time and a per-process counter keep ids distinct
+    // where there is not, and between runtimes created in the same instant.
+    static CREATED: AtomicU64 = AtomicU64::new(0);
+    std::hash::RandomState::new()
+        .hash_one((wall_clock, CREATED.fetch_add(1, Ordering::Relaxed)))
+        .max(1)
 }
 
 /// Names the process after the running executable, falling back to
@@ -1958,7 +2435,7 @@ const fn level_from_u8(level: u8) -> InstrumentationLevel {
 
 #[cfg(test)]
 mod tests {
-    use super::{CounterKind, Observation, Runtime};
+    use super::{CaptureSettings, CounterKind, EventCursor, EventWindow, Observation, Runtime};
     use footfall_core::{
         Args, Backend as _, Context, ContextHandle, ContextId, CounterDesc, FlowId, FlowPhase,
         InstrumentationLevel, LabelKey, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc,
@@ -2049,10 +2526,11 @@ mod tests {
         assert_eq!(histogram.buckets[super::histogram_bucket_index(1000)], 1);
         assert_eq!(histogram.updated_at_micros, 4);
 
-        // Histogram keys share the counter capacity budget.
-        let drained = runtime.drain_snapshot();
-        assert_eq!(drained.histograms.len(), 1);
-        assert!(runtime.snapshot().histograms.is_empty());
+        assert_eq!(
+            runtime.snapshot().histograms,
+            snapshot.histograms,
+            "histograms are cumulative, so reading does not clear them"
+        );
     }
 
     #[test]
@@ -2131,8 +2609,14 @@ mod tests {
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.events.len(), CAPACITY);
         assert_eq!(
-            snapshot.events.len() as u64 + snapshot.drops.events(),
+            snapshot.events.len() as u64 + snapshot.drops.evicted_events(),
             THREADS * EVENTS
+        );
+        assert_eq!(snapshot.window.next(), THREADS * EVENTS);
+        assert_eq!(
+            snapshot.window.missed(),
+            snapshot.drops.evicted_events(),
+            "a full read misses exactly what was evicted"
         );
     }
 
@@ -2160,33 +2644,69 @@ mod tests {
     }
 
     #[test]
-    fn released_contexts_resolve_until_the_session_ends() {
-        let runtime = test_runtime(8, 8);
+    fn released_contexts_retire_once_their_events_are_evicted() {
+        let runtime = Runtime::builder()
+            .counter_capacity(8)
+            .event_capacity(2)
+            .context_capacity(2)
+            .build();
         static OPS: CounterDesc = CounterDesc::count("ops");
+        let marker = |context_id| Observation::FrameMarker {
+            kind: MarkerKind::Frame,
+            phase: MarkerPhase::Begin,
+            context_id,
+        };
         let live = register(&runtime, &Context::root().with(&PASS, 1_u32));
         let released = register(&runtime, &Context::root().with(&PASS, 2_u32));
-
+        runtime.push_event_at(marker(released.id()), 1);
         runtime.counter_add_at(&OPS, released, 1, 1);
         runtime.context_released(released);
-        let drained = runtime.drain_snapshot();
-        assert_eq!(drained.drops.unattributed(), 0);
+
+        let snapshot = runtime.snapshot();
         assert!(
-            drained.context(released.id()).is_some(),
+            snapshot.context(released.id()).is_some(),
             "observations recorded before release still resolve"
         );
+        assert_eq!(snapshot.counters[0].context_id, released.id());
 
-        let next = runtime.snapshot();
-        assert!(
-            next.context(live.id()).is_some(),
-            "live contexts survive drains"
-        );
-        assert!(
-            next.context(released.id()).is_none(),
-            "released contexts are purged when the session ends"
-        );
+        // The table is full and an event still refers to the released
+        // context, so a new registration is refused rather than retiring it.
+        let refused = register(&runtime, &Context::root().with(&PASS, 3_u32));
+        assert_eq!(runtime.snapshot().drops.refused_contexts(), 1);
 
-        runtime.counter_add_at(&OPS, live, 1, 2);
-        assert_eq!(runtime.snapshot().counters[0].context_id, live.id());
+        // Once that event is evicted, the released context and its counter
+        // row make room.
+        runtime.push_event_at(marker(live.id()), 2);
+        runtime.push_event_at(marker(live.id()), 3);
+        let fresh = register(&runtime, &Context::root().with(&PASS, 4_u32));
+        let snapshot = runtime.snapshot();
+        assert!(snapshot.context(released.id()).is_none());
+        assert!(snapshot.context(live.id()).is_some(), "live contexts stay");
+        assert!(snapshot.context(fresh.id()).is_some());
+        assert!(snapshot.context(refused.id()).is_none());
+        assert!(snapshot.counters.is_empty(), "the counter row retires too");
+        assert_eq!(snapshot.drops.unattributed(), 0);
+    }
+
+    #[test]
+    fn retired_contexts_free_their_counter_keys() {
+        let runtime = Runtime::builder()
+            .counter_capacity(1)
+            .event_capacity(4)
+            .build();
+        static OPS: CounterDesc = CounterDesc::count("ops");
+        let first = register(&runtime, &Context::root().with(&PASS, 1_u32));
+        runtime.counter_add_at(&OPS, first, 1, 1);
+        runtime.context_released(first);
+
+        // No event refers to the released context, so its key makes room.
+        let second = register(&runtime, &Context::root().with(&PASS, 2_u32));
+        runtime.counter_add_at(&OPS, second, 5, 2);
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.counters.len(), 1);
+        assert_eq!(snapshot.counters[0].context_id, second.id());
+        assert_eq!(snapshot.counters[0].value, 5);
+        assert_eq!(snapshot.drops.counter_updates(), 0);
     }
 
     #[test]
@@ -2309,7 +2829,6 @@ mod tests {
             super::default_process_name(),
             "the process is named after the executable where there is one"
         );
-        assert_eq!(snapshot.metadata.session_sequence, 0);
         assert!(
             snapshot.metadata.wall_clock_anchor_micros > 0,
             "runtime creation should anchor snapshots to wall-clock time"
@@ -2387,51 +2906,25 @@ mod tests {
     }
 
     #[test]
-    fn drain_snapshot_clears_state_and_advances_session_sequence() {
+    fn snapshots_describe_their_producer() {
         let runtime = Runtime::builder()
             .process_name("demo")
+            .session_name("recording")
+            .level(InstrumentationLevel::Scoped)
             .counter_capacity(8)
-            .event_capacity(8)
+            .event_capacity(16)
+            .context_capacity(32)
             .build();
-        runtime.set_session_name("recording");
 
-        let context_id = register(&runtime, &Context::root().with(&FRAME, 1_u32)).id();
-        runtime.push_event_at(
-            Observation::FrameMarker {
-                kind: MarkerKind::Frame,
-                phase: MarkerPhase::Begin,
-                context_id,
-            },
-            1,
-        );
-
-        let drained = runtime.drain_snapshot();
-        assert_eq!(drained.metadata.process_name, "demo");
-        assert_eq!(drained.metadata.session_name.as_deref(), Some("recording"));
-        assert_eq!(drained.metadata.session_sequence, 0);
-        assert_eq!(drained.events.len(), 1);
-
-        let snapshot = runtime.snapshot();
-        assert_eq!(snapshot.metadata.session_sequence, 1);
-        assert_eq!(snapshot.events.len(), 0);
+        let metadata = runtime.snapshot().metadata;
+        assert_eq!(metadata.process_name, "demo");
+        assert_eq!(metadata.session_name.as_deref(), Some("recording"));
+        assert_eq!(metadata.instance_id, runtime.instance_id());
+        assert_eq!(metadata.producer_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(
-            snapshot.contexts.len(),
-            2,
-            "the still-registered context survives the drain"
+            metadata.capture,
+            CaptureSettings::new(InstrumentationLevel::Scoped, 8, 16, 32)
         );
-    }
-
-    #[test]
-    fn scope_tokens_stay_unique_across_session_resets() {
-        let runtime = test_runtime(8, 8);
-        let before_reset = runtime.next_scope_token();
-        let _ = runtime.drain_snapshot();
-        let after_reset = runtime.next_scope_token();
-        assert_ne!(
-            before_reset, after_reset,
-            "a scope straddling a drain must not collide with new tokens"
-        );
-        assert!(after_reset.get() > before_reset.get());
     }
 
     #[test]
@@ -2450,10 +2943,6 @@ mod tests {
         );
 
         shared.set_session_name("second");
-        let drained = shared.drain_snapshot();
-        assert_eq!(drained.metadata.session_name.as_deref(), Some("second"));
-
-        // The label persists across the session reset until cleared.
         assert_eq!(
             shared.snapshot().metadata.session_name.as_deref(),
             Some("second")
@@ -2463,32 +2952,129 @@ mod tests {
     }
 
     #[test]
-    fn runtime_enforces_event_capacity() {
-        let runtime = test_runtime(4, 1);
-        let context_id = ContextId::new(0);
-        runtime.push_event_at(
-            Observation::FrameMarker {
-                kind: MarkerKind::Frame,
-                phase: MarkerPhase::Begin,
-                context_id,
-            },
-            1,
-        );
-        runtime.push_event_at(
-            Observation::FrameMarker {
-                kind: MarkerKind::Frame,
-                phase: MarkerPhase::End,
-                context_id,
-            },
-            2,
-        );
+    fn a_full_buffer_evicts_the_recording_threads_oldest_event() {
+        let runtime = test_runtime(4, 2);
+        let marker = |phase| Observation::FrameMarker {
+            kind: MarkerKind::Frame,
+            phase,
+            context_id: ContextId::new(0),
+        };
+        runtime.push_event_at(marker(MarkerPhase::Begin), 1);
+        runtime.push_event_at(marker(MarkerPhase::End), 2);
+        runtime.push_event_at(marker(MarkerPhase::Begin), 3);
 
         let snapshot = runtime.snapshot();
-        assert_eq!(snapshot.events.len(), 1);
-        assert_eq!(snapshot.drops.events(), 1);
+        let times: Vec<_> = snapshot
+            .events
+            .iter()
+            .map(|event| event.at_micros)
+            .collect();
+        assert_eq!(times, [2, 3], "the newest events are kept");
+        assert_eq!(snapshot.drops.evicted_events(), 1);
+        assert_eq!(snapshot.window, EventWindow::new(0, 3, 1));
     }
 
     #[test]
+    #[cfg_attr(target_os = "wasi", ignore = "wasm32-wasip1 cannot spawn threads")]
+    fn a_thread_with_no_events_evicts_another_threads_oldest() {
+        let runtime = test_runtime(4, 1);
+        let marker = Observation::FrameMarker {
+            kind: MarkerKind::Frame,
+            phase: MarkerPhase::Begin,
+            context_id: ContextId::new(0),
+        };
+        runtime.push_event_at(marker.clone(), 1);
+        std::thread::scope(|scope| {
+            scope.spawn(|| runtime.push_event_at(marker.clone(), 2));
+        });
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.events.len(), 1);
+        assert_eq!(snapshot.events[0].at_micros, 2);
+        assert_eq!(snapshot.drops.evicted_events(), 1);
+    }
+
+    #[test]
+    fn cursor_reads_return_new_events_and_count_misses() {
+        let runtime = test_runtime(4, 4);
+        let marker = Observation::FrameMarker {
+            kind: MarkerKind::Frame,
+            phase: MarkerPhase::Begin,
+            context_id: ContextId::new(0),
+        };
+        let start = runtime.cursor();
+        assert_eq!(start, EventCursor::new(runtime.instance_id(), 0));
+        for at in 0..2 {
+            runtime.push_event_at(marker.clone(), at);
+        }
+
+        let first = runtime.snapshot_since(start);
+        assert_eq!(first.events.len(), 2);
+        assert_eq!(first.window, EventWindow::new(0, 2, 0));
+        assert!(
+            runtime
+                .snapshot_since(first.next_cursor())
+                .events
+                .is_empty()
+        );
+
+        // Six more events overflow the buffer of four, evicting two that
+        // the next read had not seen.
+        for at in 2..8 {
+            runtime.push_event_at(marker.clone(), at);
+        }
+        let second = runtime.snapshot_since(first.next_cursor());
+        let sequences: Vec<_> = second.events.iter().map(|event| event.sequence).collect();
+        assert_eq!(sequences, [4, 5, 6, 7]);
+        assert_eq!(second.window, EventWindow::new(2, 8, 2));
+        assert_eq!(second.drops.evicted_events(), 4);
+
+        // A cursor from another instance reads from the start.
+        let foreign = EventCursor::new(runtime.instance_id() ^ 1, 6);
+        assert_eq!(
+            runtime.snapshot_since(foreign).window,
+            EventWindow::new(0, 8, 4)
+        );
+    }
+
+    #[test]
+    fn runtimes_get_distinct_instance_ids() {
+        let first = Runtime::default();
+        let second = Runtime::default();
+        assert_ne!(first.instance_id(), 0);
+        assert_ne!(first.instance_id(), second.instance_id());
+        assert_eq!(first.snapshot().metadata.instance_id, first.instance_id());
+    }
+
+    #[test]
+    #[cfg_attr(target_os = "wasi", ignore = "wasm32-wasip1 cannot spawn threads")]
+    fn snapshots_name_the_threads_that_recorded() {
+        let runtime = test_runtime(4, 4);
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .name(String::from("worker-7"))
+                .spawn_scoped(scope, || {
+                    runtime.push_event_at(
+                        Observation::FrameMarker {
+                            kind: MarkerKind::Frame,
+                            phase: MarkerPhase::Begin,
+                            context_id: ContextId::new(0),
+                        },
+                        1,
+                    );
+                })
+                .expect("thread should spawn");
+        });
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.threads.len(), 1);
+        let thread = &snapshot.threads[0];
+        assert_eq!(thread.id, snapshot.events[0].thread_id);
+        assert_eq!(thread.name(), Some("worker-7"));
+    }
+
+    #[test]
+    #[cfg_attr(target_os = "wasi", ignore = "wasm32-wasip1 cannot spawn threads")]
     fn a_key_recorded_from_many_threads_takes_one_slot() {
         const THREADS: u64 = 12;
         let runtime = test_runtime(1, 4);
@@ -2552,7 +3138,7 @@ mod tests {
         runtime.scope_end(excluded);
         assert!(runtime.snapshot().events.is_empty());
 
-        runtime.reset();
+        let cursor = runtime.cursor();
         runtime.counter_add(&COUNTER, context, 1);
         let token = runtime.scope_begin(&SCOPE, context, &Args::none());
         runtime.scope_end(token);
@@ -2560,7 +3146,7 @@ mod tests {
         runtime.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
         runtime.flow(FlowId::new(9), FlowPhase::Begin, context);
 
-        let snapshot = runtime.snapshot();
+        let snapshot = runtime.snapshot_since(cursor);
         assert_eq!(snapshot.counters.len(), 1);
         assert_eq!(snapshot.events.len(), 5);
     }
@@ -2639,12 +3225,18 @@ mod tests {
         assert_eq!(histogram_id("latency"), 5);
         assert_ne!(RECORD.id().get(), 1, "the address id stays in process");
 
-        // Ids stay fixed for the rest of the session and restart after a
-        // reset.
-        let again = runtime.drain_snapshot();
-        assert_eq!(again.counters[0].desc_id.get(), 4);
+        // Ids stay fixed for the life of the runtime.
         runtime.histogram_record(&LATENCY, context, 7);
-        let fresh = runtime.snapshot();
-        assert_eq!(fresh.histograms[0].desc_id.get(), 1);
+        let again = runtime.snapshot();
+        assert_eq!(again.counters[0].desc_id.get(), 4);
+        assert_eq!(histogram_id("latency"), 5);
+        assert_eq!(
+            again
+                .histograms
+                .iter()
+                .find(|histogram| histogram.name == "latency")
+                .map(|histogram| histogram.desc_id.get()),
+            Some(5)
+        );
     }
 }

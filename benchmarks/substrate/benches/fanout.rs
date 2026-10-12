@@ -13,7 +13,6 @@ use footfall::{
 };
 use footfall_benchmarks::{
     COUNTER_CAPACITY, EVENT_CAPACITY, MEASUREMENT, OPS, RECORD, WARM_UP, sample_context,
-    time_chunked,
 };
 use footfall_fanout::Fanout;
 use footfall_runtime::Runtime;
@@ -45,13 +44,7 @@ fn counters(c: &mut Criterion) {
     let context = registered.handle();
     let mut group = c.benchmark_group("fanout/counters");
     group.bench_function("counter_add", |b| {
-        b.iter_custom(|iters| {
-            time_chunked(
-                iters,
-                || runtime.reset(),
-                || counter_add(black_box(&OPS), black_box(context), black_box(1)),
-            )
-        });
+        b.iter(|| counter_add(black_box(&OPS), black_box(context), black_box(1)));
     });
     group.finish();
 }
@@ -63,15 +56,9 @@ fn scoped(c: &mut Criterion) {
     let context = registered.handle();
     let mut group = c.benchmark_group("fanout/scoped");
     group.bench_function("scope begin+end", |b| {
-        b.iter_custom(|iters| {
-            time_chunked(
-                iters,
-                || runtime.reset(),
-                || {
-                    let token = scope_begin(black_box(&RECORD), black_box(context));
-                    scope_end(black_box(token));
-                },
-            )
+        b.iter(|| {
+            let token = scope_begin(black_box(&RECORD), black_box(context));
+            scope_end(black_box(token));
         });
     });
     group.finish();

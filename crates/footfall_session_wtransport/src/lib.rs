@@ -7,15 +7,16 @@
 //! over a single WebTransport stream; it does not participate in hot-path instrumentation.
 
 use footfall_core::{
-    ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, MarkerKind, MarkerPhase, ResourceId,
-    ResourceKindId, ScopeDescId, ScopeToken, Unit,
+    ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, InstrumentationLevel, MarkerKind,
+    MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, Unit,
 };
 use footfall_runtime::{CounterKind, Snapshot};
 use footfall_session::{
-    Chunking, Consumer, DroppedSummary, Envelope, EnvelopeHeader, OwnedArgEntry, OwnedContextEntry,
-    OwnedContextSnapshot, OwnedCounterSnapshot, OwnedHistogramSnapshot, OwnedLabelValue,
-    OwnedObservation, OwnedSessionEnvelope, OwnedSessionPayload, OwnedSnapshotMetadata,
-    OwnedSnapshotSummary, OwnedTimedObservation, Payload, ProtocolVersion, publish_snapshot,
+    CaptureSettings, Chunking, Consumer, Drops, Envelope, EnvelopeHeader, EventCursor, EventWindow,
+    OwnedArgEntry, OwnedContextEntry, OwnedContextSnapshot, OwnedCounterSnapshot,
+    OwnedHistogramSnapshot, OwnedLabelValue, OwnedObservation, OwnedSessionEnvelope,
+    OwnedSessionPayload, OwnedSnapshotSummary, OwnedTimedObservation, Payload, ProtocolVersion,
+    RowCounts, SnapshotMetadata, ThreadSnapshot, publish_snapshot,
 };
 use std::{
     env, fmt, io,
@@ -260,6 +261,10 @@ pub enum SessionRequestKind {
     Snapshot {
         /// Session id advertised by discovery.
         session_id: String,
+        /// Where the consumer's previous read ended, from
+        /// [`OwnedSnapshotSummary::next_cursor`], or `None` for everything
+        /// retained. Pass it to `Runtime::snapshot_since`.
+        since: Option<EventCursor>,
     },
 }
 
@@ -269,7 +274,7 @@ impl SessionRequestKind {
     pub fn session_id(&self) -> Option<&str> {
         match self {
             Self::Discover => None,
-            Self::Snapshot { session_id } => Some(session_id.as_str()),
+            Self::Snapshot { session_id, .. } => Some(session_id.as_str()),
         }
     }
 }
@@ -463,9 +468,21 @@ impl SessionServer {
         let kind = if &request == DISCOVER_MAGIC {
             SessionRequestKind::Discover
         } else if &request == SNAPSHOT_MAGIC {
-            SessionRequestKind::Snapshot {
-                session_id: read_stream_string(&mut recv).await?,
-            }
+            let session_id = read_stream_string(&mut recv).await?;
+            let since = match read_u8_stream(&mut recv).await? {
+                0 => None,
+                1 => Some(EventCursor::new(
+                    read_u64(&mut recv).await?,
+                    read_u64(&mut recv).await?,
+                )),
+                tag => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("invalid snapshot cursor tag: {tag}"),
+                    ));
+                }
+            };
+            SessionRequestKind::Snapshot { session_id, since }
         } else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -625,7 +642,7 @@ pub async fn fetch_session(
             io::ErrorKind::NotFound,
             "no discoverable sessions on this server",
         )),
-        [session] => fetch_named_session(url, certificate_hash, &session.id).await,
+        [session] => fetch_named_session(url, certificate_hash, &session.id, None).await,
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "multiple discoverable sessions available; choose one explicitly",
@@ -649,11 +666,17 @@ pub async fn discover_local_sessions() -> io::Result<Vec<SessionAnnouncement>> {
 }
 
 /// Fetches one named session from the default local Footfall session server.
-pub async fn fetch_local_session(session_id: &str) -> io::Result<Vec<OwnedSessionEnvelope>> {
+///
+/// See [`fetch_named_session`] for `since`.
+pub async fn fetch_local_session(
+    session_id: &str,
+    since: Option<EventCursor>,
+) -> io::Result<Vec<OwnedSessionEnvelope>> {
     fetch_named_session(
         &default_local_url(),
         SessionIdentity::load_localhost_certificate_hash().await?,
         session_id,
+        since,
     )
     .await
 }
@@ -676,10 +699,16 @@ pub async fn discover_sessions(
 }
 
 /// Fetches one named snapshot publication from a session server.
+///
+/// With `since`, the snapshot's events are those recorded after the
+/// consumer's previous read: pass the previous publication's
+/// [`OwnedSnapshotSummary::next_cursor`]. Without it, they are every event
+/// the producer retains.
 pub async fn fetch_named_session(
     url: &str,
     certificate_hash: CertificateHash,
     session_id: &str,
+    since: Option<EventCursor>,
 ) -> io::Result<Vec<OwnedSessionEnvelope>> {
     let client_config = ClientConfig::builder()
         .with_bind_default()
@@ -690,7 +719,7 @@ pub async fn fetch_named_session(
         .connect(url)
         .await
         .map_err(|error| io::Error::other(error.to_string()))?;
-    fetch_named_connection(connection, session_id).await
+    fetch_named_connection(connection, session_id, since).await
 }
 
 async fn discover_connection(connection: Connection) -> io::Result<Vec<SessionAnnouncement>> {
@@ -733,6 +762,7 @@ async fn discover_connection(connection: Connection) -> io::Result<Vec<SessionAn
 async fn fetch_named_connection(
     connection: Connection,
     session_id: &str,
+    since: Option<EventCursor>,
 ) -> io::Result<Vec<OwnedSessionEnvelope>> {
     let (mut send, mut recv) = connection
         .open_bi()
@@ -745,6 +775,18 @@ async fn fetch_named_connection(
         .await
         .map_err(|error| io::Error::other(error.to_string()))?;
     write_stream_string(&mut send, session_id).await?;
+    let mut cursor = Vec::with_capacity(17);
+    match since {
+        Some(since) => {
+            encode_u8(&mut cursor, 1);
+            encode_u64(&mut cursor, since.instance_id());
+            encode_u64(&mut cursor, since.sequence());
+        }
+        None => encode_u8(&mut cursor, 0),
+    }
+    send.write_all(&cursor)
+        .await
+        .map_err(|error| io::Error::other(error.to_string()))?;
     finish_request_stream(&mut send).await?;
 
     match read_u8_stream(&mut recv).await? {
@@ -926,33 +968,52 @@ fn map_finish_error(result: Result<(), StreamWriteError>) -> io::Result<()> {
     }
 }
 
+// Payload tags, numbered in publication order.
+const TAG_SNAPSHOT_START: u8 = 0;
+const TAG_THREADS: u8 = 1;
+const TAG_CONTEXTS: u8 = 2;
+const TAG_COUNTERS: u8 = 3;
+const TAG_HISTOGRAMS: u8 = 4;
+const TAG_EVENTS: u8 = 5;
+const TAG_SNAPSHOT_END: u8 = 6;
+
 fn encode_borrowed_envelope(envelope: Envelope<'_>) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     encode_header(&mut bytes, envelope.header());
     match envelope.payload() {
         Payload::SnapshotStart(summary) => {
-            encode_u8(&mut bytes, 0);
-            encode_borrowed_snapshot_summary(&mut bytes, summary)?;
+            encode_u8(&mut bytes, TAG_SNAPSHOT_START);
+            encode_snapshot_summary(
+                &mut bytes,
+                summary.metadata(),
+                summary.captured_at_micros(),
+                summary.window(),
+                summary.counts(),
+            )?;
+        }
+        Payload::Threads(threads) => {
+            encode_u8(&mut bytes, TAG_THREADS);
+            encode_threads(&mut bytes, threads)?;
         }
         Payload::Contexts(contexts) => {
-            encode_u8(&mut bytes, 1);
+            encode_u8(&mut bytes, TAG_CONTEXTS);
             encode_borrowed_contexts(&mut bytes, contexts)?;
         }
         Payload::Counters(counters) => {
-            encode_u8(&mut bytes, 2);
+            encode_u8(&mut bytes, TAG_COUNTERS);
             encode_borrowed_counters(&mut bytes, counters)?;
         }
         Payload::Histograms(histograms) => {
-            encode_u8(&mut bytes, 5);
+            encode_u8(&mut bytes, TAG_HISTOGRAMS);
             encode_borrowed_histograms(&mut bytes, histograms)?;
         }
         Payload::Events(events) => {
-            encode_u8(&mut bytes, 3);
+            encode_u8(&mut bytes, TAG_EVENTS);
             encode_borrowed_events(&mut bytes, events)?;
         }
-        Payload::SnapshotEnd(dropped) => {
-            encode_u8(&mut bytes, 4);
-            encode_dropped_summary(&mut bytes, dropped);
+        Payload::SnapshotEnd(drops) => {
+            encode_u8(&mut bytes, TAG_SNAPSHOT_END);
+            encode_drops(&mut bytes, drops);
         }
         _ => return Err(unsupported("payload")),
     }
@@ -965,28 +1026,38 @@ fn encode_envelope(envelope: &OwnedSessionEnvelope) -> io::Result<Vec<u8>> {
     encode_header(&mut bytes, envelope.header());
     match envelope.payload() {
         OwnedSessionPayload::SnapshotStart(summary) => {
-            encode_u8(&mut bytes, 0);
-            encode_snapshot_summary(&mut bytes, summary)?;
+            encode_u8(&mut bytes, TAG_SNAPSHOT_START);
+            encode_snapshot_summary(
+                &mut bytes,
+                summary.metadata(),
+                summary.captured_at_micros(),
+                summary.window(),
+                summary.counts(),
+            )?;
+        }
+        OwnedSessionPayload::Threads(threads) => {
+            encode_u8(&mut bytes, TAG_THREADS);
+            encode_threads(&mut bytes, threads)?;
         }
         OwnedSessionPayload::Contexts(contexts) => {
-            encode_u8(&mut bytes, 1);
+            encode_u8(&mut bytes, TAG_CONTEXTS);
             encode_contexts(&mut bytes, contexts)?;
         }
         OwnedSessionPayload::Counters(counters) => {
-            encode_u8(&mut bytes, 2);
+            encode_u8(&mut bytes, TAG_COUNTERS);
             encode_counters(&mut bytes, counters)?;
         }
         OwnedSessionPayload::Histograms(histograms) => {
-            encode_u8(&mut bytes, 5);
+            encode_u8(&mut bytes, TAG_HISTOGRAMS);
             encode_histograms(&mut bytes, histograms)?;
         }
         OwnedSessionPayload::Events(events) => {
-            encode_u8(&mut bytes, 3);
+            encode_u8(&mut bytes, TAG_EVENTS);
             encode_events(&mut bytes, events)?;
         }
-        OwnedSessionPayload::SnapshotEnd(dropped) => {
-            encode_u8(&mut bytes, 4);
-            encode_dropped_summary(&mut bytes, *dropped);
+        OwnedSessionPayload::SnapshotEnd(drops) => {
+            encode_u8(&mut bytes, TAG_SNAPSHOT_END);
+            encode_drops(&mut bytes, *drops);
         }
         _ => return Err(unsupported("payload")),
     }
@@ -1002,12 +1073,15 @@ fn decode_envelope(bytes: &[u8]) -> io::Result<OwnedSessionEnvelope> {
     let mut cursor = Cursor::new(bytes);
     let header = decode_header(&mut cursor)?;
     let payload = match decode_u8(&mut cursor)? {
-        0 => OwnedSessionPayload::SnapshotStart(decode_snapshot_summary(&mut cursor)?),
-        1 => OwnedSessionPayload::Contexts(decode_contexts(&mut cursor)?),
-        2 => OwnedSessionPayload::Counters(decode_counters(&mut cursor)?),
-        3 => OwnedSessionPayload::Events(decode_events(&mut cursor)?),
-        4 => OwnedSessionPayload::SnapshotEnd(decode_dropped_summary(&mut cursor)?),
-        5 => OwnedSessionPayload::Histograms(decode_histograms(&mut cursor)?),
+        TAG_SNAPSHOT_START => {
+            OwnedSessionPayload::SnapshotStart(decode_snapshot_summary(&mut cursor)?)
+        }
+        TAG_THREADS => OwnedSessionPayload::Threads(decode_threads(&mut cursor)?),
+        TAG_CONTEXTS => OwnedSessionPayload::Contexts(decode_contexts(&mut cursor)?),
+        TAG_COUNTERS => OwnedSessionPayload::Counters(decode_counters(&mut cursor)?),
+        TAG_HISTOGRAMS => OwnedSessionPayload::Histograms(decode_histograms(&mut cursor)?),
+        TAG_EVENTS => OwnedSessionPayload::Events(decode_events(&mut cursor)?),
+        TAG_SNAPSHOT_END => OwnedSessionPayload::SnapshotEnd(decode_drops(&mut cursor)?),
         tag => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1027,7 +1101,6 @@ fn decode_envelope(bytes: &[u8]) -> io::Result<OwnedSessionEnvelope> {
 fn encode_header(bytes: &mut Vec<u8>, header: EnvelopeHeader) {
     encode_u16(bytes, header.protocol_version().major());
     encode_u16(bytes, header.protocol_version().minor());
-    encode_u64(bytes, header.session_sequence());
     encode_u64(bytes, header.chunk_index());
 }
 
@@ -1043,104 +1116,165 @@ fn decode_header(cursor: &mut Cursor<'_>) -> io::Result<EnvelopeHeader> {
             ),
         ));
     }
-    Ok(EnvelopeHeader::new(
-        protocol_version,
-        decode_u64(cursor)?,
-        decode_u64(cursor)?,
-    ))
+    Ok(EnvelopeHeader::new(protocol_version, decode_u64(cursor)?))
 }
 
-#[cfg(test)]
-fn encode_snapshot_summary(bytes: &mut Vec<u8>, summary: &OwnedSnapshotSummary) -> io::Result<()> {
-    encode_snapshot_metadata(bytes, summary.metadata())?;
-    encode_u64(bytes, summary.capture_start_micros());
-    encode_u64(bytes, summary.captured_at_micros());
-    encode_usize(bytes, summary.context_count())?;
-    encode_usize(bytes, summary.counter_count())?;
-    encode_usize(bytes, summary.histogram_count())?;
-    encode_usize(bytes, summary.event_count())?;
-    Ok(())
-}
-
-fn encode_borrowed_snapshot_summary(
+fn encode_snapshot_summary(
     bytes: &mut Vec<u8>,
-    summary: footfall_session::SnapshotSummary<'_>,
+    metadata: &SnapshotMetadata,
+    captured_at_micros: u64,
+    window: EventWindow,
+    counts: RowCounts,
 ) -> io::Result<()> {
-    encode_snapshot_metadata_borrowed(bytes, summary.metadata())?;
-    encode_u64(bytes, summary.capture_start_micros());
-    encode_u64(bytes, summary.captured_at_micros());
-    encode_usize(bytes, summary.context_count())?;
-    encode_usize(bytes, summary.counter_count())?;
-    encode_usize(bytes, summary.histogram_count())?;
-    encode_usize(bytes, summary.event_count())?;
+    encode_snapshot_metadata(bytes, metadata)?;
+    encode_u64(bytes, captured_at_micros);
+    encode_u64(bytes, window.since());
+    encode_u64(bytes, window.next());
+    encode_u64(bytes, window.missed());
+    encode_usize(bytes, counts.threads())?;
+    encode_usize(bytes, counts.contexts())?;
+    encode_usize(bytes, counts.counters())?;
+    encode_usize(bytes, counts.histograms())?;
+    encode_usize(bytes, counts.events())?;
     Ok(())
 }
 
 fn decode_snapshot_summary(cursor: &mut Cursor<'_>) -> io::Result<OwnedSnapshotSummary> {
+    let metadata = decode_snapshot_metadata(cursor)?;
+    let captured_at_micros = decode_u64(cursor)?;
+    let window = EventWindow::new(
+        decode_u64(cursor)?,
+        decode_u64(cursor)?,
+        decode_u64(cursor)?,
+    );
+    let counts = RowCounts::new(
+        decode_usize(cursor)?,
+        decode_usize(cursor)?,
+        decode_usize(cursor)?,
+        decode_usize(cursor)?,
+        decode_usize(cursor)?,
+    );
     Ok(OwnedSnapshotSummary::new(
-        decode_snapshot_metadata(cursor)?,
-        decode_u64(cursor)?,
-        decode_u64(cursor)?,
-        decode_usize(cursor)?,
-        decode_usize(cursor)?,
-        decode_usize(cursor)?,
-        decode_usize(cursor)?,
+        metadata,
+        captured_at_micros,
+        window,
+        counts,
     ))
 }
 
-#[cfg(test)]
-fn encode_snapshot_metadata(
-    bytes: &mut Vec<u8>,
-    metadata: &OwnedSnapshotMetadata,
-) -> io::Result<()> {
+fn encode_snapshot_metadata(bytes: &mut Vec<u8>, metadata: &SnapshotMetadata) -> io::Result<()> {
     encode_string(bytes, metadata.process_name())?;
-    match &metadata.session_name() {
-        Some(session_name) => {
-            encode_u8(bytes, 1);
-            encode_string(bytes, session_name)?;
-        }
-        None => encode_u8(bytes, 0),
-    }
-    encode_u64(bytes, metadata.session_sequence());
+    encode_optional_string(bytes, metadata.session_name())?;
+    encode_u64(bytes, metadata.instance_id());
     encode_u64(bytes, metadata.wall_clock_anchor_micros());
+    encode_string(bytes, metadata.producer_version())?;
+    let capture = metadata.capture();
+    encode_u8(bytes, encode_level(capture.level())?);
+    encode_u64(bytes, usize_to_u64(capture.counter_capacity()));
+    encode_u64(bytes, usize_to_u64(capture.event_capacity()));
+    encode_u64(bytes, usize_to_u64(capture.context_capacity()));
     Ok(())
 }
 
-fn encode_snapshot_metadata_borrowed(
-    bytes: &mut Vec<u8>,
-    metadata: &footfall_runtime::SnapshotMetadata,
-) -> io::Result<()> {
-    encode_string(bytes, metadata.process_name())?;
-    match &metadata.session_name() {
-        Some(session_name) => {
-            encode_u8(bytes, 1);
-            encode_string(bytes, session_name)?;
-        }
-        None => encode_u8(bytes, 0),
-    }
-    encode_u64(bytes, metadata.session_sequence());
-    encode_u64(bytes, metadata.wall_clock_anchor_micros());
-    Ok(())
-}
-
-fn decode_snapshot_metadata(cursor: &mut Cursor<'_>) -> io::Result<OwnedSnapshotMetadata> {
+fn decode_snapshot_metadata(cursor: &mut Cursor<'_>) -> io::Result<SnapshotMetadata> {
     let process_name = decode_string(cursor)?;
-    let session_name = match decode_u8(cursor)? {
-        0 => None,
-        1 => Some(decode_string(cursor)?),
-        tag => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid session-name tag: {tag}"),
-            ));
+    let session_name = decode_optional_string(cursor, "session name")?;
+    let instance_id = decode_u64(cursor)?;
+    let wall_clock_anchor_micros = decode_u64(cursor)?;
+    let producer_version = decode_string(cursor)?;
+    let capture = CaptureSettings::new(
+        decode_level(decode_u8(cursor)?)?,
+        decode_u64_as_usize(cursor)?,
+        decode_u64_as_usize(cursor)?,
+        decode_u64_as_usize(cursor)?,
+    );
+    let metadata = SnapshotMetadata::new(process_name)
+        .with_instance_id(instance_id)
+        .with_wall_clock_anchor_micros(wall_clock_anchor_micros)
+        .with_producer_version(producer_version)
+        .with_capture(capture);
+    Ok(match session_name {
+        Some(session_name) => metadata.with_session_name(session_name),
+        None => metadata,
+    })
+}
+
+fn encode_threads(bytes: &mut Vec<u8>, threads: &[ThreadSnapshot]) -> io::Result<()> {
+    encode_len(bytes, threads.len())?;
+    for thread in threads {
+        encode_u64(bytes, thread.id());
+        encode_optional_string(bytes, thread.name())?;
+    }
+    Ok(())
+}
+
+fn decode_threads(cursor: &mut Cursor<'_>) -> io::Result<Vec<ThreadSnapshot>> {
+    let len = decode_bounded_len(cursor, MAX_ROWS_PER_ENVELOPE, "thread rows")?;
+    let mut threads = Vec::with_capacity(len);
+    for _ in 0..len {
+        let id = decode_u64(cursor)?;
+        threads.push(ThreadSnapshot::new(
+            id,
+            decode_optional_string(cursor, "thread name")?,
+        ));
+    }
+    Ok(threads)
+}
+
+fn encode_optional_string(bytes: &mut Vec<u8>, value: Option<&str>) -> io::Result<()> {
+    match value {
+        Some(value) => {
+            encode_u8(bytes, 1);
+            encode_string(bytes, value)
         }
-    };
-    Ok(OwnedSnapshotMetadata::new(
-        process_name,
-        session_name,
-        decode_u64(cursor)?,
-        decode_u64(cursor)?,
-    ))
+        None => {
+            encode_u8(bytes, 0);
+            Ok(())
+        }
+    }
+}
+
+fn decode_optional_string(cursor: &mut Cursor<'_>, what: &str) -> io::Result<Option<String>> {
+    match decode_u8(cursor)? {
+        0 => Ok(None),
+        1 => Ok(Some(decode_string(cursor)?)),
+        tag => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid {what} presence tag: {tag}"),
+        )),
+    }
+}
+
+fn encode_level(level: InstrumentationLevel) -> io::Result<u8> {
+    match level {
+        InstrumentationLevel::Off => Ok(0),
+        InstrumentationLevel::Counters => Ok(1),
+        InstrumentationLevel::Scoped => Ok(2),
+        InstrumentationLevel::Trace => Ok(3),
+        _ => Err(unsupported("instrumentation level")),
+    }
+}
+
+fn decode_level(tag: u8) -> io::Result<InstrumentationLevel> {
+    match tag {
+        0 => Ok(InstrumentationLevel::Off),
+        1 => Ok(InstrumentationLevel::Counters),
+        2 => Ok(InstrumentationLevel::Scoped),
+        3 => Ok(InstrumentationLevel::Trace),
+        tag => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unknown instrumentation level tag: {tag}"),
+        )),
+    }
+}
+
+fn usize_to_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+fn decode_u64_as_usize(cursor: &mut Cursor<'_>) -> io::Result<usize> {
+    usize::try_from(decode_u64(cursor)?)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "u64 value does not fit usize"))
 }
 
 #[cfg(test)]
@@ -1367,6 +1501,7 @@ fn encode_events(bytes: &mut Vec<u8>, events: &[OwnedTimedObservation]) -> io::R
     encode_len(bytes, events.len())?;
     for event in events {
         encode_u64(bytes, event.at_micros());
+        encode_u64(bytes, event.sequence());
         encode_u64(bytes, event.thread_id());
         encode_observation(bytes, event.observation())?;
     }
@@ -1380,6 +1515,7 @@ fn encode_borrowed_events(
     encode_len(bytes, events.len())?;
     for event in events {
         encode_u64(bytes, event.at_micros());
+        encode_u64(bytes, event.sequence());
         encode_u64(bytes, event.thread_id());
         encode_borrowed_observation(bytes, event.observation())?;
     }
@@ -1391,6 +1527,7 @@ fn decode_events(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedTimedObservatio
     let mut events = Vec::with_capacity(len);
     for _ in 0..len {
         events.push(OwnedTimedObservation::new(
+            decode_u64(cursor)?,
             decode_u64(cursor)?,
             decode_u64(cursor)?,
             decode_observation(cursor)?,
@@ -1542,18 +1679,19 @@ fn decode_args(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedArgEntry>> {
     Ok(args)
 }
 
-fn encode_dropped_summary(bytes: &mut Vec<u8>, dropped: DroppedSummary) {
-    encode_u64(bytes, dropped.contexts());
-    encode_u64(bytes, dropped.counters());
-    encode_u64(bytes, dropped.events());
+fn encode_drops(bytes: &mut Vec<u8>, drops: Drops) {
+    encode_u64(bytes, drops.refused_contexts());
+    encode_u64(bytes, drops.unattributed());
+    encode_u64(bytes, drops.counter_updates());
+    encode_u64(bytes, drops.evicted_events());
 }
 
-fn decode_dropped_summary(cursor: &mut Cursor<'_>) -> io::Result<DroppedSummary> {
-    Ok(DroppedSummary::new(
-        decode_u64(cursor)?,
-        decode_u64(cursor)?,
-        decode_u64(cursor)?,
-    ))
+fn decode_drops(cursor: &mut Cursor<'_>) -> io::Result<Drops> {
+    Ok(Drops::new()
+        .with_refused_contexts(decode_u64(cursor)?)
+        .with_unattributed(decode_u64(cursor)?)
+        .with_counter_updates(decode_u64(cursor)?)
+        .with_evicted_events(decode_u64(cursor)?))
 }
 
 #[cfg(test)]
@@ -2073,11 +2211,12 @@ mod tests {
         Context, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, LabelKey, MarkerKind,
         MarkerPhase, ScopeToken,
     };
-    use footfall_runtime::{CounterKind, Snapshot, SnapshotMetadata};
+    use footfall_runtime::{CounterKind, Snapshot, SnapshotMetadata, ThreadSnapshot};
     use footfall_session::{
         Chunking, Envelope, EnvelopeHeader, OwnedArgEntry, OwnedContextEntry, OwnedContextSnapshot,
         OwnedCounterSnapshot, OwnedLabelValue, OwnedObservation, OwnedSessionEnvelope,
-        OwnedSessionPayload, OwnedTimedObservation, PROTOCOL_VERSION, Payload, collect_snapshot,
+        OwnedSessionPayload, OwnedSnapshotSummary, OwnedTimedObservation, PROTOCOL_VERSION,
+        Payload, RowCounts, collect_snapshot,
     };
     use std::io::ErrorKind;
     use wtransport::{VarInt, error::StreamWriteError};
@@ -2130,7 +2269,7 @@ mod tests {
     #[test]
     fn encoded_envelopes_match_golden_fixtures() {
         let counters = OwnedSessionEnvelope::new(
-            EnvelopeHeader::new(PROTOCOL_VERSION, 4, 2),
+            EnvelopeHeader::new(PROTOCOL_VERSION, 2),
             OwnedSessionPayload::Counters(vec![OwnedCounterSnapshot::new(
                 CounterDescId::new(3),
                 String::from("ops"),
@@ -2144,14 +2283,15 @@ mod tests {
         let encoded = encode_envelope(&counters).expect("encoding should succeed");
         assert_eq!(
             to_hex(&encoded),
-            "010000000400000000000000020000000000000002010000000300000000000000030000\
-             006f70730101000000000000000007000000000000000e00000000000000"
+            "01000000020000000000000003010000000300000000000000030000006f707301010000\
+             00000000000007000000000000000e00000000000000"
         );
 
         let events = OwnedSessionEnvelope::new(
-            EnvelopeHeader::new(PROTOCOL_VERSION, 4, 3),
+            EnvelopeHeader::new(PROTOCOL_VERSION, 3),
             OwnedSessionPayload::Events(vec![OwnedTimedObservation::new(
                 15,
+                4,
                 2,
                 OwnedObservation::ScopeBegin {
                     desc_id: footfall_core::ScopeDescId::new(5),
@@ -2168,14 +2308,14 @@ mod tests {
         let encoded = encode_envelope(&events).expect("encoding should succeed");
         assert_eq!(
             to_hex(&encoded),
-            "010000000400000000000000030000000000000003010000000f0000000000000002000000\
-             00000000000500000000000000060000007265636f7264010000000000000009000000000000\
-             0001050000006974656d73000300000000000000"
+            "01000000030000000000000005010000000f000000000000000400000000000000020000\
+             0000000000000500000000000000060000007265636f7264010000000000000009000000\
+             0000000001050000006974656d73000300000000000000"
         );
 
         // Context rows carry label keys by name. The production encoder for
         // borrowed runtime snapshots must produce the same bytes.
-        let header = EnvelopeHeader::new(PROTOCOL_VERSION, 4, 1);
+        let header = EnvelopeHeader::new(PROTOCOL_VERSION, 1);
         let contexts = OwnedSessionEnvelope::new(
             header,
             OwnedSessionPayload::Contexts(vec![OwnedContextSnapshot::new(
@@ -2189,9 +2329,8 @@ mod tests {
                 ],
             )]),
         );
-        let expected = "01000000040000000000000001000000000000000101000000010000000000000002000000\
-                        050000006672616d6500070000000000000006000000726561736f6e030a000000696e76\
-                        616c6964617465";
+        let expected = "010000000100000000000000020100000001000000000000000200000005000000667261\
+                        6d6500070000000000000006000000726561736f6e030a000000696e76616c6964617465";
         let encoded = encode_envelope(&contexts).expect("encoding should succeed");
         assert_eq!(to_hex(&encoded), expected.replace(' ', ""));
 
@@ -2206,6 +2345,75 @@ mod tests {
         assert_eq!(to_hex(&encoded), expected.replace(' ', ""));
     }
 
+    /// Golden fixtures for the envelopes that frame a snapshot, built from
+    /// the layouts in the wire-format document.
+    #[test]
+    fn snapshot_framing_envelopes_match_golden_fixtures() {
+        let metadata = SnapshotMetadata::new("demo")
+            .with_instance_id(0x0102_0304_0506_0708)
+            .with_wall_clock_anchor_micros(9)
+            .with_producer_version("0.1.0")
+            .with_capture(footfall_session::CaptureSettings::new(
+                footfall_core::InstrumentationLevel::Scoped,
+                16,
+                64,
+                32,
+            ));
+        let start = OwnedSessionEnvelope::new(
+            EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+            OwnedSessionPayload::SnapshotStart(OwnedSnapshotSummary::new(
+                metadata,
+                20,
+                footfall_session::EventWindow::new(1, 3, 1),
+                RowCounts::new(1, 2, 0, 0, 1),
+            )),
+        );
+        assert_eq!(
+            to_hex(&encode_envelope(&start).expect("encoding should succeed")),
+            "010000000000000000000000000400000064656d6f000807060504030201090000000000\
+             000005000000302e312e3002100000000000000040000000000000002000000000000000\
+             140000000000000001000000000000000300000000000000010000000000000001000000\
+             02000000000000000000000001000000"
+        );
+
+        let threads = OwnedSessionEnvelope::new(
+            EnvelopeHeader::new(PROTOCOL_VERSION, 1),
+            OwnedSessionPayload::Threads(vec![
+                ThreadSnapshot::new(3, Some(String::from("render"))),
+                ThreadSnapshot::new(4, None),
+            ]),
+        );
+        assert_eq!(
+            to_hex(&encode_envelope(&threads).expect("encoding should succeed")),
+            "01000000010000000000000001020000000300000000000000010600000072656e646572\
+             040000000000000000"
+        );
+
+        let end = OwnedSessionEnvelope::new(
+            EnvelopeHeader::new(PROTOCOL_VERSION, 2),
+            OwnedSessionPayload::SnapshotEnd(
+                footfall_session::Drops::new()
+                    .with_refused_contexts(1)
+                    .with_unattributed(2)
+                    .with_counter_updates(3)
+                    .with_evicted_events(4),
+            ),
+        );
+        assert_eq!(
+            to_hex(&encode_envelope(&end).expect("encoding should succeed")),
+            "010000000200000000000000060100000000000000020000000000000003000000000000\
+             000400000000000000"
+        );
+
+        for envelope in [start, threads, end] {
+            let bytes = encode_envelope(&envelope).expect("encoding should succeed");
+            assert_eq!(
+                decode_envelope(&bytes).expect("decoding should succeed"),
+                envelope
+            );
+        }
+    }
+
     #[test]
     fn codec_round_trips_owned_session_envelopes() {
         let mut histogram = footfall_runtime::HistogramSnapshot::new(
@@ -2218,10 +2426,19 @@ mod tests {
         histogram.record(16, 15);
         let metadata = SnapshotMetadata::new("demo")
             .with_session_name("wt")
-            .with_session_sequence(4)
-            .with_wall_clock_anchor_micros(1_700_000_000_000_000);
+            .with_instance_id(0x1234_5678_9abc_def0)
+            .with_wall_clock_anchor_micros(1_700_000_000_000_000)
+            .with_producer_version("0.1.0")
+            .with_capture(footfall_session::CaptureSettings::new(
+                footfall_core::InstrumentationLevel::Scoped,
+                16,
+                64,
+                32,
+            ));
         let snapshot = Snapshot::builder(metadata)
-            .capture_window(12, 20)
+            .captured_at_micros(20)
+            .window(footfall_session::EventWindow::new(0, 3, 1))
+            .thread(ThreadSnapshot::new(2, Some(String::from("worker"))))
             .context(footfall_runtime::ContextSnapshot::new(
                 ContextId::new(0),
                 Context::root()
@@ -2264,7 +2481,7 @@ mod tests {
                 footfall_runtime::Drops::new()
                     .with_refused_contexts(0)
                     .with_counter_updates(1)
-                    .with_events(2),
+                    .with_evicted_events(2),
             )
             .build();
 
@@ -2279,12 +2496,16 @@ mod tests {
 
         assert_eq!(round_tripped, envelopes);
         assert!(matches!(
-            &round_tripped[3].payload(),
+            &round_tripped[1].payload(),
+            OwnedSessionPayload::Threads(threads) if threads[0].name() == Some("worker")
+        ));
+        assert!(matches!(
+            &round_tripped[4].payload(),
             OwnedSessionPayload::Histograms(histograms)
                 if histograms[0].name() == "frame_micros" && histograms[0].buckets()[4] == 1
         ));
         assert!(matches!(
-            &round_tripped[4].payload(),
+            &round_tripped[5].payload(),
             OwnedSessionPayload::Events(events)
                 if matches!(&events[0].observation(), OwnedObservation::Flow {
                     flow_id,
@@ -2297,9 +2518,10 @@ mod tests {
     #[test]
     fn cursor_detects_trailing_bytes() {
         let envelope = OwnedSessionEnvelope::new(
-            EnvelopeHeader::new(PROTOCOL_VERSION, 1, 0),
+            EnvelopeHeader::new(PROTOCOL_VERSION, 0),
             OwnedSessionPayload::Events(vec![OwnedTimedObservation::new(
                 2,
+                0,
                 1,
                 OwnedObservation::FrameMarker {
                     kind: MarkerKind::Frame,
@@ -2325,7 +2547,7 @@ mod tests {
     #[test]
     fn decoder_rejects_oversized_strings_before_payload_allocation() {
         let mut bytes = Vec::new();
-        encode_header(&mut bytes, EnvelopeHeader::new(PROTOCOL_VERSION, 1, 0));
+        encode_header(&mut bytes, EnvelopeHeader::new(PROTOCOL_VERSION, 0));
         encode_u8(&mut bytes, 0);
         encode_u32(
             &mut bytes,
@@ -2340,7 +2562,7 @@ mod tests {
     #[test]
     fn decoder_rejects_oversized_row_counts_before_allocation() {
         let mut bytes = Vec::new();
-        encode_header(&mut bytes, EnvelopeHeader::new(PROTOCOL_VERSION, 1, 0));
+        encode_header(&mut bytes, EnvelopeHeader::new(PROTOCOL_VERSION, 0));
         encode_u8(&mut bytes, 1);
         encode_u32(
             &mut bytes,
@@ -2356,7 +2578,7 @@ mod tests {
     #[test]
     fn decoder_rejects_oversized_context_entry_counts_before_allocation() {
         let mut bytes = Vec::new();
-        encode_header(&mut bytes, EnvelopeHeader::new(PROTOCOL_VERSION, 1, 0));
+        encode_header(&mut bytes, EnvelopeHeader::new(PROTOCOL_VERSION, 0));
         encode_u8(&mut bytes, 1);
         encode_u32(&mut bytes, 1);
         encode_u64(&mut bytes, 0);
@@ -2375,9 +2597,10 @@ mod tests {
     #[test]
     fn scope_token_observation_round_trips() {
         let envelope = OwnedSessionEnvelope::new(
-            EnvelopeHeader::new(PROTOCOL_VERSION, 2, 1),
+            EnvelopeHeader::new(PROTOCOL_VERSION, 1),
             OwnedSessionPayload::Events(vec![OwnedTimedObservation::new(
                 3,
+                0,
                 4,
                 OwnedObservation::ScopeEnd {
                     token: ScopeToken::new(11),
@@ -2393,8 +2616,8 @@ mod tests {
     #[test]
     fn decoder_rejects_incompatible_codec_versions() {
         let envelope = OwnedSessionEnvelope::new(
-            EnvelopeHeader::new(PROTOCOL_VERSION, 1, 0),
-            OwnedSessionPayload::SnapshotEnd(footfall_session::DroppedSummary::new(0, 0, 0)),
+            EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+            OwnedSessionPayload::SnapshotEnd(footfall_session::Drops::new()),
         );
         let encoded = encode_envelope(&envelope).expect("encoding should succeed");
 
@@ -2430,6 +2653,7 @@ mod tests {
         assert_eq!(
             SessionRequestKind::Snapshot {
                 session_id: String::from("wt_live"),
+                since: None,
             }
             .session_id(),
             Some("wt_live")

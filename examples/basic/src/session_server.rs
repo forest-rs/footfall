@@ -50,7 +50,7 @@ async fn main() {
                                 );
                             }
                         }
-                        SessionRequestKind::Snapshot { session_id } if session_id == announcement.id() => {
+                        SessionRequestKind::Snapshot { session_id, .. } if session_id == announcement.id() => {
                             let snapshot = capture.capture_frame(frame);
                             let served = request
                                 .respond_snapshot(snapshot, Chunking::new(4, 4, 4, 32))
@@ -63,7 +63,7 @@ async fn main() {
                                 );
                             }
                         }
-                        SessionRequestKind::Snapshot { session_id } => {
+                        SessionRequestKind::Snapshot { session_id, .. } => {
                             request
                                 .respond_error(&format!("unknown session `{session_id}`"))
                                 .await

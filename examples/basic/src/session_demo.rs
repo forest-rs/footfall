@@ -68,8 +68,10 @@ impl DemoCapture {
     }
 
     fn capture_frame_with_tracing(&self, frame: u32) -> Snapshot {
+        // Read back only what this frame records.
+        let cursor = self.runtime.cursor();
         // Register this frame's contexts; they are released when this
-        // function returns, after the drain below has resolved them.
+        // function returns, after the snapshot below has resolved them.
         let frame_labels = Context::root()
             .with(&FRAME, frame)
             .with(&TRANSACTION, 1_u32 + frame / 8);
@@ -171,7 +173,7 @@ impl DemoCapture {
         pass_end(record_context);
         frame_end(frame_context);
 
-        self.runtime.drain_snapshot()
+        self.runtime.snapshot_since(cursor)
     }
 }
 

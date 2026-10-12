@@ -36,9 +36,9 @@ in `target/criterion`.
   - `fanout`: `footfall_fanout` over the runtime and the core no-op backend
 - Each case gets 1 s of warmup and 3 s of measurement. Criterion reports a
   point estimate of the time per iteration with a 95% confidence interval.
-- Cases that buffer events reset the runtime, outside the timed region,
-  every 65536 iterations, so no sample spills into the drop path however
-  many iterations Criterion chooses.
+- The runtime is never reset. Cases that buffer events fill the event buffer
+  during warm-up, so every timed emission also evicts the oldest event: the
+  steady state of any long-running capture.
 - The `counter_add threads/N` cases spawn their threads first and release
   them together through a barrier. The reported time is wall time per
   operation across all threads, so a value above the single-thread cost
