@@ -3,7 +3,7 @@
 
 //! Golden fixtures and decoder limits.
 
-use alloc::{string::String, vec, vec::Vec};
+use alloc::{format, string::String, vec, vec::Vec};
 
 use footfall_core::{
     Context, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, LabelKey, MarkerKind,
@@ -13,9 +13,10 @@ use footfall_runtime::{CounterKind, Snapshot, SnapshotMetadata, ThreadSnapshot};
 use std::io::ErrorKind;
 
 use super::{
-    MAX_CONTEXT_ENTRIES_PER_CONTEXT, MAX_ROWS_PER_ENVELOPE, MAX_SESSION_ENVELOPE_BYTES,
-    MAX_SESSION_STRING_BYTES, decode_envelope, encode_envelope, encode_header,
-    encode_owned_envelope, encode_u8, encode_u32, encode_u64,
+    Cursor, MAX_CONTEXT_ENTRIES_PER_CONTEXT, MAX_ROWS_PER_ENVELOPE, MAX_SESSION_ENVELOPE_BYTES,
+    MAX_SESSION_STRING_BYTES, VarintDecoder, decode_envelope, decode_u64, encode_envelope,
+    encode_header, encode_i64, encode_owned_envelope, encode_u8, encode_u32, encode_u64,
+    encode_varint, varint_len,
 };
 use crate::{
     Chunking, Envelope, EnvelopeHeader, OwnedArgEntry, OwnedContextEntry, OwnedContextSnapshot,
@@ -53,36 +54,59 @@ fn encoded_envelopes_match_golden_fixtures() {
         )]),
     );
     let encoded = encode_owned_envelope(&counters).expect("encoding should succeed");
-    assert_eq!(
-        to_hex(&encoded),
-        "01000000020000000000000004010000000300000000000000030000006f707301010000\
-         00000000000007000000000000000e00000000000000"
-    );
+    assert_eq!(to_hex(&encoded), "0100000002040103036f7073010100070e");
 
+    // Timestamps and sequence numbers are deltas from the previous row, and a
+    // descriptor's name is written only the first time its id appears.
     let events = OwnedSessionEnvelope::new(
         EnvelopeHeader::new(PROTOCOL_VERSION, 3),
-        OwnedSessionPayload::Events(vec![OwnedTimedObservation::new(
-            15,
-            4,
-            2,
-            OwnedObservation::ScopeBegin {
-                desc_id: footfall_core::ScopeDescId::new(5),
-                name: String::from("record"),
-                context_id: ContextId::new(1),
-                token: ScopeToken::new(9),
-                args: vec![OwnedArgEntry::new(
-                    String::from("items"),
-                    OwnedLabelValue::Unsigned(3),
-                )],
-            },
-        )]),
+        OwnedSessionPayload::Events(vec![
+            OwnedTimedObservation::new(
+                15,
+                4,
+                2,
+                OwnedObservation::ScopeBegin {
+                    desc_id: footfall_core::ScopeDescId::new(5),
+                    name: String::from("record"),
+                    context_id: ContextId::new(1),
+                    token: ScopeToken::new(9),
+                    args: vec![OwnedArgEntry::new(
+                        String::from("items"),
+                        OwnedLabelValue::Unsigned(3),
+                    )],
+                },
+            ),
+            OwnedTimedObservation::new(
+                16,
+                5,
+                2,
+                OwnedObservation::ScopeBegin {
+                    desc_id: footfall_core::ScopeDescId::new(5),
+                    name: String::from("record"),
+                    context_id: ContextId::new(1),
+                    token: ScopeToken::new(10),
+                    args: Vec::new(),
+                },
+            ),
+            OwnedTimedObservation::new(
+                13,
+                6,
+                3,
+                OwnedObservation::ScopeEnd {
+                    token: ScopeToken::new(9),
+                },
+            ),
+        ]),
     );
     let encoded = encode_owned_envelope(&events).expect("encoding should succeed");
     assert_eq!(
         to_hex(&encoded),
-        "01000000030000000000000006010000000f000000000000000400000000000000020000\
-         0000000000000500000000000000060000007265636f7264010000000000000009000000\
-         0000000001050000006974656d73000300000000000000"
+        "010000000306031e08020005067265636f7264010901056974656d730003020202000501\
+         0a000502030109"
+    );
+    assert_eq!(
+        decode_envelope(&encoded).expect("decoding should succeed"),
+        events
     );
 
     // Context rows carry label keys by name. The production encoder for
@@ -101,8 +125,7 @@ fn encoded_envelopes_match_golden_fixtures() {
             ],
         )]),
     );
-    let expected = "010000000100000000000000020100000001000000000000000002000000050000006672\
-                    616d6500070000000000000006000000726561736f6e030a000000696e76616c69646174\
+    let expected = "01000000010201010002056672616d65000706726561736f6e030a696e76616c69646174\
                     65";
     let encoded = encode_owned_envelope(&contexts).expect("encoding should succeed");
     assert_eq!(to_hex(&encoded), expected.replace(' ', ""));
@@ -144,10 +167,8 @@ fn snapshot_framing_envelopes_match_golden_fixtures() {
     );
     assert_eq!(
         to_hex(&encode_owned_envelope(&start).expect("encoding should succeed")),
-        "010000000000000000000000000400000064656d6f000807060504030201000000000900\
-         00000000000005000000302e312e30021000000000000000400000000000000020000000\
-         000000000000140000000000000001000000000000000300000000000000010000000000\
-         0000010000000200000000000000000000000000000001000000"
+        "0100000000000464656d6f00888e98a8c0e0808101000905302e312e3002104020000014\
+         010301010200000001"
     );
 
     let threads = OwnedSessionEnvelope::new(
@@ -159,8 +180,7 @@ fn snapshot_framing_envelopes_match_golden_fixtures() {
     );
     assert_eq!(
         to_hex(&encode_owned_envelope(&threads).expect("encoding should succeed")),
-        "01000000010000000000000001020000000300000000000000010600000072656e646572\
-         040000000000000000"
+        "0100000001010203010672656e6465720400"
     );
 
     let end = OwnedSessionEnvelope::new(
@@ -175,8 +195,7 @@ fn snapshot_framing_envelopes_match_golden_fixtures() {
     );
     assert_eq!(
         to_hex(&encode_owned_envelope(&end).expect("encoding should succeed")),
-        "010000000200000000000000070100000000000000020000000000000000000000000000\
-         00030000000000000004000000000000000000000000000000"
+        "010000000207010200030400"
     );
 
     for envelope in [start, threads, end] {
@@ -386,14 +405,9 @@ fn counter_samples_match_their_golden_fixture() {
         )]),
     );
     let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
-    // Event row: timestamp, sequence, thread, then tag 8, descriptor id,
-    // name, unit (count), context id, kind (gauge), and value.
-    assert_eq!(
-        to_hex(&encoded),
-        "010000000100000000000000060100000009000000000000000200000000000000010000\
-         0000000000080300000000000000030000006f7073010400000000000000010700000000\
-         000000"
-    );
+    // Event row: timestamp and sequence deltas, thread, then tag 8,
+    // descriptor id, name, unit (count), context id, kind (gauge), and value.
+    assert_eq!(to_hex(&encoded), "010000000106011204010803036f707301040107");
     assert_eq!(
         decode_envelope(&encoded).expect("decoding should succeed"),
         envelope
@@ -441,4 +455,82 @@ fn decoder_rejects_incompatible_codec_versions() {
     assert_eq!(error.kind(), ErrorKind::InvalidData);
 
     decode_envelope(&encoded).expect("decoder should accept the supported version");
+}
+
+#[test]
+fn integers_are_leb128_and_reject_overflow() {
+    for value in [0, 127, 128, 300, u64::MAX] {
+        let mut bytes = Vec::new();
+        encode_varint(&mut bytes, value);
+        assert_eq!(bytes.len(), varint_len(value));
+        let mut cursor = Cursor::new(&bytes);
+        assert_eq!(decode_u64(&mut cursor).expect("a valid integer"), value);
+        assert!(cursor.is_exhausted());
+    }
+    let mut bytes = Vec::new();
+    encode_varint(&mut bytes, 300);
+    assert_eq!(to_hex(&bytes), "ac02");
+    let mut bytes = Vec::new();
+    encode_i64(&mut bytes, -3);
+    assert_eq!(
+        to_hex(&bytes),
+        "05",
+        "zigzag puts small negatives in one byte"
+    );
+
+    // Eleven bytes, and a tenth byte carrying more than the top bit, are
+    // both too long for a u64.
+    for bad in [
+        &[0xff_u8; 11][..],
+        &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02],
+    ] {
+        let mut decoder = VarintDecoder::new();
+        let error = bad
+            .iter()
+            .find_map(|&byte| decoder.push(byte).err())
+            .expect("too long");
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+    }
+}
+
+/// Events are the bulk of a subscription's traffic; a typical scope's
+/// begin and end take a few bytes each, not the dozens fixed-width integers
+/// and repeated names would cost.
+#[test]
+fn typical_events_stay_compact() {
+    let mut events = Vec::new();
+    for index in 0..1000_u64 {
+        let at = 1_000_000 + index * 250;
+        events.push(OwnedTimedObservation::new(
+            at,
+            2 * index,
+            1 + index % 4,
+            OwnedObservation::ScopeBegin {
+                desc_id: footfall_core::ScopeDescId::new(1 + index % 8),
+                name: format!("scope_{}", index % 8),
+                context_id: ContextId::new(100 + index % 16),
+                token: ScopeToken::new(10_000 + index),
+                args: Vec::new(),
+            },
+        ));
+        events.push(OwnedTimedObservation::new(
+            at + 120,
+            2 * index + 1,
+            1 + index % 4,
+            OwnedObservation::ScopeEnd {
+                token: ScopeToken::new(10_000 + index),
+            },
+        ));
+    }
+    let envelope = OwnedSessionEnvelope::new(
+        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+        OwnedSessionPayload::Events(events),
+    );
+    let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
+    let per_event = encoded.len() / 2000;
+    assert!(per_event <= 8, "{per_event} bytes per event");
+    assert_eq!(
+        decode_envelope(&encoded).expect("decoding should succeed"),
+        envelope
+    );
 }

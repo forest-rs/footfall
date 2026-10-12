@@ -14,7 +14,7 @@ use crate::wire::{
     read_u64, validate_wire_count, validate_wire_len,
 };
 use crate::{MAX_DISCOVERED_SESSIONS, MAX_SESSION_ENVELOPES};
-use footfall_session::codec::{MAX_SESSION_ENVELOPE_BYTES, decode_envelope};
+use footfall_session::codec::{MAX_SESSION_ENVELOPE_BYTES, decode_envelope, varint_len};
 use footfall_session::{
     AssembleError, EventCursor, OwnedSnapshot, ProtocolVersion, SessionErrorCode, SnapshotKind,
 };
@@ -867,7 +867,8 @@ async fn open_stream(connection: &Connection) -> Result<(SendStream, RecvStream)
 /// Reads one snapshot response, returning it with its size on the wire.
 async fn read_snapshot(recv: &mut RecvStream) -> Result<(OwnedSnapshot, usize), ClientError> {
     let count = read_u64(recv).await.map_err(io_error)?;
-    let mut bytes = 9_usize;
+    // The response tag, then the envelope count.
+    let mut bytes = 1 + varint_len(count);
     validate_wire_count(count, MAX_SESSION_ENVELOPES, "session envelopes").map_err(io_error)?;
     let mut envelopes = Vec::new();
     for _ in 0..count {
@@ -882,7 +883,7 @@ async fn read_snapshot(recv: &mut RecvStream) -> Result<(OwnedSnapshot, usize), 
         recv.read_exact(&mut frame)
             .await
             .map_err(|error| io_error(read_error(error)))?;
-        bytes = bytes.saturating_add(4 + len);
+        bytes = bytes.saturating_add(varint_len(len as u64) + len);
         if let Some(server) = frame_version(&frame)
             && !CODEC_VERSION.can_decode(server)
         {
