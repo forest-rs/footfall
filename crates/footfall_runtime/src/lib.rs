@@ -47,10 +47,10 @@
 
 use footfall_core::{
     Args, Backend, ClockId, ClockReading, Context, ContextHandle, ContextId, CounterDesc,
-    CounterDescId, EventDesc, EventDescId, FlowId, FlowPhase, InstallBackendError,
-    InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ResourceKindId,
-    ScopeDesc, ScopeDescId, ScopeToken, SourceLocation, TickPeriod, TimelineId, TimelineKind,
-    TimelineSpan, Unit, install_backend, set_max_level,
+    CounterDescId, EventDesc, EventDescId, FlowId, FlowPhase, FramePoint, FramePointKind,
+    InstallBackendError, InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId,
+    ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, ScopeToken, SourceLocation,
+    TickPeriod, TimelineId, TimelineKind, TimelineSpan, Unit, install_backend, set_max_level,
 };
 use std::{
     boxed::Box,
@@ -2275,6 +2275,16 @@ pub enum Observation {
         /// The work.
         span: Box<TimelineWork>,
     },
+    /// A time a frame scheduler or display knows about a numbered frame;
+    /// see [`footfall_core::frame_point`].
+    FramePoint {
+        /// The program's number for the frame.
+        number: u64,
+        /// What the point says about the frame.
+        kind: FramePointKind,
+        /// When, as a reading of another clock; `None` for a dropped frame.
+        time: Option<ClockTicks>,
+    },
 }
 
 /// Finished work on a timeline that is not a CPU thread, as
@@ -2470,7 +2480,10 @@ impl Observation {
             | Self::Message { context_id, .. }
             | Self::CounterSample { context_id, .. } => Some(*context_id),
             Self::TimelineSpan { span } => Some(span.context_id),
-            Self::ScopeEnd { .. } | Self::ClockSync { .. } | Self::ClockPair { .. } => None,
+            Self::ScopeEnd { .. }
+            | Self::ClockSync { .. }
+            | Self::ClockPair { .. }
+            | Self::FramePoint { .. } => None,
         }
     }
 
@@ -2485,7 +2498,10 @@ impl Observation {
             | Self::Message { context_id, .. }
             | Self::CounterSample { context_id, .. } => Some(context_id),
             Self::TimelineSpan { span } => Some(&mut span.context_id),
-            Self::ScopeEnd { .. } | Self::ClockSync { .. } | Self::ClockPair { .. } => None,
+            Self::ScopeEnd { .. }
+            | Self::ClockSync { .. }
+            | Self::ClockPair { .. }
+            | Self::FramePoint { .. } => None,
         }
     }
 }
@@ -2548,6 +2564,11 @@ impl DescriptorIds {
                     first.clock_id = ClockId::new(self.dense(first.clock_id.get()));
                     second.clock_id = ClockId::new(self.dense(second.clock_id.get()));
                 }
+                Observation::FramePoint {
+                    time: Some(time), ..
+                } => {
+                    time.clock_id = ClockId::new(self.dense(time.clock_id.get()));
+                }
                 Observation::TimelineSpan { span } => {
                     span.timeline_id = TimelineId::new(self.dense(span.timeline_id.get()));
                     span.desc_id = ScopeDescId::new(self.dense(span.desc_id.get()));
@@ -2555,6 +2576,7 @@ impl DescriptorIds {
                 }
                 Observation::ScopeEnd { .. }
                 | Observation::FrameMarker { .. }
+                | Observation::FramePoint { time: None, .. }
                 | Observation::Flow { .. } => {}
             }
         }
@@ -2996,6 +3018,21 @@ impl Backend for Runtime {
             Observation::ClockPair {
                 first: first.into(),
                 second: second.into(),
+            },
+            at_nanos,
+        );
+    }
+
+    fn frame_point(&self, point: &FramePoint) {
+        if !self.level().captures_markers() {
+            return;
+        }
+        let at_nanos = self.now_nanos();
+        self.push_event_at(
+            Observation::FramePoint {
+                number: point.number(),
+                kind: point.kind(),
+                time: point.time().map(ClockTicks::from),
             },
             at_nanos,
         );

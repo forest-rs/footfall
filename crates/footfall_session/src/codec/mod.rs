@@ -22,9 +22,9 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 
 use footfall_core::{
-    ClockId, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, InstrumentationLevel,
-    MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, TickPeriod,
-    TimelineId, TimelineKind, Unit,
+    ClockId, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, FramePointKind,
+    InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId,
+    ScopeToken, TickPeriod, TimelineId, TimelineKind, Unit,
 };
 use footfall_runtime::CounterKind;
 
@@ -868,6 +868,16 @@ pub(crate) fn encode_borrowed_observation(
                 clock.period(),
             )?;
         }
+        footfall_runtime::Observation::FramePoint { number, kind, time } => {
+            encode_u8(bytes, 12);
+            encode_frame_point(
+                bytes,
+                names,
+                *number,
+                *kind,
+                time.as_ref().map(OwnedClockTicks::from).as_ref(),
+            )?;
+        }
         footfall_runtime::Observation::TimelineSpan { span } => {
             // Timeline spans are rare next to CPU events, so the borrowed
             // encoder shares the owned one rather than repeat it.
@@ -1121,6 +1131,10 @@ pub(crate) fn encode_observation(
             encode_u8(bytes, 9);
             encode_owned_clock(bytes, names, clock)?;
         }
+        OwnedObservation::FramePoint { number, kind, time } => {
+            encode_u8(bytes, 12);
+            encode_frame_point(bytes, names, *number, *kind, time.as_ref())?;
+        }
         OwnedObservation::TimelineSpan { span } => {
             encode_u8(bytes, 11);
             encode_timeline(bytes, names, span)?;
@@ -1210,6 +1224,16 @@ pub(crate) fn decode_observation(
         11 => Ok(OwnedObservation::TimelineSpan {
             span: Box::new(decode_timeline(cursor, names)?),
         }),
+        12 => {
+            let number = decode_u64(cursor)?;
+            let kind = decode_frame_point_kind(decode_u8(cursor)?)?;
+            let time = if decode_bool(cursor, "frame point time tag")? {
+                Some(decode_clock(cursor, names)?)
+            } else {
+                None
+            };
+            Ok(OwnedObservation::FramePoint { number, kind, time })
+        }
         tag => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("unknown observation tag: {tag}"),
@@ -1295,6 +1319,49 @@ fn decode_timeline(
     .with_frame(frame)
     .with_flow(flow)
     .with_args(args))
+}
+
+/// Writes a frame point: the frame's number, the point's kind, and a
+/// presence tag followed by the clock reading when it has a time.
+fn encode_frame_point(
+    bytes: &mut Vec<u8>,
+    names: &mut NameWriter,
+    number: u64,
+    kind: FramePointKind,
+    time: Option<&OwnedClockTicks>,
+) -> io::Result<()> {
+    encode_u64(bytes, number);
+    encode_u8(
+        bytes,
+        match kind {
+            FramePointKind::Deadline => 0,
+            FramePointKind::Target => 1,
+            FramePointKind::Presented => 2,
+            FramePointKind::Dropped => 3,
+            _ => return Err(unsupported("frame point kind")),
+        },
+    );
+    match time {
+        None => encode_u8(bytes, 0),
+        Some(time) => {
+            encode_u8(bytes, 1);
+            encode_owned_clock(bytes, names, time)?;
+        }
+    }
+    Ok(())
+}
+
+fn decode_frame_point_kind(value: u8) -> io::Result<FramePointKind> {
+    match value {
+        0 => Ok(FramePointKind::Deadline),
+        1 => Ok(FramePointKind::Target),
+        2 => Ok(FramePointKind::Presented),
+        3 => Ok(FramePointKind::Dropped),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unknown frame point kind: {value}"),
+        )),
+    }
 }
 
 fn encode_timeline_kind(kind: TimelineKind) -> io::Result<u8> {

@@ -131,7 +131,7 @@ pub use descriptor::{
 pub use emit::{
     Backend, FlowPhase, MarkerKind, MarkerPhase, NoopBackend, ScopeGuard, ScopeToken, clock_pair,
     clock_sync, counter_add, flow_begin, flow_end, flow_step, frame_begin, frame_begin_numbered,
-    frame_end, frame_end_numbered, frame_marker, gauge_set, histogram_record, message,
+    frame_end, frame_end_numbered, frame_marker, frame_point, gauge_set, histogram_record, message,
     message_with, numbered_marker, pass_begin, pass_end, resource_create, resource_drop,
     resource_update, scope, scope_begin, scope_begin_with, scope_end, scope_with, timeline_span,
     transaction_begin, transaction_end,
@@ -147,7 +147,7 @@ pub use id::{
 };
 pub use label::{LabelKey, LabelValue};
 pub use level::{InstrumentationLevel, max_level, set_max_level};
-pub use timeline::TimelineSpan;
+pub use timeline::{FramePoint, FramePointKind, TimelineSpan};
 pub use unit::Unit;
 
 /// Builds a [`Context`] from label-key assignments.

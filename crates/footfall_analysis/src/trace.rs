@@ -12,14 +12,14 @@ use crate::time::{TimeRange, nanos};
 use core::fmt;
 use core::time::Duration;
 use footfall_core::{
-    ContextId, CounterDescId, FlowId, FlowPhase, InstrumentationLevel, MarkerKind, MarkerPhase,
-    ResourceId, ResourceKindId, ScopeDescId, ScopeToken, TimelineId,
+    ContextId, CounterDescId, FlowId, FlowPhase, FramePointKind, InstrumentationLevel, MarkerKind,
+    MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, TimelineId,
 };
 use footfall_runtime::{CounterKind, Drops, SnapshotMetadata};
 use footfall_session::{
-    Clocks, OwnedArgEntry, OwnedContextSnapshot, OwnedCounterSnapshot, OwnedHistogramSnapshot,
-    OwnedLabelValue, OwnedObservation, OwnedSnapshot, OwnedSourceLocation, OwnedTimelineWork,
-    SnapshotKind,
+    Clocks, OwnedArgEntry, OwnedClockTicks, OwnedContextSnapshot, OwnedCounterSnapshot,
+    OwnedHistogramSnapshot, OwnedLabelValue, OwnedObservation, OwnedSnapshot, OwnedSourceLocation,
+    OwnedTimelineWork, SnapshotKind,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -57,6 +57,9 @@ pub struct Trace {
     names: HashSet<Arc<str>>,
     tracks: BTreeMap<u64, Track>,
     timelines: BTreeMap<TimelineId, Track>,
+    /// Frame points, by the frame's number: the kind, the time read from
+    /// another clock, and when the point was recorded.
+    frame_points: BTreeMap<u64, Vec<(FramePointKind, Option<OwnedClockTicks>)>>,
     /// Placed timeline spans reported with a frame number, by that number.
     frame_spans: HashMap<u64, Vec<SpanId>>,
     /// Timeline spans whose clock has no path to the runtime's yet, with
@@ -690,6 +693,12 @@ impl Trace {
                 self.unplaced
                     .push((event.sequence(), thread_id, span.clone()));
             }
+            OwnedObservation::FramePoint { number, kind, time } => {
+                self.frame_points
+                    .entry(*number)
+                    .or_default()
+                    .push((*kind, time.clone()));
+            }
             _ => {}
         }
     }
@@ -982,6 +991,20 @@ impl Trace {
             .find(|track| track.name.as_deref() == Some(name))
     }
 
+    /// Returns each numbered frame's pacing: its CPU and GPU work, its
+    /// deadline and target, when it was shown, and whether that was on
+    /// time, from the frame points a frame scheduler or display reported.
+    ///
+    /// A frame shown no more than `tolerance` after its target counts as on
+    /// time, which absorbs jitter in reported presentation times. Frame
+    /// points' times are converted through the trace's clocks when the
+    /// pacing is computed, so readings that arrived after a point still
+    /// place it.
+    #[must_use]
+    pub fn pacing(&self, tolerance: Duration) -> crate::Pacing {
+        crate::pacing::pacing(self, tolerance)
+    }
+
     /// Returns the spans on timelines reported as part of the frame the
     /// program numbered `number`, such as that frame's GPU passes.
     pub fn frame_spans(&self, number: u64) -> impl Iterator<Item = &Span> {
@@ -990,6 +1013,20 @@ impl Trace {
             .into_iter()
             .flatten()
             .filter_map(|id| self.span(*id))
+    }
+
+    pub(crate) const fn frame_points(
+        &self,
+    ) -> &BTreeMap<u64, Vec<(FramePointKind, Option<OwnedClockTicks>)>> {
+        &self.frame_points
+    }
+
+    pub(crate) fn numbered_frames(&self) -> impl Iterator<Item = u64> + '_ {
+        self.numbered
+            .keys()
+            .filter(|(index, _)| *index == 0)
+            .map(|(_, number)| *number)
+            .chain(self.frame_spans.keys().copied())
     }
 
     pub(crate) fn track_kind_of(&self, span: &Span) -> TrackKind {

@@ -308,6 +308,32 @@ footfall::timeline_span(
 );
 ```
 
+## Frame Pacing
+
+Whether a frame was shown when it was meant to be is known only to the
+frame scheduler and the display, and often only frames later. Record each
+time as it becomes known with `frame_point`, against the frame's number:
+its `Deadline` (the latest it could be submitted) and `Target` (when it
+should be shown) when it is planned, and `Presented` or `Dropped` when the
+display reports it. The times are ticks of the scheduler's clock, synced
+with `clock_sync` like any other clock. With frames marked by number and
+GPU work reported with its frame, analysis then says which frames were
+late, by how much, and what their work did differently.
+
+```rust
+use footfall::{ClockDesc, ClockReading, FramePoint, FramePointKind, TickPeriod};
+
+static HOST: ClockDesc = ClockDesc::new("host");
+let period = TickPeriod::new(125, 3); // Mach absolute time
+let (now, target, deadline) = (1_000_000_u64, 1_400_000_u64, 1_300_000_u64);
+
+footfall::clock_sync(ClockReading::new(&HOST, now, period));
+footfall::frame_point(&FramePoint::at(1234, FramePointKind::Target, &HOST, period, target));
+footfall::frame_point(&FramePoint::at(1234, FramePointKind::Deadline, &HOST, period, deadline));
+// Frames later, when the display reports the frame:
+footfall::frame_point(&FramePoint::at(1234, FramePointKind::Presented, &HOST, period, target));
+```
+
 ## What Lives Where
 
 Call sites should stay in subsystem code:

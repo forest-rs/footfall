@@ -63,6 +63,49 @@ runs while the CPU works on the next frame, so spans reported with a frame
 number count toward that frame when a query or comparison selects frames,
 whole, wherever they ran; `Trace::frame_spans` lists them.
 
+## Frame Pacing
+
+`Trace::pacing(tolerance)` joins each numbered frame's CPU work, its GPU
+work, and the frame points a frame scheduler or display reported into a
+`FramePacing`: its deadline, target, and presentation, how long its GPU
+was busy, and an `Outcome`.
+
+| Outcome | Meaning |
+|---|---|
+| `OnTime` | Shown no more than `tolerance` after its target |
+| `Late { by }` | Shown after its target |
+| `Dropped` | Never shown |
+| `SubmittedLate { by }` | Submitted past its deadline, with no presentation time to confirm it |
+| `Unknown` | Too little reported to tell |
+
+`Unknown` is not on time: without a target and a presentation time, a
+frame's pacing cannot be judged, and a trace with no presentation feedback
+says so rather than counting every frame as fine. `Pacing` adds the
+presentation intervals, stutters (intervals at least half again the
+median), latency from the start of work to presentation, and how late the
+late frames were. `frame_ids` turns an outcome into frames to compare:
+
+```rust
+use footfall::analysis::{Comparison, FrameId, GroupBy, Outcome, Population, Selection, Trace};
+use std::time::Duration;
+
+fn why_late(trace: &Trace) {
+    let pacing = trace.pacing(Duration::from_millis(1));
+    let frames = |ids: Vec<FrameId>| {
+        Population::frames(trace, ids.into_iter().filter_map(|id| trace.frame(id)))
+    };
+    let on_time = frames(pacing.frame_ids(|outcome| outcome == Outcome::OnTime));
+    let missed = frames(pacing.frame_ids(Outcome::missed));
+    let comparison = Comparison::between(&on_time, &missed)
+        .selecting(Selection::Inside)
+        .group_by(GroupBy::Name)
+        .run();
+    for row in comparison.rows().iter().take(5) {
+        println!("{}: {:+.0} µs per frame", row.describe(), row.change_micros());
+    }
+}
+```
+
 ## Asking Where the Time Went
 
 `Trace::spans` starts a `SpanQuery`. Narrow it, choose how spans count, group

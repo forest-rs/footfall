@@ -64,6 +64,7 @@
 mod basis;
 mod compare;
 mod frame;
+mod pacing;
 mod query;
 mod signal;
 mod span;
@@ -75,6 +76,7 @@ pub use compare::{
     Caveat, Comparison, ComparisonQuery, ComparisonRow, Measure, Metric, Population, Side,
 };
 pub use frame::{Frame, FrameCounter, FrameId};
+pub use pacing::{FramePacing, Outcome, OutcomeCounts, Pacing};
 pub use query::{
     DurationStats, GroupBy, Instances, KeyPart, Selected, SpanQuery, SpanStats, SpanTable, TableRow,
 };

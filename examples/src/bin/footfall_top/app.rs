@@ -5,7 +5,7 @@
 //! frame, messages, and losses, kept up to date one window at a time.
 
 use crate::{Key, Update};
-use footfall::analysis::{Continuity, GroupBy, TimeRange, Trace};
+use footfall::analysis::{Continuity, GroupBy, OutcomeCounts, TimeRange, Trace};
 use footfall::session::{CounterKind, Drops, OwnedObservation, OwnedSnapshot};
 use footfall::{CounterDescId, MarkerKind, Unit};
 use footfall_examples::format;
@@ -88,6 +88,9 @@ pub(crate) struct App {
     /// Durations of recent frames, oldest first.
     pub frames: VecDeque<u64>,
     pub frames_seen: u64,
+    /// How the frames the trace holds were paced, when a frame scheduler
+    /// or display reported presentation times for any of them.
+    pub pacing: Option<OutcomeCounts>,
     pub scopes: BTreeMap<String, ScopeTotals>,
     pub counters: Vec<CounterRow>,
     pub messages: VecDeque<Message>,
@@ -114,6 +117,7 @@ impl App {
             sort_by_own: false,
             frames: VecDeque::new(),
             frames_seen: 0,
+            pacing: None,
             scopes: BTreeMap::new(),
             counters: Vec::new(),
             messages: VecDeque::new(),
@@ -238,6 +242,8 @@ impl App {
             self.counter_frames.pop_front();
         }
 
+        let counts = self.trace.pacing(Duration::from_millis(1)).counts();
+        self.pacing = (counts.total() > counts.unknown).then_some(counts);
         let recent = TimeRange::new(now_in_trace.saturating_sub(SCOPE_SPAN), now_in_trace);
         let table = self
             .trace

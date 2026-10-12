@@ -1181,3 +1181,99 @@ fn a_frames_gpu_work_counts_toward_that_frame_wherever_it_ran() {
     assert_eq!(gpu_time(first), us(60), "frame 1234's opaque pass, whole");
     assert_eq!(gpu_time(second), us(0), "though it ran during frame 1235");
 }
+
+static HOST: ClockDesc = ClockDesc::new("host");
+
+impl Recording {
+    /// Records a frame point at `at` µs whose time is `time` µs of the host
+    /// clock, or no time.
+    fn frame_point(
+        &mut self,
+        at: u64,
+        number: u64,
+        kind: footfall_core::FramePointKind,
+        clock: &'static ClockDesc,
+        time: Option<u64>,
+    ) {
+        self.record(
+            at,
+            MAIN,
+            Observation::FramePoint {
+                number,
+                kind,
+                time: time.map(|micros| {
+                    ClockTicks::from(ClockReading::new(
+                        clock,
+                        micros * 1000,
+                        TickPeriod::NANOSECOND,
+                    ))
+                }),
+            },
+        );
+    }
+
+    fn numbered_frame(&mut self, number: u64, begin: u64, end: u64) -> FrameId {
+        let id = FrameId::new(self.numbered_marker(begin, MarkerPhase::Begin, Some(number)));
+        self.numbered_marker(end, MarkerPhase::End, Some(number));
+        id
+    }
+}
+
+#[test]
+fn pacing_says_which_frames_were_shown_on_time_and_why_not() {
+    use footfall_analysis::Outcome;
+    use footfall_core::FramePointKind::{Deadline, Dropped, Presented, Target};
+    let mut recording = Recording::new(7);
+    // The host clock reads in step with the runtime's: 0 at 0.
+    recording.clock_sync(0, &HOST, 0);
+    let first = recording.numbered_frame(1, 0, 5_000);
+    recording.frame_point(5_000, 1, Deadline, &HOST, Some(12_500));
+    recording.frame_point(5_000, 1, Target, &HOST, Some(16_667));
+    let second = recording.numbered_frame(2, 16_667, 40_000);
+    recording.frame_point(40_000, 2, Target, &HOST, Some(33_333));
+    let third = recording.numbered_frame(3, 40_000, 45_000);
+    recording.frame_point(45_000, 1, Presented, &HOST, Some(16_667));
+    recording.frame_point(45_000, 2, Presented, &HOST, Some(50_000));
+    recording.frame_point(46_000, 3, Dropped, &HOST, None);
+    let fourth = recording.numbered_frame(4, 50_000, 64_000);
+    recording.frame_point(64_000, 4, Deadline, &HOST, Some(62_500));
+    recording.numbered_frame(5, 66_667, 70_000);
+    recording.frame_point(70_000, 5, Target, &HOST, Some(83_333));
+    // A point whose clock was never synced.
+    recording.frame_point(70_000, 5, Presented, &LOST_CLOCK, Some(83_333));
+    let trace = Trace::from_snapshot(&recording.snapshot(90_000));
+
+    let pacing = trace.pacing(us(500));
+    let outcomes: Vec<_> = pacing
+        .frames()
+        .iter()
+        .map(|frame| frame.outcome())
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            Outcome::OnTime,
+            Outcome::Late { by: us(16_667) },
+            Outcome::Dropped,
+            Outcome::SubmittedLate { by: us(1_500) },
+            Outcome::Unknown,
+        ]
+    );
+    let counts = pacing.counts();
+    assert_eq!((counts.on_time, counts.late, counts.total()), (1, 1, 5));
+    assert_eq!(pacing.frame_ids(Outcome::missed), [second, third, fourth]);
+    assert_eq!(
+        pacing.frame(1).and_then(|frame| frame.latency()),
+        Some(us(16_667))
+    );
+    assert_eq!(
+        pacing.frame(1).map(|frame| frame.frame()),
+        Some(Some(first))
+    );
+    assert_eq!(
+        pacing.intervals().median(),
+        us(33_333),
+        "frame 1 to frame 2"
+    );
+    assert_eq!(pacing.unplaced_points(), 1);
+}

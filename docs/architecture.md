@@ -204,6 +204,17 @@ track of its own, nested by containment, and counts it toward its frame by
 number rather than by time, since a frame's GPU work runs while the CPU
 works on the next frame.
 
+## Frame Pacing
+
+Whether a frame was on time is reported by the frame scheduler and display,
+in their clock, often frames after the frame's work. A frame point records
+one such time against the frame's number as it becomes known: its
+deadline, its target, when it was presented, or that it was dropped.
+Analysis converts the points through the clock conversion when pacing is
+asked for, joins them with the numbered frame's CPU markers and its GPU
+timeline spans, and gives each frame an outcome that separates late from
+dropped from not known.
+
 ## Invariants
 
 - Core emission never allocates and never formats strings.
