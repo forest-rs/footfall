@@ -1,6 +1,8 @@
-# Footfall Architecture
+# Footfall Architecture: the First Slice
 
-Status: working design, aligned with the current workspace
+> This is the working design document from Footfall's first slice, kept for
+> its reasoning. Parts of it describe plans that changed. For the current
+> design, see [Footfall Architecture](../architecture.md).
 
 ## Overview
 

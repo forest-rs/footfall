@@ -1,6 +1,8 @@
 # Instrumenting an App
 
-This is the shortest path for using Footfall from an application outside this repo.
+This is the shortest path for using Footfall in an application. For how the
+pieces fit, see [the architecture](architecture.md); for runnable programs,
+see [the examples](../examples/README.md).
 
 ## Goal
 
@@ -243,7 +245,7 @@ empty inlined function and no backend sees anything. It is a compiler `cfg`
 rather than a cargo feature so that no dependency, and no `--all-features`
 run, can switch it on for you; libraries should never set it.
 
-## Current Local Attach Pattern
+## Serving a Live Session
 
 To let a separate consumer app read the process while it runs, serve the
 runtime with the `wtransport` feature:
@@ -277,7 +279,7 @@ The examples are the reference shape:
 - [footfall_top](../examples/src/bin/footfall_top/main.rs) is a full live
   view
 
-## What Is Still Missing
+## Limits
 
 - `footfall_top` is an example of a consumer UI, not a supported tool
 - the local attach path is intentionally localhost-first

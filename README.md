@@ -1,60 +1,153 @@
 # Footfall
 
-Footfall is a family of Rust crates for low-overhead instrumentation, semantic
-tracing, counters, memory observation, and downstream projection into existing
-profiling and visualization tools.
+Low-overhead instrumentation for Rust that records what work happened and
+which owner it happened under.
 
-The crates:
+A trace that says "this frame took 40 ms in `layout`" is a start. Footfall
+also records that it was the transparent pass of the main window, after a
+font change, with the glyph cache missing 60% of lookups. Instrumented code
+attributes every scope, counter, marker, flow, message, and resource
+lifecycle to a semantic context: a frame, a pass, a cache, a worker. Tools
+can then group and compare by the things your program is made of, not only
+by thread and call stack.
 
-- `footfall`: the instrumentation API; start here
-- `footfall_core`: the same API with the reference documentation
-- `footfall_runtime`: bounded in-process capture and snapshots
-- `footfall_export`: Chrome Trace JSON export for Perfetto and `chrome://tracing`
-- `footfall_tracing`: a `tracing` layer that forwards spans and events into
-  Footfall
-- `footfall_tracy`: a live Tracy backend
-- `footfall_fanout`: feeds two backends at once
-- `footfall_memory`: scratch-buffer and cache metrics built on counters
-- `footfall_session`: transport-neutral session envelopes for external
-  consumers
-- `footfall_session_wtransport`: serves and fetches sessions over local
-  WebTransport
-- `footfall_analysis`: scope, frame, and counter analysis over snapshots,
-  live or from capture files
+- **Cheap when idle, free when compiled out.** An emission costs under a
+  nanosecond with no backend installed, and nothing at all with
+  `--cfg footfall_compile_out`.
+- **Bounded.** The in-process runtime keeps counters and a window of recent
+  events in fixed memory, and counts everything it could not keep.
+- **Attachable.** A running program serves its capture to local tools over
+  WebTransport; any number of them can follow it live without draining it.
+- **Analyzable anywhere.** The same snapshot form comes from the process
+  itself, a live session, or a capture file, and turns into spans, frames,
+  per-frame counter changes, or a Chrome trace for Perfetto.
+- **Bridged.** Existing `tracing` spans and events flow in unchanged, and a
+  Tracy backend shows everything live in Tracy.
 
-The workspace also holds `footfall_benchmarks`, the Criterion benchmarks for
-emission overhead, and `examples`, which keeps example dependencies
-out of the published crates.
+## Quick start
 
-## External Use
+```toml
+[dependencies]
+footfall = { version = "0.1", features = ["runtime", "export"] }
+```
 
-Footfall is intended to be usable from outside this repo in two directions:
+```rust
+use footfall::runtime::Runtime;
+use footfall::{ContextHandle, CounterDesc, LabelKey, RegisteredContext, ScopeDesc, context};
 
-- instrument your own application with `footfall`, `footfall_runtime`, and
-  related helper crates
-- build a separate consumer or UI that attaches to a running Footfall session
+static PASS: LabelKey = LabelKey::new("pass");
+static RENDER: ScopeDesc = ScopeDesc::new("render");
+static UPLOAD_BYTES: CounterDesc = CounterDesc::bytes("upload_bytes");
 
-Start here:
+let runtime = Runtime::builder()
+    .process_name("my_app")
+    .install_global()
+    .expect("no other backend is installed");
+let opaque = RegisteredContext::new(&context!(PASS = "opaque"));
 
-- [Instrumenting an App](docs/instrumenting-an-app.md)
-- [Session Consumer Contract](docs/session-consumer-contract.md)
-- [WebTransport Session Wire Format](docs/session-wire-format.md)
-- [Performance](docs/performance.md)
+footfall::frame_begin(ContextHandle::ROOT);
+{
+    footfall::scope!(&RENDER, opaque.handle());
+    footfall::counter_add(&UPLOAD_BYTES, opaque.handle(), 4096);
+}
+footfall::frame_end(ContextHandle::ROOT);
 
-## Local Attach
+let trace = footfall::export::to_chrome_trace_json(&runtime.snapshot().into());
+# let _ = trace;
+```
 
-The local attach workflow is:
+Libraries depend on `footfall` with no features: the instrumentation API is
+`no_std`, has no dependencies, and does nothing until the application installs
+a backend. The [`footfall` crate documentation](crates/footfall/README.md)
+lists the features for applications and tools.
 
-1. your process installs a `footfall_runtime::Runtime`
-2. it serves the runtime with `footfall_session_wtransport::LocalSessionServer`
-3. a consumer finds every local producer with `SessionClient::local_servers`,
-   then discovers, fetches, or subscribes to their sessions
+## See it
 
-The [examples](examples/README.md) show that flow directly:
+The [examples](examples/README.md) include a fake renderer that serves its
+capture, and `footfall_top`, a live terminal view built entirely on the
+public API:
 
-- `cargo run -p footfall_examples --bin demo_app` serves a fake renderer until
-  Ctrl-C
-- `cargo run -p footfall_examples --bin footfall_top` watches it live
-- `cargo run -p footfall_examples --bin footfall_capture -- record demo.ffcap`
-  records it, and `-- export demo.ffcap` turns the recording into a Chrome
-  trace
+```sh
+cargo run -p footfall_examples --bin demo_app        # in one terminal
+cargo run -p footfall_examples --bin footfall_top    # in another
+```
+
+```text
+footfall_top  demo_app  pid 63470 · session main · level trace  ● live
+last 240 frames  mean 12.8 ms · p95 14.7 ms · max 46.3 ms · 2 over budget  (budget 16.7 ms)
+https://127.0.0.1:43091/footfall/session · main
+╭ Frame times · newest on the right · red over budget ─────────────────────────────────────────────╮
+│                                                                                                 █│
+│                                                                                                 █│
+│                                                                                                 █│
+│                                                                                                 █│
+│                                                                                                 █│
+│                                                                                                 █│
+│                 ▁      ▁            ▂▁    ▂   ▂               ▁               ▁   ▁             █│
+│▃▅▆▅▅▅▅▅▇▆▄▇█▇▆▄▃█▇▄▇▅▅▄█▄▁▅▄▅▆▆▅▃▃▃▅██▄▄▃▂█▂▅▇██▆▇▁▃█▄▃▅▄▇█▅▃▇█▄▄▇▂▅▇▅▆▂▄▇▅▅█ █▅▄▅█▅▂▆▄▇▄▄▂▆▅▆▆▄█│
+│██████████████████████████████████████████████████████████████████████████████████████████████████│
+│██████████████████████████████████████████████████████████████████████████████████████████████████│
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ Scopes · recent windows · by total time ─────────╮╭ Counters · sampled at each frame end ────────╮
+│scope            count  total    self     max     ││counter          last      per frame now      │
+│raster_tile      3,840  3.80 s   3.80 s   2.44 ms ││draw_calls       62        72        16,517   │
+│frame            240    3.06 s   1.91 ms  46.3 ms ││glyph_cache_byte 1.00 MiB  gauge     1.00 MiB │
+│paint            240    2.08 s   2.06 s   24.9 ms ││glyph_hits       30        28        6,815    │
+│layout           240    500.0 ms 500.0 ms 35.8 ms ││glyph_misses     1         1         398      │
+│shape_text       240    201.1 ms 134.2 ms 3.99 ms ││layers           4         gauge     4        │
+│composite        240    199.6 ms 199.6 ms 1.18 ms ││layout_nodes     12,000    1,177     246,900  │
+│update           240    81.3 ms  81.3 ms  1.57 ms ││tiles_rastered   16        16        3,840    │
+│upload_glyphs    163    66.9 ms  66.9 ms  3.52 ms ││upload_bytes     2.0 KiB   3.4 KiB   796.0 KiB│
+│compile_shader   1      15.8 ms  15.8 ms  15.8 ms ││                                              │
+╰──────────────────────────────────────────────────╯╰──────────────────────────────────────────────╯
+╭ Messages · newest first ─────────────────────────╮╭ Capture ─────────────────────────────────────╮
+│renderer  font changed; relayout everything       ││nothing lost                                  │
+│renderer  compiling shader variant                ││events   3,376 last window · 3,233/s          │
+│                                                  ││wire     31.6 KiB per window                  │
+│                                                  ││instance 3cbf60168cd45f74                     │
+│                                                  ││missed   0 events in 0 gaps                   │
+│                                                  ││evicted  0 of 65,536 buffered                 │
+╰──────────────────────────────────────────────────╯╰──────────────────────────────────────────────╯
+ q quit   p pause   s sort by self time   · 240 frames seen
+```
+
+## Guides
+
+- [Instrumenting an app](docs/instrumenting-an-app.md): descriptors,
+  contexts, levels, capture, export, and serving.
+- [Session consumer contract](docs/session-consumer-contract.md): what a tool
+  attaching to a session can rely on.
+- [Session wire format](docs/session-wire-format.md): the bytes, for tools in
+  other languages.
+- [Architecture](docs/architecture.md): how the crates fit and why.
+- [Performance](docs/performance.md): how overhead is measured, and results.
+
+## Crates
+
+| Crate | `footfall` feature | Role |
+|---|---|---|
+| `footfall` | | The entry point: the instrumentation API, and every part below as a module |
+| `footfall_core` | | The instrumentation API and its reference documentation |
+| `footfall_runtime` | `runtime` | Bounded in-process capture with snapshots and cursors |
+| `footfall_export` | `export` | Chrome Trace JSON for Perfetto and `chrome://tracing` |
+| `footfall_session` | `session` | Snapshots for consumers, the envelope codec, capture files |
+| `footfall_analysis` | `analysis` | Spans, frames, and per-frame counter changes |
+| `footfall_session_wtransport` | `wtransport` | Serve and attach to sessions over local WebTransport |
+| `footfall_tracing` | `tracing` | A `tracing` layer that forwards into Footfall |
+| `footfall_tracy` | `tracy` | A live Tracy backend |
+| `footfall_fanout` | | One backend that feeds two, such as a runtime and Tracy |
+| `footfall_memory` | | Scratch-buffer and cache metrics built on counters |
+
+The workspace also holds the [benchmarks](benchmarks/substrate) and the
+[examples](examples).
+
+## Status
+
+Footfall is not yet published. The session protocol is `1.0` and will be
+frozen at the first release; until then it may still change. The minimum
+supported Rust version is 1.88.
+
+## License
+
+Licensed under either of Apache License, Version 2.0 or MIT license at your
+option.
