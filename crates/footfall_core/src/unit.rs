@@ -13,7 +13,8 @@ pub enum Unit {
     Nanos,
     /// Microseconds.
     Micros,
-    /// Ratio represented as a scalar fraction.
+    /// Ratio in parts per million: `1_000_000` is `1.0`, so `250_000` is a
+    /// quarter.
     Ratio,
     /// Generic item count.
     Items,
