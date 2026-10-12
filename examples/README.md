@@ -12,7 +12,7 @@ crate; run one with `cargo run -p footfall_examples --bin <name>`, and add
 | [`attach`](src/bin/attach.rs) | The smallest useful tool: find a session, subscribe, and print each window's frames. Read this one for the client API. |
 | [`footfall_capture`](src/bin/footfall_capture.rs) | Record a session to a capture file, then summarize it or export it as one Chrome trace. |
 | [`tracing_bridge`](src/bin/tracing_bridge.rs) | Plain `tracing` spans and events, captured by Footfall without changing them. |
-| [`tracy_live`](src/bin/tracy_live.rs) | The demo renderer shown live in Tracy, with Footfall capturing the same emissions. |
+| [`tracy_live`](src/bin/tracy_live.rs) | The demo renderer shown live in Tracy 0.14, with Footfall capturing the same emissions. |
 
 ## Try it
 

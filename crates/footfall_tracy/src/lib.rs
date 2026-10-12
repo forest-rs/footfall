@@ -7,6 +7,10 @@
 //! first `TracyBackend` is used, not when the program starts, so linking this
 //! crate costs nothing in programs that never create one.
 //!
+//! It speaks the protocol of Tracy 0.14: connect with the Tracy 0.14
+//! profiler, since Tracy refuses clients of other versions. It uses the same
+//! `tracy-client` as `tracing-tracy` 0.12, so a program can use both.
+//!
 //! [`TracyBackend`] is a [`footfall_core::Backend`] that emits directly into `tracy-client`.
 //!
 //! It maps the parts of Footfall that Tracy represents naturally:

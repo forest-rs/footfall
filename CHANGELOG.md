@@ -43,6 +43,6 @@ The first release.
 ### Integrations
 
 - `footfall_tracing`: existing `tracing` spans and events, captured unchanged.
-- `footfall_tracy`: a live Tracy backend.
+- `footfall_tracy`: a live Tracy backend, for the Tracy 0.14 profiler.
 - `footfall_fanout`: one backend that feeds two.
 - `footfall_memory`: scratch-buffer and cache metrics built on counters.
