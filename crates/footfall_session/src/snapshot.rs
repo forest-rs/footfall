@@ -405,13 +405,33 @@ pub struct OwnedContextSnapshot {
     id: ContextId,
     /// Explicit semantic context labels.
     entries: Vec<OwnedContextEntry>,
+    /// Whether the context has been released.
+    released: bool,
 }
 
 impl OwnedContextSnapshot {
-    /// Creates a new `OwnedContextSnapshot`.
+    /// Creates a row for a live context.
     #[must_use]
     pub const fn new(id: ContextId, entries: Vec<OwnedContextEntry>) -> Self {
-        Self { id, entries }
+        Self {
+            id,
+            entries,
+            released: false,
+        }
+    }
+
+    /// Marks the row's context as released.
+    #[must_use]
+    pub const fn with_released(mut self, released: bool) -> Self {
+        self.released = released;
+        self
+    }
+
+    /// Returns `true` when the producer has released the context and keeps
+    /// it only while events recorded under it remain.
+    #[must_use]
+    pub const fn is_released(&self) -> bool {
+        self.released
     }
 
     /// Returns the canonical context id.
@@ -953,17 +973,18 @@ pub fn publish_changes<C: Consumer>(
     chunking: Chunking,
     consumer: &mut C,
 ) -> Result<(), C::Error> {
-    let previous_contexts: HashSet<ContextId> = previous
+    let previous_contexts: HashMap<ContextId, &ContextSnapshot> = previous
         .contexts()
         .iter()
-        .map(ContextSnapshot::id)
+        .map(|context| (context.id(), context))
         .collect();
     let current_contexts: HashSet<ContextId> =
         current.contexts().iter().map(ContextSnapshot::id).collect();
+    // A context's labels never change, but it can be released since.
     let contexts: Vec<_> = current
         .contexts()
         .iter()
-        .filter(|context| !previous_contexts.contains(&context.id()))
+        .filter(|context| previous_contexts.get(&context.id()) != Some(context))
         .cloned()
         .collect();
     let retired_contexts: Vec<_> = previous
@@ -1231,6 +1252,7 @@ impl From<Snapshot> for crate::OwnedSnapshot {
 fn owned_context_snapshot(snapshot: &ContextSnapshot) -> OwnedContextSnapshot {
     OwnedContextSnapshot {
         id: snapshot.id(),
+        released: snapshot.is_released(),
         entries: snapshot
             .context()
             .iter()

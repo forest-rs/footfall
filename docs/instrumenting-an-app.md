@@ -113,8 +113,10 @@ Typical label keys name the owners an app reasons about, such as `frame`,
 
 A handle is valid while its `RegisteredContext` is alive. Keep the
 `RegisteredContext` with its owner rather than copying the handle out of a
-temporary: once the context is released, later emissions with its handle are
-attributed to the root context.
+temporary. If a released handle is used anyway, the runtime attributes the
+events recorded with it to the root context and counts them in
+`Drops::unattributed`, and counts counter rows updated with it in
+`Drops::updated_after_release`, because an aggregated row cannot be split.
 
 Avoid building instrumentation around ad hoc strings when an id or integer will do.
 
@@ -163,9 +165,17 @@ and size each capacity for what the app emits:
 - `event_capacity`: two events per scope plus one per marker, flow step,
   message, or resource change, over the span of history you want to keep.
   When it is full, the oldest events are evicted.
-- `context_capacity`: registered contexts, live and recently released.
-  Released contexts are retired, with their counter rows, once no retained
-  event refers to them.
+- `context_capacity`: registered contexts, live and released. A released
+  context is retired, with its counter rows, only once every event recorded
+  before its release has been evicted, so with a large event buffer the
+  released contexts add up: size this for the live contexts plus those
+  released over the span of history the event buffer keeps. Snapshots mark
+  released contexts (`ContextSnapshot::is_released`), and `Drops::retired_rows`
+  counts the counter rows retired with them, which totals across contexts no
+  longer include.
+- The `tracing` layer registers a context for every span with numeric or
+  boolean fields, and releases it when the span closes, so busy spans count
+  against `context_capacity` too.
 
 Each `Drops` count names the capacity to raise.
 

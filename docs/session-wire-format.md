@@ -156,12 +156,14 @@ version, and rejects a different major version or a newer minor version.
 | process name | `string` | |
 | session name | `option<string>` | |
 | instance id | `u64` | random per runtime; see below |
+| process id | `u32` | the producer's operating-system process id, or `0` |
 | wall-clock anchor | `u64` | microseconds since the Unix epoch at runtime creation |
 | producer version | `string` | version of `footfall_runtime` |
 | level | `u8` | `0` off, `1` counters, `2` scoped, `3` trace |
 | counter capacity | `u64` | |
 | event capacity | `u64` | |
 | context capacity | `u64` | |
+| capture flags | `u8` | bit 0: counter samples recorded; bit 1: instrumentation compiled out; other bits zero |
 | kind | `u8` | `0` full, `1` changes; see below |
 | captured at | `u64` | microseconds since runtime creation |
 | window since | `u64` | first event sequence covered |
@@ -181,8 +183,9 @@ operating-system name as `option<string>`.
 
 ### Contexts
 
-A `count` of context rows. Each row is a `u64` context id and a `count` of
-labels, at most `footfall_core::CONTEXT_INLINE_CAPACITY`; each label is a key
+A `count` of context rows. Each row is a `u64` context id, a `u8` released
+flag (`1` when the producer has released the context and keeps it only while
+events recorded under it remain), and a `count` of labels, at most `footfall_core::CONTEXT_INLINE_CAPACITY`; each label is a key
 name `string` followed by a label value.
 
 A label value is a `u8` tag and its payload:
@@ -275,9 +278,11 @@ truncated by producers to `footfall_runtime::MESSAGE_TEXT_MAX_BYTES`.
 | Field | Type | Notes |
 |---|---|---|
 | refused contexts | `u64` | registrations refused, since runtime creation |
-| unattributed | `u64` | rows in this snapshot attributed to the root context |
+| unattributed | `u64` | rows and events in this snapshot attributed to the root context |
+| updated after release | `u64` | counter and histogram rows in this snapshot updated after their context was released |
 | counter updates | `u64` | updates dropped for lack of a counter key, since runtime creation |
 | evicted events | `u64` | events evicted to make room, since runtime creation |
+| retired rows | `u64` | counter and histogram rows removed with retired contexts, since runtime creation |
 
 ## Identities and Ordering
 
