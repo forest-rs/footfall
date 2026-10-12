@@ -258,16 +258,26 @@ async fn serve(runtime: &'static Runtime) -> std::io::Result<LocalSessionServer>
 ```
 
 Keep the returned server alive for as long as the process should be
-attachable. Consumers find it with `SessionClient::local_servers()`, and any
-number of them can read or subscribe at once without affecting each other or
-the runtime.
+attachable, and call `shutdown` on it before exiting so attached tools
+receive everything recorded up to the end. Tools find it with
+`SessionClient::discover_local()`, and any number of them can read or
+subscribe at once without affecting each other or the runtime.
+
+If the application also forwards `tracing` into Footfall, filter that layer
+to the application's own targets: the QUIC stack behind the session server
+traces every packet, and an unfiltered layer captures the work of serving the
+capture.
 
 The examples are the reference shape:
 
-- [session_server.rs](../examples/basic/src/session_server.rs)
-- [session_consumer.rs](../examples/basic/src/session_consumer.rs)
+- [demo_app](../examples/src/bin/demo_app.rs) instruments a renderer and
+  serves it
+- [attach](../examples/src/bin/attach.rs) is a minimal tool that follows a
+  session
+- [footfall_top](../examples/src/bin/footfall_top/main.rs) is a full live
+  view
 
 ## What Is Still Missing
 
-- there is no polished consumer UI yet
+- `footfall_top` is an example of a consumer UI, not a supported tool
 - the local attach path is intentionally localhost-first

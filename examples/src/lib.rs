@@ -1,0 +1,11 @@
+// Copyright 2026 the Footfall Authors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! Code shared by the Footfall examples: the demo workload, number
+//! formatting, and terminal output. Each example is a binary in `src/bin`;
+//! see the examples README for what each one shows.
+
+pub mod demo;
+pub mod format;
+pub mod report;
+pub mod style;
