@@ -205,6 +205,11 @@ export path. `CaptureWriter::write_owned` saves snapshots received from a
 session, for example each one a subscription delivers, and `CaptureReader`
 yields them in order.
 
+To analyse a session as it runs, `footfall_analysis::SpanTracker` and
+`FrameTracker` take each window in turn and carry open scopes, open frames,
+and the last counter samples from one to the next, so scopes and frames that
+span windows are paired without keeping the windows.
+
 `OwnedSnapshot::append` joins consecutive windows from one runtime instance
 into one snapshot, counting events neither window held as missed, and
 `footfall_export::to_chrome_trace_json` turns any `OwnedSnapshot` into a

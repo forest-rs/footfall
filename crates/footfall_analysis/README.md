@@ -10,6 +10,9 @@ live session, or loaded from a capture file:
 - `frames` pairs frame markers into frames with their durations and each
   counter's change over the frame, from the counter samples the runtime
   records at frame ends.
+- `SpanTracker` and `FrameTracker` follow scopes and frames across a
+  subscription's windows without keeping them, and report gaps and producer
+  restarts.
 
 Part of [Footfall](https://github.com/forest-rs/footfall). For instrumenting
 code, start with the [`footfall`](https://docs.rs/footfall) crate.
