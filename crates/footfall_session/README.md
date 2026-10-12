@@ -2,7 +2,7 @@
 
 The transport-neutral session model for consumers outside the instrumented
 process: versioned, chunked snapshot envelopes (contexts, counters,
-histograms, events) and a small live-session request and stream vocabulary.
+histograms, events).
 
 It also owns the envelope codec (`codec`), capture files that save
 snapshots for later (`capture`), and `OwnedSnapshot`, the reassembled form

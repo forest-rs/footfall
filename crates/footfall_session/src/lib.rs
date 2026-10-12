@@ -3,9 +3,9 @@
 
 //! Transport-neutral session envelopes for Footfall.
 //!
-//! This crate does not participate in hot-path emission. Its live-session
-//! control vocabulary is `no_std` with `alloc`; runtime snapshot publication is
-//! available through the `std` feature.
+//! This crate does not participate in hot-path emission. Without the `std`
+//! feature it only defines the protocol version and error codes; snapshot
+//! publication, the codec, and capture files need `std`.
 
 #![no_std]
 
@@ -19,7 +19,7 @@ mod assembled;
 pub mod capture;
 #[cfg(feature = "std")]
 pub mod codec;
-mod live;
+mod error;
 #[cfg(feature = "std")]
 mod snapshot;
 
@@ -27,6 +27,7 @@ mod snapshot;
 pub use assembled::{AppendError, AssembleError, OwnedSnapshot};
 // Types that snapshots carry as they are, re-exported so consumers can name
 // and match them without depending on `footfall_core` or `footfall_runtime`.
+pub use error::SessionErrorCode;
 pub use footfall_core::{
     ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, InstrumentationLevel, MarkerKind,
     MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, Unit,
@@ -34,11 +35,6 @@ pub use footfall_core::{
 #[cfg(feature = "std")]
 pub use footfall_runtime::{
     CaptureSettings, CounterKind, Drops, EventCursor, EventWindow, SnapshotMetadata, ThreadSnapshot,
-};
-pub use live::{
-    SessionError, SessionErrorCode, SessionMessage, SessionMethod, SessionRequest,
-    SessionRequestId, SessionResponse, SessionResult, SessionStreamEnd, SessionStreamId,
-    SessionStreamItem, SessionStreamStart, SessionStreamStatus,
 };
 #[cfg(feature = "std")]
 pub use snapshot::{
