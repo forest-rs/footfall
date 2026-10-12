@@ -3,6 +3,10 @@
 
 //! Live Tracy backend for Footfall.
 //!
+//! With the default `enable` feature, the Tracy profiler starts when the
+//! first `TracyBackend` is used, not when the program starts, so linking this
+//! crate costs nothing in programs that never create one.
+//!
 //! [`TracyBackend`] is a [`footfall_core::Backend`] that emits directly into `tracy-client`.
 //!
 //! It maps the parts of Footfall that Tracy represents naturally:

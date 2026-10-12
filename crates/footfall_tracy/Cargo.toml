@@ -14,7 +14,9 @@ description = "Live Tracy backend for the Footfall observability family."
 
 [features]
 default = ["enable", "broadcast"]
-enable = ["tracy-client/enable"]
+# `delayed-init` starts the Tracy profiler on first use, by a `TracyBackend`,
+# rather than before `main` in every program that links this crate.
+enable = ["tracy-client/delayed-init", "tracy-client/enable"]
 broadcast = ["enable", "tracy-client/broadcast"]
 ondemand = ["enable", "tracy-client/ondemand"]
 only-ipv4 = ["enable", "tracy-client/only-ipv4"]
