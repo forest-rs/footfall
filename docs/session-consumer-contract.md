@@ -247,24 +247,6 @@ That is enough to build:
 
 ## Recommended Separation
 
-Snapshot publication and live tool sessions are related but distinct.
-
-`footfall_session` owns a small transport-neutral live-session vocabulary:
-
-- request ids
-- stream ids
-- domain-qualified method names
-- generic request/response payload containers
-- generic ordered stream item containers
-- generic error/status containers
-
-Domain payloads stay outside Footfall. A UI toolkit, profiler, renderer, or asset
-pipeline can put typed payloads in those containers for same-process use, or an
-encoded byte payload for a network transport. This keeps Footfall responsible for
-correlation and session shape without turning it into an RPC framework or
-making it learn product-specific concepts such as element ids, layer ids, or
-resource inspector sections.
-
 Keep the UI outside this repo if it helps focus:
 
 - Footfall repo owns producers, collection, transport, and examples
