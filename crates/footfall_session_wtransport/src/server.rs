@@ -63,7 +63,7 @@ pub enum SessionRequestKind {
         /// Session id advertised by discovery.
         session_id: String,
         /// Where the consumer's previous read ended, from
-        /// [`OwnedSnapshotSummary::next_cursor`], or `None` for everything
+        /// [`next_cursor`](footfall_session::OwnedSnapshot::next_cursor), or `None` for everything
         /// retained. Pass it to `Runtime::snapshot_since`.
         since: Option<EventCursor>,
     },
@@ -567,7 +567,7 @@ impl Consumer for EncodingConsumer {
                 "too many session envelopes",
             ));
         }
-        let encoded = encode_borrowed_envelope(envelope)?;
+        let encoded = encode_envelope(envelope)?;
         validate_wire_len(
             encoded.len(),
             MAX_SESSION_ENVELOPE_BYTES,

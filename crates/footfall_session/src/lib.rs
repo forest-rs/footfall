@@ -15,6 +15,8 @@ extern crate std;
 
 #[cfg(feature = "std")]
 mod assembled;
+#[cfg(feature = "std")]
+pub mod codec;
 mod live;
 #[cfg(feature = "std")]
 mod snapshot;
