@@ -2,8 +2,53 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Byte encoding of session envelopes.
+//!
+//! This is the encoding the [wire-format document] specifies, shared by every
+//! transport and by capture files. Encoding fails with
+//! [`io::ErrorKind::InvalidInput`] for a value this protocol version has no
+//! encoding for or that exceeds a limit; decoding fails with
+//! [`io::ErrorKind::InvalidData`] for anything malformed, truncated, too
+//! large, or of an unsupported version.
+//!
+//! [wire-format document]: https://github.com/forest-rs/footfall/blob/main/docs/session-wire-format.md
 
-use super::*;
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
+use std::io;
+
+use footfall_core::{
+    ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, InstrumentationLevel, MarkerKind,
+    MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, Unit,
+};
+use footfall_runtime::CounterKind;
+
+use crate::{
+    CaptureSettings, Drops, Envelope, EnvelopeHeader, EventWindow, OwnedArgEntry,
+    OwnedContextEntry, OwnedContextSnapshot, OwnedCounterSnapshot, OwnedHistogramSnapshot,
+    OwnedLabelValue, OwnedObservation, OwnedSessionEnvelope, OwnedSessionPayload,
+    OwnedSnapshotSummary, OwnedTimedObservation, PROTOCOL_VERSION, Payload, ProtocolVersion,
+    RowCounts, SnapshotMetadata, ThreadSnapshot,
+};
+
+/// Maximum UTF-8 string payload accepted by the codec.
+pub const MAX_SESSION_STRING_BYTES: usize = 64 * 1024;
+/// Maximum encoded envelope accepted by the codec.
+pub const MAX_SESSION_ENVELOPE_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum rows accepted in one encoded envelope payload.
+pub const MAX_ROWS_PER_ENVELOPE: usize = 65_536;
+/// Maximum context labels accepted for one encoded context row.
+pub const MAX_CONTEXT_ENTRIES_PER_CONTEXT: usize = footfall_core::CONTEXT_INLINE_CAPACITY;
+/// Maximum per-instance arguments accepted for one encoded observation.
+pub const MAX_ARGS_PER_OBSERVATION: usize = footfall_core::ARGS_INLINE_CAPACITY;
+
+/// Newest protocol version this codec decodes.
+const CODEC_VERSION: ProtocolVersion = PROTOCOL_VERSION;
+
+#[cfg(test)]
+mod tests;
 
 // Payload tags, numbered in publication order.
 pub(crate) const TAG_SNAPSHOT_START: u8 = 0;
@@ -14,7 +59,8 @@ pub(crate) const TAG_HISTOGRAMS: u8 = 4;
 pub(crate) const TAG_EVENTS: u8 = 5;
 pub(crate) const TAG_SNAPSHOT_END: u8 = 6;
 
-pub(crate) fn encode_borrowed_envelope(envelope: Envelope<'_>) -> io::Result<Vec<u8>> {
+/// Encodes one envelope, as published by [`crate::publish_snapshot`].
+pub fn encode_envelope(envelope: Envelope<'_>) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     encode_header(&mut bytes, envelope.header());
     match envelope.payload() {
@@ -52,13 +98,12 @@ pub(crate) fn encode_borrowed_envelope(envelope: Envelope<'_>) -> io::Result<Vec
             encode_u8(&mut bytes, TAG_SNAPSHOT_END);
             encode_drops(&mut bytes, drops);
         }
-        _ => return Err(unsupported("payload")),
     }
     Ok(bytes)
 }
 
-#[cfg(test)]
-pub(crate) fn encode_envelope(envelope: &OwnedSessionEnvelope) -> io::Result<Vec<u8>> {
+/// Encodes one owned envelope, such as one received earlier.
+pub fn encode_owned_envelope(envelope: &OwnedSessionEnvelope) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     encode_header(&mut bytes, envelope.header());
     match envelope.payload() {
@@ -96,12 +141,12 @@ pub(crate) fn encode_envelope(envelope: &OwnedSessionEnvelope) -> io::Result<Vec
             encode_u8(&mut bytes, TAG_SNAPSHOT_END);
             encode_drops(&mut bytes, *drops);
         }
-        _ => return Err(unsupported("payload")),
     }
     Ok(bytes)
 }
 
-pub(crate) fn decode_envelope(bytes: &[u8]) -> io::Result<OwnedSessionEnvelope> {
+/// Decodes one envelope, checking its protocol version.
+pub fn decode_envelope(bytes: &[u8]) -> io::Result<OwnedSessionEnvelope> {
     validate_wire_len(
         bytes.len(),
         MAX_SESSION_ENVELOPE_BYTES,
@@ -320,7 +365,6 @@ pub(crate) fn decode_u64_as_usize(cursor: &mut Cursor<'_>) -> io::Result<usize> 
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "u64 value does not fit usize"))
 }
 
-#[cfg(test)]
 pub(crate) fn encode_contexts(
     bytes: &mut Vec<u8>,
     contexts: &[OwnedContextSnapshot],
@@ -398,7 +442,6 @@ pub(crate) fn encode_borrowed_label_value(
     Ok(())
 }
 
-#[cfg(test)]
 pub(crate) fn encode_counters(
     bytes: &mut Vec<u8>,
     counters: &[OwnedCounterSnapshot],
@@ -450,7 +493,6 @@ pub(crate) fn decode_counters(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedCo
     Ok(counters)
 }
 
-#[cfg(test)]
 pub(crate) fn encode_histograms(
     bytes: &mut Vec<u8>,
     histograms: &[OwnedHistogramSnapshot],
@@ -550,7 +592,6 @@ pub(crate) fn decode_histograms(
     Ok(histograms)
 }
 
-#[cfg(test)]
 pub(crate) fn encode_events(
     bytes: &mut Vec<u8>,
     events: &[OwnedTimedObservation],
@@ -695,7 +736,6 @@ pub(crate) fn encode_borrowed_observation(
     Ok(())
 }
 
-#[cfg(test)]
 pub(crate) fn encode_args(bytes: &mut Vec<u8>, args: &[OwnedArgEntry]) -> io::Result<()> {
     let count = u8::try_from(args.len().min(MAX_ARGS_PER_OBSERVATION))
         .expect("bounded args count fits into u8");
@@ -754,7 +794,6 @@ pub(crate) fn decode_drops(cursor: &mut Cursor<'_>) -> io::Result<Drops> {
         .with_evicted_events(decode_u64(cursor)?))
 }
 
-#[cfg(test)]
 pub(crate) fn encode_label_value(bytes: &mut Vec<u8>, value: &OwnedLabelValue) -> io::Result<()> {
     match value {
         OwnedLabelValue::Unsigned(value) => {
@@ -773,7 +812,6 @@ pub(crate) fn encode_label_value(bytes: &mut Vec<u8>, value: &OwnedLabelValue) -
             encode_u8(bytes, 3);
             encode_string(bytes, value)?;
         }
-        _ => return Err(unsupported("label value")),
     }
     Ok(())
 }
@@ -791,7 +829,6 @@ pub(crate) fn decode_label_value(cursor: &mut Cursor<'_>) -> io::Result<OwnedLab
     }
 }
 
-#[cfg(test)]
 pub(crate) fn encode_observation(
     bytes: &mut Vec<u8>,
     observation: &OwnedObservation,
@@ -889,7 +926,6 @@ pub(crate) fn encode_observation(
             encode_string(bytes, text)?;
             encode_args(bytes, args)?;
         }
-        _ => return Err(unsupported("observation")),
     }
     Ok(())
 }
@@ -1104,20 +1140,6 @@ pub(crate) fn validate_wire_len(len: usize, max_len: usize, what: &'static str) 
     Err(io::Error::new(
         io::ErrorKind::InvalidData,
         format!("{what} length {len} exceeds maximum {max_len}"),
-    ))
-}
-
-pub(crate) fn validate_wire_count(
-    count: u64,
-    max_count: u64,
-    what: &'static str,
-) -> io::Result<()> {
-    if count <= max_count {
-        return Ok(());
-    }
-    Err(io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!("{what} count {count} exceeds maximum {max_count}"),
     ))
 }
 

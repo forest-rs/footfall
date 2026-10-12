@@ -202,3 +202,44 @@ pub(crate) fn map_finish_error(result: Result<(), StreamWriteError>) -> io::Resu
         Err(error) => Err(io::Error::other(error.to_string())),
     }
 }
+
+pub(crate) fn encode_u8(bytes: &mut Vec<u8>, value: u8) {
+    bytes.push(value);
+}
+
+pub(crate) fn encode_u32(bytes: &mut Vec<u8>, value: u32) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+pub(crate) fn encode_u64(bytes: &mut Vec<u8>, value: u64) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+pub(crate) fn encode_string(bytes: &mut Vec<u8>, value: &str) -> io::Result<()> {
+    validate_wire_len(value.len(), MAX_SESSION_STRING_BYTES, "session string")?;
+    let len = u32::try_from(value.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "string exceeds u32 length"))?;
+    encode_u32(bytes, len);
+    bytes.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+pub(crate) fn validate_wire_len(len: usize, max: usize, what: &str) -> io::Result<()> {
+    if len > max {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{what} is {len} bytes, more than the limit of {max}"),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_wire_count(count: u64, max: u64, what: &str) -> io::Result<()> {
+    if count > max {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{count} {what}, more than the limit of {max}"),
+        ));
+    }
+    Ok(())
+}
