@@ -15,7 +15,7 @@
 //! assert!(json.starts_with('{'));
 //! ```
 
-use footfall_core::{ContextId, FlowPhase, MarkerKind, MarkerPhase, ResourceId, ScopeToken};
+use footfall_core::{ContextId, FlowPhase, MarkerKind, MarkerPhase, ResourceId, ScopeToken, Unit};
 use footfall_runtime::CounterKind;
 use footfall_session::{
     OwnedArgEntry, OwnedContextEntry, OwnedCounterSnapshot, OwnedHistogramSnapshot,
@@ -315,6 +315,23 @@ fn wall_micros(snapshot: &OwnedSnapshot, at_micros: u64) -> u64 {
         .saturating_add(at_micros)
 }
 
+/// Writes a counter value as its series: ratios, stored in parts per
+/// million, as the fraction they stand for, and everything else as is.
+fn write_counter_value(writer: &mut impl Write, unit: Unit, value: u64) -> fmt::Result {
+    write_json_string(writer, unit.as_str())?;
+    writer.write_char(':')?;
+    if unit == Unit::Ratio {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "ratios above 2^53 parts per million do not occur"
+        )]
+        let fraction = value as f64 / 1_000_000.0;
+        writer.write_fmt(format_args!("{fraction}"))
+    } else {
+        writer.write_fmt(format_args!("{value}"))
+    }
+}
+
 fn usize_to_u64(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }
@@ -359,7 +376,7 @@ fn build_counter_event(
     write_json_field_u64(&mut json, "tid", AGGREGATE_TID)?;
     // Counter args become plotted series, so they carry only the value.
     json.push_str(",\"args\":{");
-    write_json_field_u64(&mut json, counter.unit().as_str(), counter.value())?;
+    write_counter_value(&mut json, counter.unit(), counter.value())?;
     json.push_str("}}");
 
     Ok(json)
@@ -733,7 +750,7 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_u64(&mut json, "tid", AGGREGATE_TID)?;
             json.push_str(",\"args\":{");
-            write_json_field_u64(&mut json, unit.as_str(), *value)?;
+            write_counter_value(&mut json, *unit, *value)?;
             json.push_str("}}");
             Ok(Exported::Event(json))
         }
@@ -1022,6 +1039,24 @@ mod tests {
             .into_iter()
             .fold(builder, |builder, event| builder.event(event))
             .build()
+    }
+
+    #[test]
+    fn ratios_export_as_fractions() {
+        let snapshot = snapshot_with(
+            vec![CounterSnapshot::new(
+                CounterDescId::new(1),
+                "hit_rate",
+                Unit::Ratio,
+                ContextId::new(0),
+                CounterKind::Gauge,
+                250_000,
+                3,
+            )],
+            vec![],
+        );
+        let json = to_chrome_trace_json(&snapshot.into());
+        assert!(json.contains("\"args\":{\"ratio\":0.25}"), "{json}");
     }
 
     #[test]

@@ -113,6 +113,10 @@ let next = client.fetch(session.id(), Some(snapshot.next_cursor())).await?;
 # }
 ```
 
+Each producer registers the hash of its own certificate with its URL, so a
+consumer can reach every local producer even when they created different
+identities or one renewed the shared identity while others run.
+
 Session ids are unique per producer, not per machine, so
 `LocalDiscovery::session` fails, listing the producers, when several offer
 the same id; each announcement carries the producer's process name, process
@@ -191,8 +195,13 @@ takes between calls, the next snapshot is fresh, covers everything since the
 last, and counts events evicted in the meantime as `missed`. After the first
 snapshot the server sends only what changed, and `Subscription::next`
 applies it, so each snapshot it returns is full and current while unchanged
-contexts and counters cross the wire once. When the producer stops,
-`Subscription::next` fails with `ClientError::Closed`. Polling with `fetch`
+contexts and counters cross the wire once. `Subscription::last_window_bytes` reports what each window cost on the wire.
+A producer that stops with `LocalSessionServer::shutdown` sends every
+subscriber a final window covering everything up to the stop, after which
+`Subscription::next` fails with `ClientError::Closed`; one dropped without
+shutting down, or one that crashes or is killed, loses the events since the
+last window, and a killed producer shows up only as `ClientError::TimedOut`
+once the interval and the client's timeout have passed. Polling with `fetch`
 and the previous snapshot's cursor reads the same windows without holding a
 stream open.
 

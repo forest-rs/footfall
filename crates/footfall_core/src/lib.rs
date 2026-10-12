@@ -214,7 +214,7 @@ macro_rules! scope_desc {
 
 /// Begins a scope that lasts until the end of the enclosing block.
 ///
-/// This binds the guard [`scope`] returns to a hidden variable, so the scope
+/// This binds the guard [`scope()`] returns to a hidden variable, so the scope
 /// cannot end early by mistake, as `let _ = scope(..)` would make it. Pass
 /// [`Args`] as a third argument to record per-instance values.
 ///
