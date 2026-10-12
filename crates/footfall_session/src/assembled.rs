@@ -126,6 +126,28 @@ impl OwnedSnapshot {
         Ok(snapshot)
     }
 
+    /// Builds a snapshot from its parts; see the `From<&Snapshot>`
+    /// conversion for runtime snapshots.
+    pub(crate) const fn from_parts(
+        summary: OwnedSnapshotSummary,
+        threads: Vec<ThreadSnapshot>,
+        contexts: Vec<OwnedContextSnapshot>,
+        counters: Vec<OwnedCounterSnapshot>,
+        histograms: Vec<OwnedHistogramSnapshot>,
+        events: Vec<OwnedTimedObservation>,
+        drops: Drops,
+    ) -> Self {
+        Self {
+            summary,
+            threads,
+            contexts,
+            counters,
+            histograms,
+            events,
+            drops,
+        }
+    }
+
     /// Returns the metadata identifying the producing runtime.
     #[must_use]
     pub const fn metadata(&self) -> &SnapshotMetadata {

@@ -129,7 +129,7 @@ use footfall_runtime::Runtime;
 
 fn write_trace(runtime: &Runtime) -> std::io::Result<()> {
     let snapshot = runtime.snapshot();
-    footfall_export::write_chrome_trace_file(&snapshot, "trace.json")
+    footfall_export::write_chrome_trace_file(&snapshot.into(), "trace.json")
 }
 ```
 

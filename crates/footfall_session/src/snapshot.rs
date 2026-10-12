@@ -996,6 +996,57 @@ impl Consumer for CollectingConsumer {
     }
 }
 
+impl From<&Snapshot> for crate::OwnedSnapshot {
+    /// Converts a runtime snapshot into the form consumers receive, as if it
+    /// had been published and reassembled.
+    fn from(snapshot: &Snapshot) -> Self {
+        let events: Vec<_> = snapshot
+            .events()
+            .iter()
+            .filter_map(owned_timed_observation)
+            .collect();
+        let counts = RowCounts::new(
+            snapshot.threads().len(),
+            snapshot.contexts().len(),
+            snapshot.counters().len(),
+            snapshot.histograms().len(),
+            events.len(),
+        );
+        Self::from_parts(
+            OwnedSnapshotSummary::new(
+                snapshot.metadata().clone(),
+                snapshot.captured_at_micros(),
+                snapshot.window(),
+                counts,
+            ),
+            snapshot.threads().to_vec(),
+            snapshot
+                .contexts()
+                .iter()
+                .map(owned_context_snapshot)
+                .collect(),
+            snapshot
+                .counters()
+                .iter()
+                .map(owned_counter_snapshot)
+                .collect(),
+            snapshot
+                .histograms()
+                .iter()
+                .map(owned_histogram_snapshot)
+                .collect(),
+            events,
+            snapshot.drops(),
+        )
+    }
+}
+
+impl From<Snapshot> for crate::OwnedSnapshot {
+    fn from(snapshot: Snapshot) -> Self {
+        Self::from(&snapshot)
+    }
+}
+
 fn owned_context_snapshot(snapshot: &ContextSnapshot) -> OwnedContextSnapshot {
     OwnedContextSnapshot {
         id: snapshot.id(),
