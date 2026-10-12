@@ -43,7 +43,8 @@ use footfall_core::{ContextId, CounterDescId, MarkerKind, MarkerPhase, ScopeToke
 use footfall_runtime::CounterKind;
 pub use footfall_session::{OwnedArgEntry, OwnedLabelValue, OwnedObservation, OwnedSnapshot};
 
-/// One scope that began and ended within a snapshot.
+/// One scope that began and ended within a snapshot, as [`Spans::spans`] and
+/// [`Spans::within`] return it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Span {
     name: String,
@@ -114,7 +115,8 @@ impl Span {
     }
 }
 
-/// A scope that began in a snapshot but had not ended.
+/// A scope that began in a snapshot but had not ended, as [`Spans::open`]
+/// returns it. A [`SpanTracker`] completes it when a later window has its end.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OpenSpan {
     name: String,
@@ -150,6 +152,9 @@ impl OpenSpan {
 }
 
 /// The scopes of one snapshot, paired by token.
+///
+/// [`Spans::from_snapshot`] builds one from a single snapshot, and
+/// [`SpanTracker::push`] from each window of a subscription.
 ///
 /// A snapshot holds a window of events, so some scopes are cut off: those
 /// that began but had not ended when the snapshot was taken are listed by
@@ -261,7 +266,9 @@ pub struct SpanTracker {
     continuity: Continuity,
 }
 
-/// How a snapshot followed the ones a tracker saw before it.
+/// How a snapshot followed the ones a tracker saw before it, as
+/// [`SpanTracker::continuity`] and [`FrameTracker::continuity`] return it
+/// after each push.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Continuity {
     /// The first snapshot the tracker saw.
@@ -386,7 +393,8 @@ fn continuity(
     }
 }
 
-/// Statistics over a group of completed scopes.
+/// Statistics over a group of completed scopes, as [`Spans::by_name`] and
+/// [`Spans::by_label`] return them.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SpanStats {
     count: u64,
@@ -451,6 +459,9 @@ impl SpanStats {
 }
 
 /// One frame, from a frame begin marker to the next frame end marker.
+///
+/// [`frames`] returns the frames of one snapshot, and [`FrameTracker::push`]
+/// those completed by each window of a subscription.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame {
     sequence: u64,
@@ -526,7 +537,8 @@ impl Frame {
     }
 }
 
-/// A counter or gauge a frame updated.
+/// A counter or gauge a frame updated, as [`Frame::counters`] and
+/// [`Frame::counter`] return it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrameCounter {
     desc_id: CounterDescId,

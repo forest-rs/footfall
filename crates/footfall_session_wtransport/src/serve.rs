@@ -20,6 +20,8 @@ use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
 
 /// A runtime offered to consumers under a session id.
+///
+/// Pass them to [`LocalSessionServer::start`] or [`SessionServer::serve`].
 #[derive(Clone, Debug)]
 pub struct ServedSession {
     id: String,

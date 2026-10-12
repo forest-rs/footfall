@@ -1,7 +1,49 @@
 // Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Bounded runtime collection for Footfall.
+//! Bounded in-process capture for Footfall.
+//!
+//! A [`Runtime`] is a [`Backend`]: install it once with
+//! [`RuntimeBuilder::install_global`] and every emission in the process lands
+//! in it. It keeps cumulative counters and histograms and a recent window of
+//! timestamped events in fixed-capacity buffers, so memory use is bounded
+//! however long the process runs; whatever does not fit is counted in
+//! [`Drops`].
+//!
+//! Reading never drains it. [`Runtime::snapshot`] returns everything
+//! retained as a [`Snapshot`]; [`Runtime::snapshot_since`] returns only the
+//! events recorded since an [`EventCursor`], so any number of readers can
+//! follow the same runtime.
+//!
+//! ```
+//! use footfall_core::{ContextHandle, ScopeDesc, frame_begin, frame_end, scope};
+//! use footfall_runtime::Runtime;
+//!
+//! static RENDER: ScopeDesc = ScopeDesc::new("render");
+//!
+//! let runtime = Runtime::builder()
+//!     .process_name("my_app")
+//!     .install_global()
+//!     .expect("no other backend is installed");
+//!
+//! let cursor = runtime.cursor();
+//! frame_begin(ContextHandle::ROOT);
+//! drop(scope(&RENDER, ContextHandle::ROOT));
+//! frame_end(ContextHandle::ROOT);
+//!
+//! // Only what happened since the cursor: the frame and its scope.
+//! let snapshot = runtime.snapshot_since(cursor);
+//! assert_eq!(snapshot.window().missed(), 0);
+//! assert!(!snapshot.events().is_empty());
+//! // The next read starts where this one ended.
+//! let _later = runtime.snapshot_since(snapshot.next_cursor());
+//! ```
+//!
+//! A snapshot is a plain value. `footfall_export` writes it as a Chrome
+//! trace, `footfall_session` turns it into an `OwnedSnapshot` for consumers
+//! and capture files, and `footfall_session_wtransport` serves the runtime
+//! to other processes. The `footfall` crate re-exports all of these behind
+//! features.
 
 use footfall_core::{
     Args, Backend, Context, ContextHandle, ContextId, CounterDesc, CounterDescId, EventDesc,
@@ -32,6 +74,11 @@ static GLOBAL_RUNTIME: std::sync::OnceLock<&'static Runtime> = std::sync::OnceLo
 pub const MESSAGE_TEXT_MAX_BYTES: usize = 256;
 
 /// In-process bounded collector for counters and timestamped observation records.
+///
+/// A runtime is a [`Backend`]: install it with
+/// [`install_global`](RuntimeBuilder::install_global) so instrumented code
+/// reaches it, or call its [`Backend`] methods directly, as tests do.
+/// [`Runtime::global`] returns the installed runtime.
 ///
 /// Build one with [`Runtime::builder`], which documents every setting and
 /// its default.
@@ -966,6 +1013,11 @@ impl RuntimeBuilder {
 /// Snapshot of contexts, counters, histograms, and events retained by a
 /// [`Runtime`].
 ///
+/// [`Runtime::snapshot`] and [`Runtime::snapshot_since`] return one. Read it
+/// directly, or hand it on: `footfall_session::OwnedSnapshot` converts from
+/// it for consumers and capture files, and `footfall_export` writes that as a
+/// Chrome trace. Build one by hand with [`Snapshot::builder`].
+///
 /// Descriptor ids in a snapshot ([`ScopeDescId`], [`CounterDescId`],
 /// [`EventDescId`], and [`ResourceKindId`]) are opaque: dense integers from
 /// `1`, shared across descriptor kinds, assigned in first-seen order and
@@ -1160,8 +1212,11 @@ impl SnapshotBuilder {
     }
 }
 
-/// Position in one runtime instance's event sequence; see
-/// [`Runtime::snapshot_since`].
+/// Position in one runtime instance's event sequence.
+///
+/// [`Runtime::cursor`] returns the current position and
+/// [`Snapshot::next_cursor`] the position after a snapshot; pass either to
+/// [`Runtime::snapshot_since`] to read only newer events.
 ///
 /// A cursor names the runtime instance it belongs to, so a cursor kept across
 /// a producer restart is recognized as foreign rather than silently skipping
@@ -1195,7 +1250,8 @@ impl EventCursor {
     }
 }
 
-/// The range of event sequence numbers a [`Snapshot`] covers.
+/// The range of event sequence numbers a [`Snapshot`] covers, as
+/// [`Snapshot::window`] returns it.
 ///
 /// A snapshot's events are the retained events numbered from
 /// [`since`](Self::since) up to, but not including, [`next`](Self::next).
@@ -1243,7 +1299,8 @@ impl EventWindow {
     }
 }
 
-/// What a [`Runtime`] could not keep or attribute.
+/// What a [`Runtime`] could not keep or attribute, as [`Snapshot::drops`]
+/// returns it.
 ///
 /// Each count names the capacity to raise; see [`Runtime`] for the overflow
 /// rules. Every count except [`unattributed`](Self::unattributed) is
@@ -1350,7 +1407,8 @@ impl Drops {
     /// Counter rows aggregate, so the runtime cannot move just the late
     /// updates to the root context: the row keeps its released context, and
     /// this count says its value includes updates made with a handle that
-    /// was no longer valid. Keep a `RegisteredContext` alive for as long as
+    /// was no longer valid. Keep a
+    /// [`RegisteredContext`](footfall_core::RegisteredContext) alive for as long as
     /// its handle is used.
     #[must_use]
     pub const fn updated_after_release(&self) -> u64 {
@@ -1401,7 +1459,12 @@ impl Drops {
     }
 }
 
-/// Metadata describing the runtime that produced a snapshot.
+/// Which runtime produced a snapshot and how it was capturing.
+///
+/// [`Snapshot::metadata`] returns it: the process and session names, the
+/// runtime instance and process ids, the wall-clock anchor for event times,
+/// the producer version, and the [`CaptureSettings`]. Pass one to
+/// [`Snapshot::builder`] to build a snapshot by hand.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SnapshotMetadata {
     process_name: String,
@@ -1523,7 +1586,7 @@ impl SnapshotMetadata {
 }
 
 /// The level and capacities a [`Runtime`] was capturing with when it took a
-/// snapshot.
+/// snapshot, as [`SnapshotMetadata::capture`] returns it.
 ///
 /// The level tells a reader what an empty snapshot means: no events at
 /// [`InstrumentationLevel::Counters`] means scopes were not being captured,
@@ -1614,7 +1677,8 @@ impl CaptureSettings {
     }
 }
 
-/// One thread that recorded events in a snapshot.
+/// One thread that recorded events in a snapshot, as [`Snapshot::threads`]
+/// returns it; events refer to it by [`TimedObservation::thread_id`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ThreadSnapshot {
     id: u64,
@@ -1642,7 +1706,8 @@ impl ThreadSnapshot {
     }
 }
 
-/// One canonical context carried by a snapshot.
+/// One registered context, as [`Snapshot::contexts`] returns it; rows and
+/// events refer to it by [`ContextId`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContextSnapshot {
     /// Canonical context id.
@@ -1692,7 +1757,8 @@ impl ContextSnapshot {
     }
 }
 
-/// One aggregated counter or gauge value.
+/// One counter or gauge under one context, as [`Snapshot::counters`]
+/// returns it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CounterSnapshot {
     /// Opaque counter descriptor id; see [`Snapshot`].
@@ -1801,7 +1867,8 @@ impl CounterSnapshot {
     }
 }
 
-/// Distinguishes additive counters from gauges.
+/// Whether a [`CounterSnapshot`] adds up (a counter) or holds the latest
+/// value (a gauge); see [`CounterSnapshot::kind`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub enum CounterKind {
@@ -1814,7 +1881,7 @@ pub enum CounterKind {
 /// Number of power-of-two buckets carried by a histogram.
 pub const HISTOGRAM_BUCKET_COUNT: usize = 64;
 
-/// One aggregated value distribution.
+/// One histogram under one context, as [`Snapshot::histograms`] returns it.
 ///
 /// Bucket `i` counts samples whose bit length is `i`: bucket `0` holds zero
 /// values, bucket `1` holds `1`, bucket `2` holds `2..=3`, and so on. The top
@@ -1964,7 +2031,9 @@ struct HistogramKey {
     context_id: ContextId,
 }
 
-/// Observation paired with a timestamp relative to runtime creation.
+/// One retained event, as [`Snapshot::events`] returns it: an
+/// [`Observation`] with its thread, sequence number, and timestamp relative
+/// to runtime creation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TimedObservation {
     /// Observation time in microseconds since runtime creation.
@@ -2038,7 +2107,7 @@ impl TimedObservation {
     }
 }
 
-/// One retained observation record.
+/// What one event recorded, as [`TimedObservation::observation`] returns it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum Observation {

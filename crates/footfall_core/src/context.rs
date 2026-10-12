@@ -7,9 +7,16 @@ use core::fmt;
 /// Maximum number of inline labels stored in a [`Context`].
 pub const CONTEXT_INLINE_CAPACITY: usize = 8;
 
-/// An explicit semantic attribution value passed through instrumented code.
+/// The semantic owner of observations, such as a pass, a layer, or a cache.
 ///
 /// A context is a small, copyable set of labels keyed by static [`LabelKey`]s.
+/// Build one with [`context!`](crate::context!), [`Context::root`] and
+/// [`Context::with`], or by extending a registered one
+/// ([`RegisteredContext::context`](crate::RegisteredContext::context)).
+/// Emissions do not take a context: register it once with
+/// [`RegisteredContext::new`](crate::RegisteredContext::new), `LazyContext`,
+/// or [`register_context`](crate::register_context), and emit with the
+/// [`ContextHandle`](crate::ContextHandle) that returns.
 /// Labels keep their append order; setting an existing key replaces its value
 /// in place.
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
@@ -129,7 +136,7 @@ impl Default for Context {
     }
 }
 
-/// One semantic label stored in a [`Context`].
+/// One semantic label stored in a [`Context`], as [`Context::iter`] yields it.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ContextEntry {
     // `None` only in unused slots, which keeps an empty context all-zero so
@@ -169,7 +176,8 @@ impl ContextEntry {
     }
 }
 
-/// Returned when a [`Context`] exceeds its inline capacity.
+/// Returned by [`Context::try_with`] when a new key would exceed
+/// [`CONTEXT_INLINE_CAPACITY`] labels.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ContextCapacityError;

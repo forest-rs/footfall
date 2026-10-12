@@ -1,7 +1,12 @@
 // Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-/// Unit associated with a counter or gauge descriptor.
+/// The unit of a counter, gauge, or histogram's values.
+///
+/// A [`CounterDesc`](crate::CounterDesc) carries one: its constructors such
+/// as [`CounterDesc::bytes`](crate::CounterDesc::bytes) choose it, and
+/// [`CounterDesc::unit`](crate::CounterDesc::unit) returns it. Snapshot rows
+/// repeat it so consumers can label values.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum Unit {

@@ -18,7 +18,13 @@ use footfall_runtime::{
 
 use crate::{PROTOCOL_VERSION, ProtocolVersion};
 
-/// Chunking policy for snapshot publication.
+/// How many rows of each kind go in one envelope when a snapshot is
+/// published.
+///
+/// Pass one to [`publish_snapshot`], [`publish_changes`],
+/// [`collect_snapshot`], or [`OwnedSnapshot::to_envelopes`](crate::OwnedSnapshot::to_envelopes);
+/// servers take one per served session. [`Chunking::default`] suits local
+/// transports.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Chunking {
     /// Maximum number of contexts in one envelope. `0` means "all remaining".
@@ -81,7 +87,9 @@ impl Default for Chunking {
     }
 }
 
-/// Header common to every session envelope.
+/// Header common to every session envelope: its protocol version, sequence,
+/// and chunk index. [`Envelope::header`] and [`OwnedSessionEnvelope::header`]
+/// return it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EnvelopeHeader {
     protocol_version: ProtocolVersion,
@@ -111,7 +119,9 @@ impl EnvelopeHeader {
     }
 }
 
-/// Number of rows of each kind a published snapshot carries.
+/// Number of rows of each kind a published snapshot carries, as
+/// [`SnapshotSummary::counts`] and [`OwnedSnapshotSummary::counts`] return it,
+/// or [`RowCounts::of`] computes it for a runtime snapshot.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RowCounts {
     threads: usize,
@@ -196,6 +206,10 @@ impl RowCounts {
 
 /// Whether a published snapshot holds the producer's whole state or only what
 /// changed since the previous snapshot of a subscription.
+///
+/// [`OwnedSnapshot::kind`](crate::OwnedSnapshot::kind) returns it.
+/// [`OwnedSnapshot::apply`](crate::OwnedSnapshot::apply) folds a `Changes`
+/// snapshot into the state it changes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SnapshotKind {
     /// Every context, thread, counter, and histogram the producer holds.
@@ -210,7 +224,8 @@ pub enum SnapshotKind {
     Changes,
 }
 
-/// Borrowed description of one published snapshot, sent before its rows.
+/// Borrowed description of one published snapshot, sent before its rows as
+/// [`Payload::SnapshotStart`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SnapshotSummary<'a> {
     metadata: &'a SnapshotMetadata,
@@ -270,7 +285,9 @@ impl<'a> SnapshotSummary<'a> {
     }
 }
 
-/// One versioned session envelope delivered to a consumer.
+/// One versioned session envelope, borrowed from the snapshot being
+/// published; [`publish_snapshot`] and [`publish_changes`] pass each one to
+/// [`Consumer::consume`]. [`Envelope::into_owned`] copies it out.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Envelope<'a> {
     /// Common envelope header.
@@ -299,7 +316,7 @@ impl<'a> Envelope<'a> {
     }
 }
 
-/// Borrowed payload variants for snapshot publication.
+/// What one borrowed envelope carries, as [`Envelope::payload`] returns it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum Payload<'a> {
@@ -323,7 +340,11 @@ pub enum Payload<'a> {
     SnapshotEnd(Drops),
 }
 
-/// Consumer of versioned session envelopes.
+/// Receives the envelopes of a snapshot as it is published.
+///
+/// Implement it to send envelopes over a transport or store them, and pass it
+/// to [`publish_snapshot`] or [`publish_changes`], which call
+/// [`consume`](Self::consume) once per envelope, in order.
 pub trait Consumer {
     /// Error returned by this consumer when publication fails.
     type Error;
@@ -332,7 +353,8 @@ pub trait Consumer {
     fn consume(&mut self, envelope: Envelope<'_>) -> Result<(), Self::Error>;
 }
 
-/// Owned description of one published snapshot, sent before its rows.
+/// Owned description of one published snapshot, sent before its rows as
+/// [`OwnedSessionPayload::SnapshotStart`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedSnapshotSummary {
     metadata: SnapshotMetadata,
@@ -398,7 +420,8 @@ impl OwnedSnapshotSummary {
     }
 }
 
-/// Owned context row suitable for transport.
+/// One registered context, as
+/// [`OwnedSnapshot::contexts`](crate::OwnedSnapshot::contexts) returns it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedContextSnapshot {
     /// Canonical context id.
@@ -447,7 +470,7 @@ impl OwnedContextSnapshot {
     }
 }
 
-/// Owned context entry suitable for transport.
+/// One label of a context, as [`OwnedContextSnapshot::entries`] returns it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedContextEntry {
     /// Semantic label key name.
@@ -476,7 +499,9 @@ impl OwnedContextEntry {
     }
 }
 
-/// Owned label value suitable for transport.
+/// The value of one context label or event argument, as
+/// [`OwnedContextEntry::value`], [`OwnedArgEntry::value`], and
+/// [`OwnedSnapshot::label`](crate::OwnedSnapshot::label) return it.
 ///
 /// Values order by kind and then by value, so they can key sorted maps.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -505,7 +530,8 @@ impl core::fmt::Display for OwnedLabelValue {
     }
 }
 
-/// Owned per-instance argument suitable for transport.
+/// One argument recorded with a scope or message, carried by the
+/// [`OwnedObservation`] variants that have arguments.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedArgEntry {
     /// Argument key.
@@ -534,7 +560,8 @@ impl OwnedArgEntry {
     }
 }
 
-/// Owned counter row suitable for transport.
+/// One counter or gauge under one context, as
+/// [`OwnedSnapshot::counters`](crate::OwnedSnapshot::counters) returns it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedCounterSnapshot {
     /// Counter descriptor id.
@@ -619,7 +646,8 @@ impl OwnedCounterSnapshot {
     }
 }
 
-/// Owned histogram row suitable for transport.
+/// One histogram under one context, as
+/// [`OwnedSnapshot::histograms`](crate::OwnedSnapshot::histograms) returns it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedHistogramSnapshot {
     /// Counter descriptor id.
@@ -734,7 +762,8 @@ impl OwnedHistogramSnapshot {
     }
 }
 
-/// Owned timestamped observation suitable for transport.
+/// One event with its thread, sequence number, and timestamp, as
+/// [`OwnedSnapshot::events`](crate::OwnedSnapshot::events) returns it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedTimedObservation {
     /// Observation time in microseconds since runtime creation.
@@ -790,7 +819,8 @@ impl OwnedTimedObservation {
     }
 }
 
-/// Owned observation payload suitable for transport.
+/// What one event recorded, as [`OwnedTimedObservation::observation`]
+/// returns it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum OwnedObservation {
@@ -898,7 +928,13 @@ pub enum OwnedObservation {
     },
 }
 
-/// Owned versioned session envelope suitable for transport and storage.
+/// One versioned session envelope, owned, for transport and storage.
+///
+/// [`collect_snapshot`], [`OwnedSnapshot::to_envelopes`](crate::OwnedSnapshot::to_envelopes),
+/// [`Envelope::into_owned`], and [`codec::decode_envelope`](crate::codec::decode_envelope)
+/// produce them; [`OwnedSnapshot::from_envelopes`](crate::OwnedSnapshot::from_envelopes)
+/// reassembles a snapshot from them, and
+/// [`codec::encode_owned_envelope`](crate::codec::encode_owned_envelope) encodes one.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedSessionEnvelope {
     /// Common envelope header.
@@ -927,7 +963,8 @@ impl OwnedSessionEnvelope {
     }
 }
 
-/// Owned payload variants for snapshot publication.
+/// What one owned envelope carries, as [`OwnedSessionEnvelope::payload`]
+/// returns it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum OwnedSessionPayload {

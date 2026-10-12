@@ -3,7 +3,13 @@
 
 #![no_std]
 
-//! Memory-oriented helpers for Footfall.
+//! Memory-oriented helpers for Footfall, built on counters.
+//!
+//! - [`CacheStats`] reports a cache's resident bytes, hits, misses, and
+//!   evictions through the counters named by a [`CacheMetrics`].
+//! - `TrackedScratchVec`, with the `alloc` feature, is a `Vec` that reports
+//!   its bytes, peak, and growth through the counters named by a
+//!   `ScratchMetrics`.
 
 #[cfg(feature = "alloc")]
 extern crate alloc;

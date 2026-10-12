@@ -139,7 +139,11 @@ impl Drop for ScopeGuard {
     }
 }
 
-/// Coarse marker kind used to structure a trace.
+/// The unit of work a marker delimits: a frame, a transaction, or a pass.
+///
+/// [`frame_begin`], [`transaction_begin`], [`pass_begin`], and their ends
+/// pass it to [`Backend::frame_marker`]; call [`frame_marker`] to choose it
+/// at run time.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub enum MarkerKind {
@@ -151,7 +155,7 @@ pub enum MarkerKind {
     Pass,
 }
 
-/// Boundary phase for a coarse trace marker.
+/// Whether a marker begins or ends its unit of work; see [`MarkerKind`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum MarkerPhase {
     /// Marks the start of a boundary.
@@ -160,7 +164,10 @@ pub enum MarkerPhase {
     End,
 }
 
-/// Phase of a causal flow link.
+/// Where an observation sits in a causal flow: its start, a step, or its end.
+///
+/// [`flow_begin`], [`flow_step`], and [`flow_end`] pass it to
+/// [`Backend::flow`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum FlowPhase {
     /// Starts a causal link.
@@ -174,7 +181,7 @@ pub enum FlowPhase {
 /// Sink for every Footfall emission primitive.
 ///
 /// The emission functions in this crate dispatch to the process-wide backend
-/// installed with [`install_backend`], or to [`NoopBackend`] until one is
+/// installed with `install_backend` (with `std`), or to [`NoopBackend`] until one is
 /// installed. Backends carry their own state, so one value can be installed
 /// directly or composed inside another backend, for example a fan-out adapter.
 ///
@@ -302,14 +309,16 @@ pub trait Backend: Send + Sync {
 /// Backend that ignores every emission.
 ///
 /// This is the backend in effect until one is installed with
-/// [`install_backend`]. It is also useful as a placeholder when composing
+/// `install_backend`. It is also useful as a placeholder when composing
 /// backends.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoopBackend;
 
 impl Backend for NoopBackend {}
 
-/// Returned when a backend is already installed.
+/// Returned by [`install_backend`], and by `Runtime::install_global` in
+/// `footfall_runtime`, when a backend is already installed: a process has one
+/// backend for its lifetime.
 #[cfg(feature = "std")]
 #[derive(Clone, Copy, Eq, PartialEq)]
 #[non_exhaustive]

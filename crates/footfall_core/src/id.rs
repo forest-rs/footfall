@@ -33,7 +33,8 @@ define_id!(
 );
 
 define_id!(
-    /// Opaque id for one scope descriptor.
+    /// Opaque id for one scope descriptor, as [`ScopeDesc::id`](crate::ScopeDesc::id)
+    /// returns it.
     ///
     /// Inside the process the id is derived from the descriptor's address:
     /// unique among live descriptors within one process run, not stable
@@ -43,7 +44,8 @@ define_id!(
 );
 
 define_id!(
-    /// Opaque id for one counter descriptor.
+    /// Opaque id for one counter descriptor, as [`CounterDesc::id`](crate::CounterDesc::id)
+    /// returns it.
     ///
     /// Inside the process the id is derived from the descriptor's address:
     /// unique among live descriptors within one process run, not stable
@@ -53,12 +55,19 @@ define_id!(
 );
 
 define_id!(
-    /// Stable id for one logical resource instance.
+    /// Identifies one resource instance, such as one atlas among several.
+    ///
+    /// The caller chooses it, for example from an index or a handle it
+    /// already has, and passes the same id to
+    /// [`resource_create`](crate::resource_create),
+    /// [`resource_update`](crate::resource_update), and
+    /// [`resource_drop`](crate::resource_drop) for that instance.
     ResourceId
 );
 
 define_id!(
-    /// Opaque id for one logical resource kind.
+    /// Opaque id for one logical resource kind, as
+    /// [`ResourceKindDesc::id`](crate::ResourceKindDesc::id) returns it.
     ///
     /// Inside the process the id is derived from the descriptor's address:
     /// unique among live descriptors within one process run, not stable
@@ -68,12 +77,18 @@ define_id!(
 );
 
 define_id!(
-    /// Stable id linking causally-related observations.
+    /// Links observations that are causally related, such as an invalidation
+    /// and the work it caused.
+    ///
+    /// The caller chooses it and passes the same id to
+    /// [`flow_begin`](crate::flow_begin), [`flow_step`](crate::flow_step), and
+    /// [`flow_end`](crate::flow_end).
     FlowId
 );
 
 define_id!(
-    /// Opaque id for one point-event descriptor.
+    /// Opaque id for one point-event descriptor, as [`EventDesc::id`](crate::EventDesc::id)
+    /// returns it.
     ///
     /// Inside the process the id is derived from the descriptor's address:
     /// unique among live descriptors within one process run, not stable

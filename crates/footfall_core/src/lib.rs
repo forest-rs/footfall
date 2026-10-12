@@ -63,8 +63,8 @@
 //!
 //! - [`RegisteredContext`] registers a context for an owner and releases it
 //!   when dropped.
-//! - [`LazyContext`] holds a context in a `static` item and registers it on
-//!   first use after a backend is installed.
+//! - `LazyContext`, with the `std` feature, holds a context in a `static`
+//!   item and registers it on first use after a backend is installed.
 //! - [`register_context`] and [`release_context`] are the underlying calls.
 //! - [`ContextHandle::ROOT`] is the empty root context and needs no
 //!   registration.

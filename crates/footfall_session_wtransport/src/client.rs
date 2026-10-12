@@ -622,7 +622,11 @@ impl fmt::Display for FindSessionError {
 
 impl std::error::Error for FindSessionError {}
 
-/// One session on a local server.
+/// One session on a local server, as [`LocalDiscovery::sessions`] and
+/// [`LocalDiscovery::session`] return it.
+///
+/// Pass its [`id`](Self::id) to its [`client`](Self::client)'s
+/// [`fetch`](SessionClient::fetch) or [`subscribe`](SessionClient::subscribe).
 #[derive(Clone, Debug)]
 pub struct LocalSession {
     client: SessionClient,
@@ -683,7 +687,7 @@ impl Discovery {
     }
 }
 
-/// Why a [`SessionClient`] request failed.
+/// Why a [`SessionClient`] request, or a [`Subscription::next`], failed.
 ///
 /// Each variant names the failure a caller can act on; the `Display` text
 /// says what to check.

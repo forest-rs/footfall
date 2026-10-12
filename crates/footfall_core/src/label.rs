@@ -108,7 +108,13 @@ impl fmt::Debug for LabelKey {
     }
 }
 
-/// Compact label value attached to a [`LabelKey`].
+/// The value of one label or argument: an integer, a boolean, or a string.
+///
+/// Build one from a Rust value with `From` (`7_u32.into()`, `"opaque".into()`,
+/// a [`ResourceId`]); the [`context!`](crate::context!)
+/// and [`args!`](crate::args!) macros do this for you. Read one back with
+/// [`Context::get`](crate::Context::get), [`ContextEntry::value`](crate::ContextEntry::value),
+/// or [`ArgEntry::value`](crate::ArgEntry::value).
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub enum LabelValue {

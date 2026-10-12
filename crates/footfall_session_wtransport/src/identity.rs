@@ -13,7 +13,7 @@ use wtransport::tls::Sha256Digest;
 ///
 /// Clients pass the hash a server reports through
 /// [`SessionIdentity::certificate_hash`], or the one stored with the local
-/// identity, so they can trust that server's self-signed certificate without a
+/// identity, to [`SessionClient::new`](crate::SessionClient::new), so they can trust that server's self-signed certificate without a
 /// certificate authority. It displays as 64 lowercase hex digits.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct CertificateHash([u8; 32]);
@@ -59,7 +59,8 @@ impl std::str::FromStr for CertificateHash {
     }
 }
 
-/// The text was not a certificate hash: 64 hex digits.
+/// Returned when parsing a [`CertificateHash`] from text that is not 64 hex
+/// digits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ParseCertificateHashError;
@@ -87,7 +88,12 @@ impl fmt::Display for CertificateHash {
 /// started right after load does not race certificate expiry.
 pub(crate) const IDENTITY_RENEWAL_MARGIN_DAYS: i64 = 2;
 
-/// Identity and certificate pinning material for a local session server.
+/// A session server's certificate and key, and the hash clients pin.
+///
+/// [`SessionIdentity::load_or_create_localhost`] returns the shared local
+/// identity, which [`LocalSessionServer`](crate::LocalSessionServer) uses;
+/// [`SessionIdentity::self_signed_localhost`] makes a fresh one. Pass it to
+/// [`SessionServer::bind`](crate::SessionServer::bind).
 #[derive(Debug)]
 pub struct SessionIdentity {
     identity: Identity,

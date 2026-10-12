@@ -14,6 +14,11 @@ pub const ARGS_INLINE_CAPACITY: usize = 4;
 /// specific observation instance, such as how many items one particular scope
 /// processed. Keys are static strings so the hot path stays free of dynamic
 /// string assembly.
+///
+/// Build one with [`args!`](crate::args!) or [`Args::none`] and
+/// [`Args::with`], and pass it to [`scope_with`](crate::scope_with),
+/// [`scope_begin_with`](crate::scope_begin_with), or
+/// [`message_with`](crate::message_with).
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct Args {
     entries: [ArgEntry; ARGS_INLINE_CAPACITY],
@@ -121,7 +126,7 @@ impl Default for Args {
     }
 }
 
-/// One argument stored in an [`Args`] value.
+/// One argument stored in an [`Args`] value, as [`Args::iter`] yields it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ArgEntry {
     key: &'static str,
@@ -153,7 +158,8 @@ impl ArgEntry {
     }
 }
 
-/// Returned when an [`Args`] value exceeds its inline capacity.
+/// Returned by [`Args::try_with`] when a new key would exceed
+/// [`ARGS_INLINE_CAPACITY`] entries.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct ArgsCapacityError;
