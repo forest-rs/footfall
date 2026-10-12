@@ -10,19 +10,42 @@ homepage.workspace = true
 readme = "README.md"
 keywords.workspace = true
 categories.workspace = true
-description = "Calm user-facing facade for the Footfall observability family."
+description = "Low-overhead instrumentation with semantic attribution: one entry point for instrumenting, capturing, serving, and analyzing."
 
 [features]
 default = []
 alloc = ["footfall_core/alloc"]
 std = ["alloc", "footfall_core/std"]
+# Bounded in-process capture with snapshots: `footfall::runtime`.
+runtime = ["std", "dep:footfall_runtime"]
+# Chrome Trace JSON export: `footfall::export`.
+export = ["session", "dep:footfall_export"]
+# Session envelopes, the codec, and capture files: `footfall::session`.
+session = ["std", "dep:footfall_session", "footfall_session/std"]
+# Scope, frame, and counter analysis over snapshots: `footfall::analysis`.
+analysis = ["session", "dep:footfall_analysis"]
+# Serve and attach to sessions over local WebTransport: `footfall::wtransport`.
+# Not available on wasm targets.
+wtransport = ["session", "dep:footfall_session_wtransport"]
+# A `tracing` layer that forwards into Footfall: `footfall::tracing_layer`.
+tracing = ["std", "dep:footfall_tracing"]
+# A live Tracy backend: `footfall::tracy`. Not available on wasm targets.
+tracy = ["std", "dep:footfall_tracy", "footfall_tracy/default"]
 
 [dependencies]
+footfall_analysis = { optional = true, workspace = true }
 footfall_core.workspace = true
+footfall_export = { optional = true, workspace = true }
+footfall_runtime = { optional = true, workspace = true }
+footfall_session = { optional = true, workspace = true }
+footfall_tracing = { optional = true, workspace = true }
 
-[dev-dependencies]
-footfall_export.workspace = true
-footfall_runtime.workspace = true
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+footfall_session_wtransport = { optional = true, workspace = true }
+footfall_tracy = { optional = true, workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
 
 [lib]
 path = "src/lib.rs"

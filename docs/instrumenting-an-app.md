@@ -13,22 +13,28 @@ A host application should be able to:
 
 ## Recommended Stack
 
-For the current happy path, use:
+Depend on `footfall` and turn on what the application needs:
 
-- `footfall` for descriptors, contexts, and emission calls; this is the only
-  Footfall dependency an instrumented library needs
-- `footfall_runtime` for bounded local collection
-- `footfall_export` to write a capture as Chrome Trace JSON for Perfetto
-- `footfall_tracing` if the app or its dependencies already use `tracing`
-- `footfall_tracy` for live viewing in Tracy, combined with the runtime
-  through `footfall_fanout`
-- `footfall_memory` when you want scratch or cache helpers
-- `footfall_session_wtransport` if you want a local attach path for consumers
+```toml
+[dependencies]
+footfall = { version = "0.1", features = ["runtime", "export"] }
+```
+
+- no features: descriptors, contexts, and emission calls. This is the only
+  Footfall dependency an instrumented library needs.
+- `runtime`: bounded local collection, as `footfall::runtime`
+- `export`: write a capture as Chrome Trace JSON for Perfetto, as
+  `footfall::export`
+- `wtransport`: a local attach path for tools, as `footfall::wtransport`
+- `tracing`: forward `tracing` spans and events, as `footfall::tracing_layer`
+- `tracy`: live viewing in Tracy, as `footfall::tracy`; combine it with the
+  runtime through the `footfall_fanout` crate
+- the `footfall_memory` crate when you want scratch or cache helpers
 
 ## Minimal Setup
 
 1. Define static descriptors close to the subsystem being instrumented.
-2. Install one `footfall_runtime::Runtime` once at process startup.
+2. Install one `footfall::runtime::Runtime` once at process startup.
 3. Register a `Context` once per semantic owner and emit with its handle.
 4. Keep transport and UI concerns out of the hot path.
 
@@ -39,7 +45,7 @@ use footfall::{
     CounterDesc, InstrumentationLevel, LabelKey, LazyContext, RegisteredContext, ScopeDesc,
     counter_add, scope,
 };
-use footfall_runtime::Runtime;
+use footfall::runtime::Runtime;
 
 static RECORD_SCOPE: ScopeDesc = footfall::scope_desc!("record_frame");
 static DRAW_OPS: CounterDesc = footfall::counter_desc!(count, "draw_ops");
@@ -128,11 +134,11 @@ draining it. A snapshot holds the current contexts, counters, and histograms,
 and the retained events; read it directly, or export it:
 
 ```rust
-use footfall_runtime::Runtime;
+use footfall::runtime::Runtime;
 
 fn write_trace(runtime: &Runtime) -> std::io::Result<()> {
     let snapshot = runtime.snapshot();
-    footfall_export::write_chrome_trace_file(&snapshot.into(), "trace.json")
+    footfall::export::write_chrome_trace_file(&snapshot.into(), "trace.json")
 }
 ```
 
@@ -140,9 +146,9 @@ To capture one region of work, take a cursor first and read only what was
 recorded after it:
 
 ```rust
-use footfall_runtime::Runtime;
+use footfall::runtime::Runtime;
 
-fn capture_region(runtime: &Runtime, work: impl FnOnce()) -> footfall_runtime::Snapshot {
+fn capture_region(runtime: &Runtime, work: impl FnOnce()) -> footfall::runtime::Snapshot {
     let cursor = runtime.cursor();
     work();
     runtime.snapshot_since(cursor)
@@ -240,11 +246,11 @@ run, can switch it on for you; libraries should never set it.
 ## Current Local Attach Pattern
 
 To let a separate consumer app read the process while it runs, serve the
-runtime with `footfall_session_wtransport`:
+runtime with the `wtransport` feature:
 
 ```rust
-use footfall_runtime::Runtime;
-use footfall_session_wtransport::{LocalSessionServer, ServedSession};
+use footfall::runtime::Runtime;
+use footfall::wtransport::{LocalSessionServer, ServedSession};
 
 async fn serve(runtime: &'static Runtime) -> std::io::Result<LocalSessionServer> {
     LocalSessionServer::start(vec![ServedSession::new("main", runtime)]).await
