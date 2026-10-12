@@ -773,6 +773,8 @@ dependencies = [
  "footfall_runtime",
  "footfall_session",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "wtransport",
  "x509-parser 0.17.0",
 ]

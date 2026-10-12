@@ -59,3 +59,28 @@ fn session_request_kind_reports_session_id() {
         Some("wt_live")
     );
 }
+
+#[test]
+fn clients_bind_in_the_servers_address_family() {
+    use crate::client::bind_config;
+    use wtransport::config::IpBindConfig;
+    let bound = |url| format!("{:?}", bind_config(url));
+    // A loopback server gets a loopback client of the same family, whose
+    // port cannot collide with the server's.
+    assert_eq!(
+        bound("https://127.0.0.1:43091/footfall/session"),
+        format!("{:?}", IpBindConfig::LocalV4)
+    );
+    assert_eq!(
+        bound("https://[::1]:43091/footfall/session"),
+        format!("{:?}", IpBindConfig::LocalV6)
+    );
+    assert_eq!(
+        bound("https://192.0.2.7:43091/footfall/session"),
+        format!("{:?}", IpBindConfig::InAddrAnyV4)
+    );
+    assert_eq!(
+        bound("https://localhost:43091/footfall/session"),
+        format!("{:?}", IpBindConfig::InAddrAnyDual)
+    );
+}
