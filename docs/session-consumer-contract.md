@@ -45,7 +45,8 @@ another:
 
 - Counters, gauges, and histograms are cumulative since the runtime was
   created. Every snapshot carries their current values; to see change over
-  time, compare two snapshots.
+  time, compare two snapshots, or use the counter-sample events producers
+  record at each frame end, which give each counter's value per frame.
 - Events are numbered by a sequence that counts every event the runtime
   recorded. A snapshot covers a window of that sequence: `since` up to
   `next`. Request the next snapshot with the previous one's

@@ -124,6 +124,9 @@ pub struct Runtime {
     counter_capacity: usize,
     event_capacity: usize,
     context_capacity: usize,
+    counter_samples: bool,
+    /// When the previous frame end sampled counters.
+    last_counter_sample_micros: AtomicU64,
     next_scope_token: AtomicU64,
     /// Sequence number of the next event.
     ///
@@ -178,6 +181,7 @@ impl Runtime {
             counter_capacity,
             event_capacity,
             context_capacity,
+            counter_samples,
         } = builder;
         let wall_clock = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -192,6 +196,8 @@ impl Runtime {
             counter_capacity,
             event_capacity,
             context_capacity,
+            counter_samples,
+            last_counter_sample_micros: AtomicU64::new(0),
             next_scope_token: AtomicU64::new(1),
             next_event_sequence: AtomicU64::new(0),
             admitted_keys: Mutex::new(HashSet::new()),
@@ -606,6 +612,57 @@ impl Runtime {
         });
     }
 
+    /// Records a sample of every counter and gauge updated since the previous
+    /// frame end, with its value merged across threads.
+    fn sample_counters(&self, at_micros: u64) {
+        let since = self
+            .last_counter_sample_micros
+            .swap(at_micros, Ordering::Relaxed);
+        let mut changed = HashSet::new();
+        let mut merged: HashMap<CounterKey, CounterSnapshot> = HashMap::new();
+        for shard in &self.counter_shards {
+            let shard = shard
+                .lock()
+                .expect("runtime counter shard should not be poisoned");
+            for (key, counter) in &shard.counters {
+                if counter.updated_at_micros >= since {
+                    changed.insert(*key);
+                }
+                match merged.get_mut(key) {
+                    Some(existing) => existing.merge(counter),
+                    None => {
+                        merged.insert(*key, counter.clone());
+                    }
+                }
+            }
+        }
+        let mut samples: Vec<_> = changed
+            .into_iter()
+            .filter_map(|key| merged.remove(&key))
+            .collect();
+        // Shard maps iterate in arbitrary order; keep samples deterministic.
+        samples.sort_by_key(|counter| {
+            (
+                counter.name,
+                counter.context_id,
+                counter_kind_discriminant(counter.kind),
+            )
+        });
+        for counter in samples {
+            self.push_event_at(
+                Observation::CounterSample {
+                    desc_id: counter.desc_id,
+                    name: counter.name,
+                    unit: counter.unit,
+                    context_id: counter.context_id,
+                    kind: counter.kind,
+                    value: counter.value,
+                },
+                at_micros,
+            );
+        }
+    }
+
     /// Evicts the oldest event of the first non-empty shard, keeping its
     /// capacity slot for the caller. Returns `false` when every shard is
     /// empty.
@@ -735,6 +792,7 @@ pub struct RuntimeBuilder {
     counter_capacity: usize,
     event_capacity: usize,
     context_capacity: usize,
+    counter_samples: bool,
 }
 
 impl Default for RuntimeBuilder {
@@ -746,6 +804,7 @@ impl Default for RuntimeBuilder {
             counter_capacity: Self::DEFAULT_COUNTER_CAPACITY,
             event_capacity: Self::DEFAULT_EVENT_CAPACITY,
             context_capacity: Self::DEFAULT_CONTEXT_CAPACITY,
+            counter_samples: true,
         }
     }
 }
@@ -805,6 +864,19 @@ impl RuntimeBuilder {
     /// [`DEFAULT_CONTEXT_CAPACITY`](Self::DEFAULT_CONTEXT_CAPACITY).
     pub const fn context_capacity(mut self, capacity: usize) -> Self {
         self.context_capacity = capacity;
+        self
+    }
+
+    /// Sets whether each frame end records a
+    /// [`CounterSample`](Observation::CounterSample) for every counter and
+    /// gauge updated during the frame. Defaults to `true`.
+    ///
+    /// Samples give per-frame counter values without registering a context
+    /// per frame, and a time series for each counter. They are events, so
+    /// they take event capacity, one per updated counter per frame, and are
+    /// recorded only at levels that capture markers.
+    pub const fn counter_samples(mut self, enabled: bool) -> Self {
+        self.counter_samples = enabled;
         self
     }
 
@@ -1861,6 +1933,27 @@ pub enum Observation {
         /// Per-instance arguments carried by this message.
         args: Args,
     },
+    /// A counter's or gauge's value at the end of a frame.
+    ///
+    /// When the runtime records counter samples (see
+    /// [`RuntimeBuilder::counter_samples`]), each frame end records one
+    /// sample for every counter and gauge updated during the frame. A
+    /// counter's value is cumulative, so its change over a frame is the
+    /// difference from its previous sample.
+    CounterSample {
+        /// Opaque counter descriptor id; see [`Snapshot`].
+        desc_id: CounterDescId,
+        /// Stable descriptor name.
+        name: &'static str,
+        /// Unit copied from the counter descriptor.
+        unit: Unit,
+        /// Canonical semantic context id.
+        context_id: ContextId,
+        /// Whether the value is additive or gauge-like.
+        kind: CounterKind,
+        /// The value at the end of the frame.
+        value: u64,
+    },
 }
 
 impl Observation {
@@ -1874,7 +1967,8 @@ impl Observation {
             | Self::ResourceDrop { context_id, .. }
             | Self::FrameMarker { context_id, .. }
             | Self::Flow { context_id, .. }
-            | Self::Message { context_id, .. } => Some(*context_id),
+            | Self::Message { context_id, .. }
+            | Self::CounterSample { context_id, .. } => Some(*context_id),
             Self::ScopeEnd { .. } => None,
         }
     }
@@ -1887,7 +1981,8 @@ impl Observation {
             | Self::ResourceDrop { context_id, .. }
             | Self::FrameMarker { context_id, .. }
             | Self::Flow { context_id, .. }
-            | Self::Message { context_id, .. } => Some(context_id),
+            | Self::Message { context_id, .. }
+            | Self::CounterSample { context_id, .. } => Some(context_id),
             Self::ScopeEnd { .. } => None,
         }
     }
@@ -1935,6 +2030,9 @@ impl DescriptorIds {
                 }
                 Observation::Message { desc_id, .. } => {
                     *desc_id = EventDescId::new(self.dense(desc_id.get()));
+                }
+                Observation::CounterSample { desc_id, .. } => {
+                    *desc_id = CounterDescId::new(self.dense(desc_id.get()));
                 }
                 Observation::ResourceCreate { kind_id, .. }
                 | Observation::ResourceUpdate { kind_id, .. }
@@ -2275,6 +2373,9 @@ impl Backend for Runtime {
             },
             at_micros,
         );
+        if self.counter_samples && kind == MarkerKind::Frame && phase == MarkerPhase::End {
+            self.sample_counters(at_micros);
+        }
     }
 
     fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: ContextHandle) {
@@ -3052,6 +3153,54 @@ mod tests {
             runtime.snapshot_since(foreign).window,
             EventWindow::new(0, 8, 4)
         );
+    }
+
+    #[test]
+    #[cfg_attr(target_os = "wasi", ignore = "wasm32-wasip1 cannot spawn threads")]
+    fn frame_ends_sample_the_counters_each_frame_changed() {
+        static UPLOADS: CounterDesc = CounterDesc::bytes("uploads");
+        static DEPTH: CounterDesc = CounterDesc::count("depth");
+        let runtime = test_runtime(8, 64);
+        let samples = |snapshot: &super::Snapshot| -> Vec<(&'static str, u64)> {
+            snapshot
+                .events
+                .iter()
+                .filter_map(|event| match event.observation {
+                    Observation::CounterSample { name, value, .. } => Some((name, value)),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // Frame 1: two threads upload, and the depth gauge is set.
+        let cursor = runtime.cursor();
+        runtime.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, ContextHandle::ROOT);
+        std::thread::scope(|scope| {
+            for _ in 0..2 {
+                scope.spawn(|| runtime.counter_add(&UPLOADS, ContextHandle::ROOT, 100));
+            }
+        });
+        runtime.gauge_set(&DEPTH, ContextHandle::ROOT, 3);
+        runtime.frame_marker(MarkerKind::Frame, MarkerPhase::End, ContextHandle::ROOT);
+        let first = runtime.snapshot_since(cursor);
+        assert_eq!(
+            samples(&first),
+            [("depth", 3), ("uploads", 200)],
+            "samples merge every thread's updates"
+        );
+
+        // Frame 2: only uploads change, so only uploads are sampled, with
+        // the cumulative value.
+        let cursor = runtime.cursor();
+        runtime.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, ContextHandle::ROOT);
+        runtime.counter_add(&UPLOADS, ContextHandle::ROOT, 50);
+        runtime.frame_marker(MarkerKind::Frame, MarkerPhase::End, ContextHandle::ROOT);
+        assert_eq!(samples(&runtime.snapshot_since(cursor)), [("uploads", 250)]);
+
+        let quiet = Runtime::builder().counter_samples(false).build();
+        quiet.counter_add(&UPLOADS, ContextHandle::ROOT, 1);
+        quiet.frame_marker(MarkerKind::Frame, MarkerPhase::End, ContextHandle::ROOT);
+        assert!(samples(&quiet.snapshot()).is_empty());
     }
 
     #[test]

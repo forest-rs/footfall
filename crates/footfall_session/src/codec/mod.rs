@@ -731,6 +731,16 @@ pub(crate) fn encode_borrowed_observation(
             encode_string(bytes, text)?;
             encode_borrowed_args(bytes, *args)?;
         }
+        footfall_runtime::Observation::CounterSample {
+            desc_id,
+            name,
+            unit,
+            context_id,
+            kind,
+            value,
+        } => {
+            encode_counter_sample(bytes, *desc_id, name, *unit, *context_id, *kind, *value)?;
+        }
         _ => return Err(unsupported("observation")),
     }
     Ok(())
@@ -926,6 +936,16 @@ pub(crate) fn encode_observation(
             encode_string(bytes, text)?;
             encode_args(bytes, args)?;
         }
+        OwnedObservation::CounterSample {
+            desc_id,
+            name,
+            unit,
+            context_id,
+            kind,
+            value,
+        } => {
+            encode_counter_sample(bytes, *desc_id, name, *unit, *context_id, *kind, *value)?;
+        }
     }
     Ok(())
 }
@@ -979,11 +999,38 @@ pub(crate) fn decode_observation(cursor: &mut Cursor<'_>) -> io::Result<OwnedObs
             text: decode_string(cursor)?,
             args: decode_args(cursor)?,
         }),
+        8 => Ok(OwnedObservation::CounterSample {
+            desc_id: CounterDescId::new(decode_u64(cursor)?),
+            name: decode_string(cursor)?,
+            unit: decode_unit(decode_u8(cursor)?)?,
+            context_id: ContextId::new(decode_u64(cursor)?),
+            kind: decode_counter_kind(decode_u8(cursor)?)?,
+            value: decode_u64(cursor)?,
+        }),
         tag => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("unknown observation tag: {tag}"),
         )),
     }
+}
+
+fn encode_counter_sample(
+    bytes: &mut Vec<u8>,
+    desc_id: CounterDescId,
+    name: &str,
+    unit: Unit,
+    context_id: ContextId,
+    kind: CounterKind,
+    value: u64,
+) -> io::Result<()> {
+    encode_u8(bytes, 8);
+    encode_u64(bytes, desc_id.get());
+    encode_string(bytes, name)?;
+    encode_u8(bytes, encode_unit(unit)?);
+    encode_u64(bytes, context_id.get());
+    encode_u8(bytes, encode_counter_kind(kind)?);
+    encode_u64(bytes, value);
+    Ok(())
 }
 
 pub(crate) fn encode_counter_kind(kind: CounterKind) -> io::Result<u8> {

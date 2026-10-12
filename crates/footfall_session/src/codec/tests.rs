@@ -366,6 +366,39 @@ fn decoder_rejects_oversized_context_entry_counts_before_allocation() {
 }
 
 #[test]
+fn counter_samples_match_their_golden_fixture() {
+    let envelope = OwnedSessionEnvelope::new(
+        EnvelopeHeader::new(PROTOCOL_VERSION, 1),
+        OwnedSessionPayload::Events(vec![OwnedTimedObservation::new(
+            9,
+            2,
+            1,
+            OwnedObservation::CounterSample {
+                desc_id: CounterDescId::new(3),
+                name: String::from("ops"),
+                unit: footfall_core::Unit::Count,
+                context_id: ContextId::new(4),
+                kind: CounterKind::Gauge,
+                value: 7,
+            },
+        )]),
+    );
+    let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
+    // Event row: timestamp, sequence, thread, then tag 8, descriptor id,
+    // name, unit (count), context id, kind (gauge), and value.
+    assert_eq!(
+        to_hex(&encoded),
+        "0100000001000000000000000501000000090000000000000002000000000000000100000000\
+         000000080300000000000000030000006f70730104000000000000000107000000000000\
+         00"
+    );
+    assert_eq!(
+        decode_envelope(&encoded).expect("decoding should succeed"),
+        envelope
+    );
+}
+
+#[test]
 fn scope_token_observation_round_trips() {
     let envelope = OwnedSessionEnvelope::new(
         EnvelopeHeader::new(PROTOCOL_VERSION, 1),

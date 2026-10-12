@@ -236,6 +236,11 @@ tag and its fields:
 | `5` | marker | kind `u8` (`0` frame, `1` transaction, `2` pass), phase `u8` (`0` begin, `1` end), context id `u64` |
 | `6` | flow | flow id `u64`, phase `u8` (`0` begin, `1` step, `2` end), context id `u64` |
 | `7` | message | descriptor id `u64`, name `string`, context id `u64`, text `string`, args |
+| `8` | counter sample | descriptor id `u64`, name `string`, unit `u8`, context id `u64`, kind `u8`, value `u64` |
+
+A counter sample is a counter's or gauge's value at a frame end, recorded
+for each one the frame updated; a counter's change over a frame is the
+difference from its previous sample.
 
 `args` is a `u8` entry count, at most `footfall_core::ARGS_INLINE_CAPACITY`,
 followed by that many entries of key `string` and label value. Message text is
