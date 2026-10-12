@@ -5,7 +5,7 @@
 
 mod session_demo;
 
-use footfall_session::Chunking;
+use footfall_session::{Chunking, SessionErrorCode};
 use footfall_session_wtransport::{
     ServedRequestKind, SessionAnnouncement, SessionIdentity, SessionRequestKind, SessionServer,
     SessionServerConfig, default_local_url,
@@ -65,13 +65,13 @@ async fn main() {
                         }
                         SessionRequestKind::Snapshot { session_id, .. } => {
                             request
-                                .respond_error(&format!("unknown session `{session_id}`"))
+                                .respond_error(SessionErrorCode::NotFound, &format!("unknown session `{session_id}`"))
                                 .await
                                 .expect("error response should succeed");
                         }
                         _ => {
                             request
-                                .respond_error("unsupported request")
+                                .respond_error(SessionErrorCode::Unsupported, "unsupported request")
                                 .await
                                 .expect("error response should succeed");
                         }

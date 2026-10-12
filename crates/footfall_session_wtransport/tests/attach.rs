@@ -8,10 +8,10 @@ use footfall_runtime::{
     ContextSnapshot, CounterKind, CounterSnapshot, Observation, Snapshot, SnapshotMetadata,
     TimedObservation,
 };
-use footfall_session::{Chunking, EventCursor, EventWindow, OwnedSessionPayload};
+use footfall_session::{Chunking, EventCursor, EventWindow, PROTOCOL_VERSION, SessionErrorCode};
 use footfall_session_wtransport::{
-    SessionAnnouncement, SessionIdentity, SessionRequestKind, SessionServer, SessionServerConfig,
-    discover_sessions, fetch_named_session,
+    SessionAnnouncement, SessionClient, SessionIdentity, SessionRequestKind, SessionServer,
+    SessionServerConfig,
 };
 
 static FRAME: LabelKey = LabelKey::new("frame");
@@ -94,13 +94,16 @@ async fn discovery_and_snapshot_fetch_round_trip() {
                 }
                 SessionRequestKind::Snapshot { session_id, .. } => {
                     request
-                        .respond_error(&format!("unknown session `{session_id}`"))
+                        .respond_error(
+                            SessionErrorCode::NotFound,
+                            &format!("unknown session `{session_id}`"),
+                        )
                         .await
                         .expect("error response should succeed");
                 }
                 _ => {
                     request
-                        .respond_error("unsupported request")
+                        .respond_error(SessionErrorCode::Unsupported, "unsupported request")
                         .await
                         .expect("error response should succeed");
                 }
@@ -108,54 +111,29 @@ async fn discovery_and_snapshot_fetch_round_trip() {
         }
     });
 
-    let sessions = discover_sessions(&url, certificate_hash)
+    let client = SessionClient::new(url, certificate_hash);
+    let discovery = client.discover().await.expect("discovery should succeed");
+    assert_eq!(discovery.protocol_version(), PROTOCOL_VERSION);
+    let session = discovery.session("e2e").expect("the server offers e2e");
+    assert_eq!(session.process_name(), "attach_test");
+    assert_eq!(session.session_name(), Some("e2e"));
+
+    let snapshot = client
+        .fetch("e2e", Some(EventCursor::new(0xfeed, 1)))
         .await
-        .expect("discovery should succeed");
-    assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0].id(), "e2e");
-    assert_eq!(sessions[0].process_name(), "attach_test");
-    assert_eq!(sessions[0].session_name(), Some("e2e"));
+        .expect("snapshot fetch should succeed");
+    assert_eq!(snapshot.metadata().process_name(), "attach_test");
+    assert_eq!(snapshot.next_cursor(), EventCursor::new(0xfeed, 2));
+    assert_eq!(snapshot.drops().evicted_events(), 1);
+    assert_eq!(snapshot.counters()[0].name(), "upload_bytes");
+    assert_eq!(snapshot.counters()[0].unit(), Unit::Bytes);
+    assert_eq!(snapshot.events()[0].thread_id(), 3);
 
-    let envelopes = fetch_named_session(
-        &url,
-        certificate_hash,
-        "e2e",
-        Some(EventCursor::new(0xfeed, 1)),
-    )
-    .await
-    .expect("snapshot fetch should succeed");
-
-    assert!(matches!(
-        envelopes.first().map(|envelope| envelope.payload()),
-        Some(OwnedSessionPayload::SnapshotStart(summary))
-            if summary.metadata().process_name() == "attach_test"
-                && summary.next_cursor() == EventCursor::new(0xfeed, 2)
-    ));
-    assert!(matches!(
-        envelopes.last().map(|envelope| envelope.payload()),
-        Some(OwnedSessionPayload::SnapshotEnd(drops)) if drops.evicted_events() == 1
-    ));
-    let counter = envelopes
-        .iter()
-        .find_map(|envelope| match envelope.payload() {
-            OwnedSessionPayload::Counters(rows) => rows.first(),
-            _ => None,
-        })
-        .expect("publication should carry one counter row");
-    assert_eq!(counter.name(), "upload_bytes");
-    assert_eq!(counter.unit(), Unit::Bytes);
-    let event = envelopes
-        .iter()
-        .find_map(|envelope| match envelope.payload() {
-            OwnedSessionPayload::Events(rows) => rows.first(),
-            _ => None,
-        })
-        .expect("publication should carry one event row");
-    assert_eq!(event.thread_id(), 3);
-
-    let error = fetch_named_session(&url, certificate_hash, "missing", None)
+    let error = client
+        .fetch("missing", None)
         .await
         .expect_err("fetching an unknown session should fail");
+    assert_eq!(error.server_code(), Some(SessionErrorCode::NotFound));
     assert!(error.to_string().contains("unknown session"));
 
     server_task.await.expect("server task should not panic");

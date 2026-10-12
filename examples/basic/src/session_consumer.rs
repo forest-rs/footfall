@@ -5,9 +5,7 @@
 
 mod session_summary;
 
-use footfall_session_wtransport::{
-    SessionAnnouncement, discover_local_sessions, fetch_local_session,
-};
+use footfall_session_wtransport::{SessionAnnouncement, SessionClient};
 use session_summary::{print_summary, summarize};
 use std::{env, process};
 
@@ -31,20 +29,28 @@ async fn main() {
         usage(&program);
     }
 
-    let announcement = select_session(argument.as_deref())
+    let client = local_client().await;
+    let announcement = select_session(&client, argument.as_deref())
         .await
-        .unwrap_or_else(|error| panic!("{error}"));
-    let envelopes = fetch_local_session(announcement.id(), None)
+        .unwrap_or_else(|error| fail(&error));
+    let snapshot = client
+        .fetch(announcement.id(), None)
         .await
-        .expect("session client should fetch one snapshot");
-    let summary = summarize(&envelopes);
+        .unwrap_or_else(|error| fail(&error.to_string()));
 
-    println!(
-        "fetched {} envelopes from session {}",
-        envelopes.len(),
-        announcement.id()
-    );
-    print_summary(&summary);
+    println!("fetched session {}", announcement.id());
+    print_summary(&summarize(&snapshot));
+}
+
+async fn local_client() -> SessionClient {
+    SessionClient::local()
+        .await
+        .unwrap_or_else(|error| fail(&error.to_string()))
+}
+
+fn fail(message: &str) -> ! {
+    eprintln!("{message}");
+    process::exit(1);
 }
 
 fn usage(program: &str) -> ! {
@@ -53,9 +59,12 @@ fn usage(program: &str) -> ! {
 }
 
 async fn list_sessions() {
-    let announcements = discover_local_sessions()
+    let discovery = local_client()
         .await
-        .expect("session discovery request should succeed");
+        .discover()
+        .await
+        .unwrap_or_else(|error| fail(&error.to_string()));
+    let announcements = discovery.sessions();
     if announcements.is_empty() {
         println!("no discovered sessions");
         return;
@@ -70,18 +79,23 @@ async fn list_sessions() {
     }
 }
 
-async fn select_session(requested_id: Option<&str>) -> Result<SessionAnnouncement, String> {
-    let announcements = discover_local_sessions()
+async fn select_session(
+    client: &SessionClient,
+    requested_id: Option<&str>,
+) -> Result<SessionAnnouncement, String> {
+    let discovery = client
+        .discover()
         .await
         .map_err(|error| format!("failed to query session server: {error}"))?;
     if let Some(requested_id) = requested_id {
-        return announcements
-            .into_iter()
-            .find(|announcement| announcement.id() == requested_id)
+        return discovery
+            .session(requested_id)
+            .cloned()
             .ok_or_else(|| format!("no discoverable session named `{requested_id}`"));
     }
 
-    match announcements.as_slice() {
+    let announcements = discovery.sessions();
+    match announcements {
         [] => Err(String::from("no discovered sessions")),
         [announcement] => Ok(announcement.clone()),
         _ => Err(format!(

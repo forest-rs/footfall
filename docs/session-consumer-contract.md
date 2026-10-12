@@ -92,19 +92,57 @@ The current local attach path is implemented by `footfall_session_wtransport`.
 Its concrete WebTransport encoding is documented in
 [WebTransport Session Wire Format](session-wire-format.md).
 
-The consumer-facing contract is:
+A Rust consumer uses `SessionClient`:
 
-- connect to the local session server
-- request discovery
-- receive zero or more `SessionAnnouncement` rows
-- choose one `session_id`
-- request a snapshot for that `session_id`
+```rust,no_run
+# async fn read() -> Result<(), footfall_session_wtransport::ClientError> {
+use footfall_session_wtransport::SessionClient;
 
-`SessionAnnouncement` currently carries:
+let client = SessionClient::local().await?;
+let discovery = client.discover().await?;
+let session = &discovery.sessions()[0];
+let snapshot = client.fetch(session.id(), None).await?;
+let next = client.fetch(session.id(), Some(snapshot.next_cursor())).await?;
+# let _ = next;
+# Ok(())
+# }
+```
+
+`fetch` returns an `OwnedSnapshot`, reassembled from its envelopes and
+checked against the publication contract. Consumers that handle envelopes
+themselves, for example from another transport, use
+`OwnedSnapshot::from_envelopes`, which rejects a publication that breaks
+the contract with an `AssembleError` naming the chunk and the rule.
+
+Discovery returns the server's protocol version and its
+`SessionAnnouncement` rows, each carrying:
 
 - `id`
 - `process_name`
 - `session_name`
+
+## Errors
+
+Every client failure is a `ClientError` variant a consumer can act on:
+
+- `TimedOut`: no complete response within the client's timeout, usually
+  because no server is listening; the default is five seconds
+- `CertificateRejected`: the server's certificate does not match the pin
+- `SessionRejected`: the server refused the session, usually a wrong path
+- `Server`: the server answered with an error code (`not_found` for an
+  unknown session id, `unsupported` for a request it does not handle) and a
+  message
+- `Incompatible`: the server speaks a protocol version the client cannot
+  decode, named with both versions
+- `Malformed`: the response broke the wire format or publication contract
+- `LocalIdentity`: the local certificate could not be read, usually because
+  no local producer has run yet
+- `InvalidUrl`, `Unreachable`, and `Io` for the remaining transport failures
+
+The local certificate lives at
+`SessionIdentity::localhost_certificate_path()`; consumers that cannot call
+`load_localhost_certificate_hash`, such as a browser, can hash the DER
+certificate in that file with SHA-256 to get the pin.
 
 The server URL itself is the attach point. Discovery is no longer file-backed.
 

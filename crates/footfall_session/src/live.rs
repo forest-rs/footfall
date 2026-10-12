@@ -279,6 +279,8 @@ pub enum SessionErrorCode {
     Unsupported,
     /// The request failed after it was accepted.
     Failed,
+    /// The peers speak protocol versions that cannot interoperate.
+    Incompatible,
 }
 
 impl SessionErrorCode {
@@ -290,6 +292,7 @@ impl SessionErrorCode {
             Self::NotFound => "not_found",
             Self::Unsupported => "unsupported",
             Self::Failed => "failed",
+            Self::Incompatible => "incompatible",
         }
     }
 }

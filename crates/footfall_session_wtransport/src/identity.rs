@@ -36,6 +36,38 @@ impl CertificateHash {
     }
 }
 
+impl std::str::FromStr for CertificateHash {
+    type Err = ParseCertificateHashError;
+
+    /// Parses 64 hex digits, in either case, as printed by `Display`.
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let text = text.trim();
+        if text.len() != 64 || !text.is_ascii() {
+            return Err(ParseCertificateHashError);
+        }
+        let mut bytes = [0_u8; 32];
+        let (pairs, _) = text.as_bytes().as_chunks::<2>();
+        for (byte, pair) in bytes.iter_mut().zip(pairs) {
+            let pair = core::str::from_utf8(pair).map_err(|_| ParseCertificateHashError)?;
+            *byte = u8::from_str_radix(pair, 16).map_err(|_| ParseCertificateHashError)?;
+        }
+        Ok(Self(bytes))
+    }
+}
+
+/// The text was not a certificate hash: 64 hex digits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct ParseCertificateHashError;
+
+impl fmt::Display for ParseCertificateHashError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a certificate hash is 64 hex digits")
+    }
+}
+
+impl std::error::Error for ParseCertificateHashError {}
+
 impl fmt::Display for CertificateHash {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         for byte in self.0 {
@@ -142,6 +174,18 @@ impl SessionIdentity {
             Some(remaining) => remaining.whole_days() < IDENTITY_RENEWAL_MARGIN_DAYS,
             None => true,
         }
+    }
+
+    /// Returns where the local identity's certificate is stored, as PEM.
+    ///
+    /// It is `footfall/wtransport/localhost-cert.pem` under the user's state
+    /// directory: `~/Library/Application Support` on macOS, `%APPDATA%` on
+    /// Windows, and `$XDG_STATE_HOME`, or `~/.local/state`, elsewhere.
+    /// Consumers that cannot use [`Self::load_localhost_certificate_hash`],
+    /// such as a browser, can hash the DER certificate in this file with
+    /// SHA-256 to get the pin.
+    pub fn localhost_certificate_path() -> io::Result<PathBuf> {
+        Ok(local_identity_paths()?.cert)
     }
 
     /// Loads the stable local certificate hash used for localhost session connections.

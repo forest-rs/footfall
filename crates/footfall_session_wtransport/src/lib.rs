@@ -16,7 +16,7 @@ use footfall_session::{
     OwnedArgEntry, OwnedContextEntry, OwnedContextSnapshot, OwnedCounterSnapshot,
     OwnedHistogramSnapshot, OwnedLabelValue, OwnedObservation, OwnedSessionEnvelope,
     OwnedSessionPayload, OwnedSnapshotSummary, OwnedTimedObservation, Payload, ProtocolVersion,
-    RowCounts, SnapshotMetadata, ThreadSnapshot, publish_snapshot,
+    RowCounts, SessionErrorCode, SnapshotMetadata, ThreadSnapshot, publish_snapshot,
 };
 use std::{
     env, fmt, io,
