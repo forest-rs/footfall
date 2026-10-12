@@ -3,13 +3,30 @@
 
 //! Discovering and reading sessions.
 
-use super::*;
+use crate::identity::{CertificateHash, SessionIdentity};
+use crate::serve::local_registry_directory;
+use crate::server::SessionAnnouncement;
+use crate::wire::{
+    CODEC_VERSION, DEFAULT_LOCAL_PORT, DEFAULT_PATH, DISCOVER_MAGIC, RESPONSE_DISCOVERY,
+    RESPONSE_ERROR, RESPONSE_SNAPSHOT, SNAPSHOT_MAGIC, SUBSCRIBE_MAGIC, decode_error_code,
+    decode_session_announcement_stream, encode_cursor, encode_string, encode_u32,
+    finish_request_stream, read_stream_string, read_u8_stream, read_u16, read_u32, read_u64,
+    validate_wire_count, validate_wire_len,
+};
+use crate::{MAX_DISCOVERED_SESSIONS, MAX_SESSION_ENVELOPES};
+use footfall_session::codec::{MAX_SESSION_ENVELOPE_BYTES, decode_envelope};
 use footfall_session::{AssembleError, OwnedSnapshot, SessionErrorCode};
+use footfall_session::{EventCursor, ProtocolVersion};
+use std::path::PathBuf;
+use std::{fmt, io};
 use std::{
     future::Future,
     sync::{Arc, Mutex},
     time::Duration,
 };
+use tokio::fs;
+use wtransport::error::StreamWriteError;
+use wtransport::{ClientConfig, Connection, Endpoint, RecvStream, SendStream};
 use wtransport::{
     error::ConnectingError,
     tls::{
@@ -88,7 +105,7 @@ impl SessionClient {
     }
 
     /// Returns a client for every session server registered on this
-    /// machine, default port first; see [`LocalSessionServer`].
+    /// machine, default port first; see [`LocalSessionServer`](crate::LocalSessionServer).
     ///
     /// A registration can outlive a producer that crashed, so a client in
     /// the list may fail with [`ClientError::TimedOut`]; skip it.

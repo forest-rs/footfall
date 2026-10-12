@@ -3,7 +3,24 @@
 
 //! Serving discovery and snapshot requests.
 
-use super::*;
+use crate::identity::SessionIdentity;
+use crate::wire::{
+    CODEC_VERSION, DEFAULT_LOCAL_PORT, DEFAULT_PATH, DISCOVER_MAGIC, MIN_SUBSCRIPTION_INTERVAL,
+    RESPONSE_DISCOVERY, RESPONSE_ERROR, RESPONSE_SNAPSHOT, SNAPSHOT_MAGIC, SUBSCRIBE_MAGIC,
+    encode_error_code, encode_session_announcement_stream, finish_response_stream, read_cursor,
+    read_stream_string, read_u32, validate_wire_len, write_stream_string, write_u8_stream,
+    write_u16, write_u32, write_u64,
+};
+use crate::{MAX_DISCOVERED_SESSIONS, MAX_SESSION_ENVELOPES};
+use footfall_runtime::{Runtime, Snapshot};
+use footfall_session::codec::{MAX_SESSION_ENVELOPE_BYTES, encode_envelope};
+use footfall_session::{
+    Chunking, Consumer, Envelope, EventCursor, SessionErrorCode, publish_snapshot,
+};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::time::Duration;
+use std::{fmt, io};
+use wtransport::{Connection, Endpoint, SendStream, ServerConfig};
 
 /// Discoverable metadata for one local Footfall WebTransport session.
 #[derive(Clone, Debug, Eq, PartialEq)]

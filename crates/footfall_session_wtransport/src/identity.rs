@@ -3,7 +3,11 @@
 
 //! Self-signed localhost identity and certificate pinning.
 
-use super::*;
+use std::path::PathBuf;
+use std::{env, fmt, io};
+use tokio::fs;
+use wtransport::Identity;
+use wtransport::tls::Sha256Digest;
 
 /// SHA-256 hash of a session server's certificate, used to pin connections.
 ///

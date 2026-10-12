@@ -3,7 +3,7 @@
 
 //! Codec and request-framing tests.
 
-use super::{SessionAnnouncement, SessionRequestKind, map_finish_error};
+use crate::{SessionAnnouncement, SessionRequestKind, wire::map_finish_error};
 use wtransport::{VarInt, error::StreamWriteError};
 
 #[test]

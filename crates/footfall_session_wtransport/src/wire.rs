@@ -3,7 +3,13 @@
 
 //! Request and response framing over WebTransport streams.
 
-use super::*;
+use crate::server::SessionAnnouncement;
+use footfall_session::codec::MAX_SESSION_STRING_BYTES;
+use footfall_session::{EventCursor, ProtocolVersion, SessionErrorCode};
+use std::io;
+use std::time::Duration;
+use wtransport::error::StreamWriteError;
+use wtransport::{RecvStream, SendStream};
 
 pub(crate) const DEFAULT_PATH: &str = "/footfall/session";
 pub(crate) const DEFAULT_LOCAL_PORT: u16 = 43_091;
