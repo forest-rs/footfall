@@ -169,17 +169,19 @@ and consumers skip it.
 
 ## Following a Session
 
-`SessionClient::subscribe(session_id, since, interval)` asks the server to
-send a snapshot now and another every `interval` on one stream, each holding
-the events recorded since the previous one. After the first, the server sends only what
-changed since the previous snapshot, and `Subscription::next` applies it, so
-each snapshot it returns is full and current while unchanged contexts and
-counters cross the wire once. `Subscription::next` waits for
-the next. The server never queues snapshots for a slow consumer: it waits for
-the consumer to take one before preparing the next, and events evicted in
-the meantime appear in the next window's `missed` count. Polling with
-`fetch` and the previous snapshot's cursor reads the same windows on the
-consumer's schedule instead.
+`SessionClient::subscribe(session_id, since, interval)` opens a stream on
+which the server sends a snapshot now and then one each time
+`Subscription::next` asks, at most once per `interval`, each holding the
+events recorded since the previous one. The server takes each snapshot only
+when it is asked for, so nothing queues for a slow consumer: however long it
+takes between calls, the next snapshot is fresh, covers everything since the
+last, and counts events evicted in the meantime as `missed`. After the first
+snapshot the server sends only what changed, and `Subscription::next`
+applies it, so each snapshot it returns is full and current while unchanged
+contexts and counters cross the wire once. When the producer stops,
+`Subscription::next` fails with `ClientError::Closed`. Polling with `fetch`
+and the previous snapshot's cursor reads the same windows without holding a
+stream open.
 
 ## Saving and Reloading
 

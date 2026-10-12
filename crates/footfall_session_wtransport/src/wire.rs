@@ -8,7 +8,7 @@ use footfall_session::codec::MAX_SESSION_STRING_BYTES;
 use footfall_session::{EventCursor, ProtocolVersion, SessionErrorCode};
 use std::io;
 use std::time::Duration;
-use wtransport::error::StreamWriteError;
+use wtransport::error::{StreamReadError, StreamReadExactError, StreamWriteError};
 use wtransport::{RecvStream, SendStream};
 
 pub(crate) const DEFAULT_PATH: &str = "/footfall/session";
@@ -32,9 +32,7 @@ pub(crate) async fn write_u16(send: &mut SendStream, value: u16) -> io::Result<(
 
 pub(crate) async fn read_u16(recv: &mut RecvStream) -> io::Result<u16> {
     let mut bytes = [0_u8; 2];
-    recv.read_exact(&mut bytes)
-        .await
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    recv.read_exact(&mut bytes).await.map_err(read_error)?;
     Ok(u16::from_le_bytes(bytes))
 }
 
@@ -52,17 +50,13 @@ pub(crate) async fn write_u64(send: &mut SendStream, value: u64) -> io::Result<(
 
 pub(crate) async fn read_u32(recv: &mut RecvStream) -> io::Result<u32> {
     let mut bytes = [0_u8; 4];
-    recv.read_exact(&mut bytes)
-        .await
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    recv.read_exact(&mut bytes).await.map_err(read_error)?;
     Ok(u32::from_le_bytes(bytes))
 }
 
 pub(crate) async fn read_u64(recv: &mut RecvStream) -> io::Result<u64> {
     let mut bytes = [0_u8; 8];
-    recv.read_exact(&mut bytes)
-        .await
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    recv.read_exact(&mut bytes).await.map_err(read_error)?;
     Ok(u64::from_le_bytes(bytes))
 }
 
@@ -82,9 +76,7 @@ pub(crate) async fn write_u8_stream(send: &mut SendStream, value: u8) -> io::Res
 
 pub(crate) async fn read_u8_stream(recv: &mut RecvStream) -> io::Result<u8> {
     let mut bytes = [0_u8; 1];
-    recv.read_exact(&mut bytes)
-        .await
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    recv.read_exact(&mut bytes).await.map_err(read_error)?;
     Ok(bytes[0])
 }
 
@@ -108,9 +100,7 @@ pub(crate) async fn read_stream_string(recv: &mut RecvStream) -> io::Result<Stri
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid string length"))?;
     validate_wire_len(len, MAX_SESSION_STRING_BYTES, "session string")?;
     let mut bytes = vec![0_u8; len];
-    recv.read_exact(&mut bytes)
-        .await
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    recv.read_exact(&mut bytes).await.map_err(read_error)?;
     String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
@@ -248,4 +238,18 @@ pub(crate) fn validate_wire_count(count: u64, max: u64, what: &str) -> io::Resul
         ));
     }
     Ok(())
+}
+
+/// Classifies a failed read: the peer finishing or closing becomes
+/// [`io::ErrorKind::UnexpectedEof`] or [`io::ErrorKind::ConnectionAborted`],
+/// so callers can tell a closed peer from a broken one.
+pub(crate) fn read_error(error: StreamReadExactError) -> io::Error {
+    let kind = match &error {
+        StreamReadExactError::FinishedEarly(_) => io::ErrorKind::UnexpectedEof,
+        StreamReadExactError::Read(StreamReadError::NotConnected | StreamReadError::Reset(_)) => {
+            io::ErrorKind::ConnectionAborted
+        }
+        StreamReadExactError::Read(_) => io::ErrorKind::Other,
+    };
+    io::Error::new(kind, error.to_string())
 }

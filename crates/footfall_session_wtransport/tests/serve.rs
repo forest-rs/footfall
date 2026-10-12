@@ -107,3 +107,62 @@ async fn served_runtimes_answer_discovery_reads_and_subscriptions() {
 
     serving.abort();
 }
+
+#[tokio::test]
+async fn a_slow_subscriber_gets_fresh_snapshots_and_a_closed_server_says_so() {
+    let runtime = runtime();
+    let identity = SessionIdentity::self_signed_localhost().expect("identity should build");
+    let server = SessionServer::bind(&identity, SessionServerConfig::default())
+        .expect("server should bind an ephemeral localhost port");
+    let client = SessionClient::new(
+        server.url().expect("bound server should report its URL"),
+        identity.certificate_hash(),
+    );
+    let serving = tokio::spawn(server.serve(vec![ServedSession::new("main", runtime)]));
+
+    let mut subscription = client
+        .subscribe("main", None, Duration::from_millis(10))
+        .await
+        .expect("subscription should open");
+    let first = subscription.next().await.expect("a first snapshot");
+
+    // Read far more slowly than the interval while the producer keeps
+    // emitting: each snapshot must still be taken when it is asked for.
+    for round in 0..3 {
+        for _ in 0..50 {
+            mark(runtime);
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let asked_at = std::time::Instant::now();
+        let snapshot = subscription.next().await.expect("a later snapshot");
+        let age = runtime_now_micros(runtime).saturating_sub(snapshot.captured_at_micros());
+        assert!(
+            age < 100_000,
+            "round {round}: snapshot is {age} µs old, so snapshots queued"
+        );
+        assert!(asked_at.elapsed() < Duration::from_millis(150));
+        assert_eq!(
+            snapshot.events().len(),
+            50,
+            "everything since the last read"
+        );
+    }
+    assert_eq!(first.metadata().instance_id(), runtime.instance_id());
+
+    serving.abort();
+    let _ = serving.await;
+    let error = subscription.next().await.expect_err("the server is gone");
+    assert!(
+        matches!(
+            error,
+            footfall_session_wtransport::ClientError::Closed
+                | footfall_session_wtransport::ClientError::TimedOut { .. }
+        ),
+        "{error:?}"
+    );
+}
+
+/// The runtime's clock now, in microseconds since its creation.
+fn runtime_now_micros(runtime: &Runtime) -> u64 {
+    runtime.snapshot().captured_at_micros()
+}

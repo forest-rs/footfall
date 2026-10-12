@@ -8,8 +8,8 @@ use crate::wire::{
     CODEC_VERSION, DEFAULT_LOCAL_PORT, DEFAULT_PATH, DISCOVER_MAGIC, MIN_SUBSCRIPTION_INTERVAL,
     RESPONSE_DISCOVERY, RESPONSE_ERROR, RESPONSE_SNAPSHOT, SNAPSHOT_MAGIC, SUBSCRIBE_MAGIC,
     encode_error_code, encode_session_announcement_stream, finish_response_stream, read_cursor,
-    read_stream_string, read_u32, validate_wire_len, write_stream_string, write_u8_stream,
-    write_u16, write_u32, write_u64,
+    read_error, read_stream_string, read_u8_stream, read_u32, validate_wire_len,
+    write_stream_string, write_u8_stream, write_u16, write_u32, write_u64,
 };
 use crate::{MAX_DISCOVERED_SESSIONS, MAX_SESSION_ENVELOPES};
 use footfall_runtime::{Runtime, Snapshot};
@@ -20,7 +20,7 @@ use footfall_session::{
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
 use std::{fmt, io};
-use wtransport::{Connection, Endpoint, SendStream, ServerConfig};
+use wtransport::{Connection, Endpoint, RecvStream, SendStream, ServerConfig};
 
 /// Discoverable metadata for one local Footfall WebTransport session.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -312,9 +312,7 @@ pub(crate) async fn read_request(
         .map_err(|error| io::Error::other(error.to_string()))?;
 
     let mut request = [0_u8; DISCOVER_MAGIC.len()];
-    recv.read_exact(&mut request)
-        .await
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    recv.read_exact(&mut request).await.map_err(read_error)?;
     let kind = if &request == DISCOVER_MAGIC {
         SessionRequestKind::Discover
     } else if &request == SNAPSHOT_MAGIC {
@@ -346,6 +344,7 @@ pub(crate) async fn read_request(
         path,
         _connection: connection,
         send,
+        recv,
         kind,
     })
 }
@@ -356,6 +355,9 @@ pub struct SessionRequest {
     path: String,
     _connection: Connection,
     send: SendStream,
+    /// The request stream, which a subscription keeps reading: the client
+    /// asks for each snapshot after the first.
+    recv: RecvStream,
     kind: SessionRequestKind,
 }
 
@@ -458,12 +460,14 @@ impl SessionRequest {
     }
 
     /// Responds to a subscription with a snapshot of `runtime` now and
-    /// another every `interval`, each holding the events recorded since the
-    /// previous one, until the client goes away.
+    /// then one each time the client asks, at most once per `interval`, each
+    /// holding the events recorded since the previous one and only the state
+    /// that changed, until the client goes away.
     ///
-    /// The first snapshot starts at the request's cursor. A client that
-    /// reads slowly delays the next snapshot rather than queueing them, and
-    /// events evicted meanwhile are reported in the next snapshot's window.
+    /// The first snapshot starts at the request's cursor. Every later one is
+    /// taken only once the client has asked for it, so nothing queues for a
+    /// slow client: it receives a fresh snapshot covering everything since
+    /// its last, and events evicted meanwhile are reported in that window.
     pub async fn respond_subscription(
         mut self,
         runtime: &Runtime,
@@ -485,7 +489,16 @@ impl SessionRequest {
         let mut cursor = since;
         let mut previous: Option<Snapshot> = None;
         let mut snapshot_count = 0_usize;
+        let mut taken_at = tokio::time::Instant::now();
         loop {
+            if previous.is_some() {
+                // Wait for the client to ask, then for the interval.
+                if read_u8_stream(&mut self.recv).await.is_err() {
+                    break;
+                }
+                tokio::time::sleep_until(taken_at + interval).await;
+            }
+            taken_at = tokio::time::Instant::now();
             let snapshot = match cursor {
                 Some(cursor) => runtime.snapshot_since(cursor),
                 None => runtime.snapshot(),
@@ -504,7 +517,6 @@ impl SessionRequest {
             }
             previous = Some(snapshot);
             snapshot_count += 1;
-            tokio::time::sleep(interval).await;
         }
 
         Ok(ServedRequest {
