@@ -25,11 +25,15 @@ mod snapshot;
 
 #[cfg(feature = "std")]
 pub use assembled::{AppendError, AssembleError, OwnedSnapshot};
-/// Runtime types that session envelopes carry as they are, re-exported so
-/// consumers can name them without depending on `footfall_runtime`.
+// Types that snapshots carry as they are, re-exported so consumers can name
+// and match them without depending on `footfall_core` or `footfall_runtime`.
+pub use footfall_core::{
+    ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, InstrumentationLevel, MarkerKind,
+    MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, Unit,
+};
 #[cfg(feature = "std")]
 pub use footfall_runtime::{
-    CaptureSettings, Drops, EventCursor, EventWindow, SnapshotMetadata, ThreadSnapshot,
+    CaptureSettings, CounterKind, Drops, EventCursor, EventWindow, SnapshotMetadata, ThreadSnapshot,
 };
 pub use live::{
     SessionError, SessionErrorCode, SessionMessage, SessionMethod, SessionRequest,
