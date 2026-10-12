@@ -10,7 +10,7 @@ homepage.workspace = true
 readme = "README.md"
 keywords.workspace = true
 categories.workspace = true
-description = "Optional fan-out backend adapter for the Footfall observability family."
+description = "A Footfall backend that forwards every emission to two others, such as a runtime and Tracy."
 
 [dependencies]
 footfall_core = { features = ["std"], workspace = true }

@@ -9,8 +9,8 @@ repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
 keywords.workspace = true
-categories.workspace = true
-description = "Core instrumentation primitives for the Footfall observability family."
+categories = ["development-tools::debugging", "development-tools::profiling", "no-std"]
+description = "The Footfall instrumentation API: static descriptors, semantic contexts, levels, and the backend seam. no_std, no dependencies."
 
 [features]
 default = []
@@ -22,3 +22,6 @@ path = "src/lib.rs"
 
 [lints]
 workspace = true
+
+[package.metadata.docs.rs]
+all-features = true

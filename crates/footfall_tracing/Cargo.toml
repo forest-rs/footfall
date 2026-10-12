@@ -10,7 +10,7 @@ homepage.workspace = true
 readme = "README.md"
 keywords.workspace = true
 categories.workspace = true
-description = "tracing subscriber layer that forwards spans and events into Footfall."
+description = "A tracing layer that forwards spans and events into Footfall."
 
 [dependencies]
 footfall_core = { features = ["std"], workspace = true }

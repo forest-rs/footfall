@@ -10,7 +10,7 @@ homepage.workspace = true
 readme = "README.md"
 keywords.workspace = true
 categories.workspace = true
-description = "Live Tracy backend for the Footfall observability family."
+description = "A Footfall backend that shows scopes, counters, and frames live in the Tracy profiler."
 
 [features]
 default = ["enable", "broadcast"]

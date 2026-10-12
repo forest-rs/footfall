@@ -10,7 +10,7 @@ homepage.workspace = true
 readme = "README.md"
 keywords.workspace = true
 categories.workspace = true
-description = "Scope, frame, and counter analysis over Footfall snapshots."
+description = "Spans, frames, and per-frame counter changes from Footfall snapshots, live or from capture files."
 
 [dependencies]
 footfall_core = { features = ["std"], workspace = true }
