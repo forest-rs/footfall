@@ -287,6 +287,7 @@ thread id, then a `u8` observation tag and its fields:
 | `8` | counter sample | descriptor id `u64`, name `name`, unit `u8`, context id `u64`, kind `u8`, value `u64` |
 | `9` | clock sync | clock |
 | `10` | clock pair | clock, clock |
+| `11` | timeline span | timeline id `u64`, timeline name `name` and kind `u8` (`0` GPU, `1` display, `2` other; written with the name), scope id `u64`, name `name`, location `location`, context id `u64`, begin `clock`, length in ticks `u64`, frame `u64` (the number plus one, or `0` for none), flow `u64` (the id plus one, or `0` for none), args |
 
 A counter sample is a counter's or gauge's value at a frame end, recorded
 for each one the frame updated; a counter's change over a frame is the
@@ -299,6 +300,13 @@ period as nanoseconds `u32` per ticks `u32` (a tick lasts
 clock sync says the clock read those ticks at the row's time; a clock pair
 says two clocks read their ticks at the same moment, and its row's time
 means nothing.
+
+A timeline span is finished work on a timeline that is not a CPU thread,
+such as a pass on a GPU queue, recorded once its times are known. Its
+begin is a reading of the clock its times are in, and it ends that many
+ticks later; consumers convert both through the producer's clock syncs and
+pairs. Its row's time is when it was recorded. Like a name, a timeline's
+kind is written only the first time the timeline appears in a payload.
 
 `args` is a `u8` entry count, at most `footfall_core::ARGS_INLINE_CAPACITY`,
 followed by that many entries of key `string` and label value. Message text is

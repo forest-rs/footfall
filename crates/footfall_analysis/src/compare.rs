@@ -19,16 +19,25 @@ use std::collections::BTreeMap;
 pub struct Population<'t> {
     trace: &'t Trace,
     units: Vec<TimeRange>,
+    /// Each unit's frame number, when the units are numbered frames.
+    numbers: Vec<Option<u64>>,
 }
 
 impl<'t> Population<'t> {
     /// Takes each of `frames` as a unit, such as the slow frames of a
-    /// trace.
+    /// trace. Spans on timelines reported with a frame's number, such as its
+    /// GPU passes, count toward that frame, wherever they ran; see
+    /// [`SpanQuery::in_frames`](crate::SpanQuery::in_frames).
     #[must_use]
     pub fn frames<'f>(trace: &'t Trace, frames: impl IntoIterator<Item = &'f Frame>) -> Self {
+        let (units, numbers) = frames
+            .into_iter()
+            .map(|frame| (frame.range(), frame.number()))
+            .unzip();
         Self {
             trace,
-            units: frames.into_iter().map(Frame::range).collect(),
+            units,
+            numbers,
         }
     }
 
@@ -38,6 +47,7 @@ impl<'t> Population<'t> {
         Self {
             trace,
             units: ranges.into_iter().collect(),
+            numbers: Vec::new(),
         }
     }
 
@@ -48,6 +58,7 @@ impl<'t> Population<'t> {
         Self {
             trace,
             units: vec![trace.observed()],
+            numbers: Vec::new(),
         }
     }
 
@@ -387,7 +398,12 @@ impl Comparison {
         let mut tally = |population: &Population<'_>, candidate_side: bool| {
             let units = population.units.len();
             for (unit_index, unit) in population.units.iter().enumerate() {
-                let mut query = population.trace.spans().within(*unit).selecting(selection);
+                let number = population.numbers.get(unit_index).copied().flatten();
+                let mut query = population
+                    .trace
+                    .spans()
+                    .in_frame_range(*unit, number)
+                    .selecting(selection);
                 for group in group_by {
                     query = query.group_by(group.clone());
                 }
@@ -439,9 +455,13 @@ impl Comparison {
             basis: population
                 .units
                 .iter()
+                .enumerate()
                 .fold(
                     population.trace.spans().selecting(selection),
-                    |query, unit| query.within(*unit),
+                    |query, (index, unit)| {
+                        query
+                            .in_frame_range(*unit, population.numbers.get(index).copied().flatten())
+                    },
                 )
                 .basis(),
         };

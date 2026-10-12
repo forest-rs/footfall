@@ -13,6 +13,7 @@
 //! [wire-format document]: https://github.com/forest-rs/footfall/blob/main/docs/session-wire-format.md
 
 use alloc::{
+    boxed::Box,
     format,
     string::{String, ToString},
     vec::Vec,
@@ -22,7 +23,8 @@ use std::io;
 
 use footfall_core::{
     ClockId, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, InstrumentationLevel,
-    MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, TickPeriod, Unit,
+    MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, TickPeriod,
+    TimelineId, TimelineKind, Unit,
 };
 use footfall_runtime::CounterKind;
 
@@ -30,8 +32,9 @@ use crate::{
     CaptureSettings, Drops, Envelope, EnvelopeHeader, EventWindow, OwnedArgEntry, OwnedClockTicks,
     OwnedContextEntry, OwnedContextSnapshot, OwnedCounterSnapshot, OwnedHistogramSnapshot,
     OwnedLabelValue, OwnedObservation, OwnedSessionEnvelope, OwnedSessionPayload,
-    OwnedSnapshotSummary, OwnedSourceLocation, OwnedTimedObservation, PROTOCOL_VERSION, Payload,
-    ProtocolVersion, RowCounts, SnapshotKind, SnapshotMetadata, ThreadSnapshot,
+    OwnedSnapshotSummary, OwnedSourceLocation, OwnedTimedObservation, OwnedTimelineWork,
+    PROTOCOL_VERSION, Payload, ProtocolVersion, RowCounts, SnapshotKind, SnapshotMetadata,
+    ThreadSnapshot,
 };
 
 /// Maximum UTF-8 string payload accepted by the codec.
@@ -865,6 +868,12 @@ pub(crate) fn encode_borrowed_observation(
                 clock.period(),
             )?;
         }
+        footfall_runtime::Observation::TimelineSpan { span } => {
+            // Timeline spans are rare next to CPU events, so the borrowed
+            // encoder shares the owned one rather than repeat it.
+            encode_u8(bytes, 11);
+            encode_timeline(bytes, names, &OwnedTimelineWork::from(span.as_ref()))?;
+        }
         footfall_runtime::Observation::ClockPair { first, second } => {
             encode_u8(bytes, 10);
             encode_clock(
@@ -1112,6 +1121,10 @@ pub(crate) fn encode_observation(
             encode_u8(bytes, 9);
             encode_owned_clock(bytes, names, clock)?;
         }
+        OwnedObservation::TimelineSpan { span } => {
+            encode_u8(bytes, 11);
+            encode_timeline(bytes, names, span)?;
+        }
         OwnedObservation::ClockPair { first, second } => {
             encode_u8(bytes, 10);
             encode_owned_clock(bytes, names, first)?;
@@ -1194,6 +1207,9 @@ pub(crate) fn decode_observation(
             first: decode_clock(cursor, names)?,
             second: decode_clock(cursor, names)?,
         }),
+        11 => Ok(OwnedObservation::TimelineSpan {
+            span: Box::new(decode_timeline(cursor, names)?),
+        }),
         tag => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("unknown observation tag: {tag}"),
@@ -1217,6 +1233,89 @@ fn encode_clock(
     encode_u32(bytes, period.nanos());
     encode_u32(bytes, period.ticks());
     Ok(())
+}
+
+/// Writes finished work on a timeline: the timeline's id, with its name and
+/// kind the first time; the scope's id, with its name and location the
+/// first time; the context; the clock reading the work began at; how many
+/// ticks it lasted; the frame and flow, each one more than its value or `0`
+/// for none; and the args.
+fn encode_timeline(
+    bytes: &mut Vec<u8>,
+    names: &mut NameWriter,
+    work: &OwnedTimelineWork,
+) -> io::Result<()> {
+    names.encode_kinded(
+        bytes,
+        work.timeline_id().get(),
+        work.timeline_name(),
+        encode_timeline_kind(work.timeline_kind())?,
+    )?;
+    names.encode_located(
+        bytes,
+        work.desc_id().get(),
+        work.name(),
+        work.location()
+            .map(|location| (location.function(), location.file(), location.line())),
+    )?;
+    encode_u64(bytes, work.context_id().get());
+    encode_owned_clock(bytes, names, work.begin())?;
+    encode_u64(bytes, work.end().saturating_sub(work.begin().ticks()));
+    encode_marker_number(bytes, work.frame())?;
+    encode_marker_number(bytes, work.flow().map(FlowId::get))?;
+    encode_args(bytes, work.args())
+}
+
+fn decode_timeline(
+    cursor: &mut Cursor<'_>,
+    names: &mut NameReader,
+) -> io::Result<OwnedTimelineWork> {
+    let timeline_id = TimelineId::new(names.id(cursor)?);
+    let (timeline_name, kind) = names.kinded_name(cursor)?;
+    let timeline_kind = decode_timeline_kind(kind)?;
+    let desc_id = ScopeDescId::new(names.id(cursor)?);
+    let (name, location) = names.located_name(cursor)?;
+    let context_id = ContextId::new(decode_u64(cursor)?);
+    let begin = decode_clock(cursor, names)?;
+    let end = begin.ticks().saturating_add(decode_u64(cursor)?);
+    let frame = decode_marker_number(cursor)?;
+    let flow = decode_marker_number(cursor)?.map(FlowId::new);
+    let args = decode_args(cursor)?;
+    Ok(OwnedTimelineWork::new(
+        timeline_id,
+        timeline_name,
+        timeline_kind,
+        desc_id,
+        name,
+        context_id,
+        begin,
+        end,
+    )
+    .with_location(location)
+    .with_frame(frame)
+    .with_flow(flow)
+    .with_args(args))
+}
+
+fn encode_timeline_kind(kind: TimelineKind) -> io::Result<u8> {
+    match kind {
+        TimelineKind::Gpu => Ok(0),
+        TimelineKind::Display => Ok(1),
+        TimelineKind::Other => Ok(2),
+        _ => Err(unsupported("timeline kind")),
+    }
+}
+
+fn decode_timeline_kind(value: u8) -> io::Result<TimelineKind> {
+    match value {
+        0 => Ok(TimelineKind::Gpu),
+        1 => Ok(TimelineKind::Display),
+        2 => Ok(TimelineKind::Other),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unknown timeline kind: {value}"),
+        )),
+    }
 }
 
 fn encode_owned_clock(
@@ -1615,6 +1714,23 @@ impl NameWriter {
         Ok(())
     }
 
+    /// Writes a descriptor's id, then its name and a kind byte only the
+    /// first time the id appears in the payload.
+    pub(crate) fn encode_kinded(
+        &mut self,
+        bytes: &mut Vec<u8>,
+        id: u64,
+        name: &str,
+        kind: u8,
+    ) -> io::Result<()> {
+        encode_u64(bytes, id);
+        if self.0.insert(id) {
+            encode_string(bytes, name)?;
+            encode_u8(bytes, kind);
+        }
+        Ok(())
+    }
+
     /// Writes a scope descriptor's id, then its name and its function,
     /// file, and line only the first time the id appears in the payload.
     pub(crate) fn encode_located(
@@ -1649,6 +1765,7 @@ impl NameWriter {
 pub(crate) struct NameReader {
     names: HashMap<u64, String>,
     locations: HashMap<u64, OwnedSourceLocation>,
+    kinds: HashMap<u64, u8>,
     last_id: u64,
 }
 
@@ -1665,6 +1782,19 @@ impl NameReader {
         let name = decode_string(cursor)?;
         self.names.insert(self.last_id, name.clone());
         Ok(name)
+    }
+
+    /// Reads a descriptor's name and kind byte, or reuses those read with
+    /// its first row.
+    pub(crate) fn kinded_name(&mut self, cursor: &mut Cursor<'_>) -> io::Result<(String, u8)> {
+        if let Some(name) = self.names.get(&self.last_id) {
+            let kind = self.kinds.get(&self.last_id).copied().unwrap_or_default();
+            return Ok((name.clone(), kind));
+        }
+        let name = self.name(cursor)?;
+        let kind = decode_u8(cursor)?;
+        self.kinds.insert(self.last_id, kind);
+        Ok((name, kind))
     }
 
     /// Reads a scope descriptor's name and location, or reuses those read

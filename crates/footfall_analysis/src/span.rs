@@ -6,7 +6,7 @@
 use crate::time::TimeRange;
 use core::fmt;
 use core::time::Duration;
-use footfall_core::{ContextId, ScopeDescId, ScopeToken};
+use footfall_core::{ClockId, ContextId, ScopeDescId, ScopeToken, TimelineId, TimelineKind};
 use footfall_session::{OwnedArgEntry, OwnedLabelValue, OwnedSourceLocation};
 use std::sync::Arc;
 
@@ -62,6 +62,42 @@ pub struct Span {
     pub(crate) child_time: Duration,
     pub(crate) interrupted: bool,
     pub(crate) args: Vec<OwnedArgEntry>,
+    pub(crate) timeline: Option<TimelineId>,
+    pub(crate) frame: Option<u64>,
+    pub(crate) placement: Option<Placement>,
+}
+
+/// How a span timed by another clock, such as a GPU pass, was placed on the
+/// trace's timeline, as [`Span::placement`] returns it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Placement {
+    pub(crate) between_syncs: bool,
+    pub(crate) distance: Duration,
+    pub(crate) via: Option<ClockId>,
+}
+
+impl Placement {
+    /// Returns `true` when both of the span's times lay between two syncs of
+    /// their clock, so drift between the clocks was followed.
+    #[must_use]
+    pub const fn between_syncs(&self) -> bool {
+        self.between_syncs
+    }
+
+    /// Returns how far the farther of the span's times lay from the clock
+    /// reading used to place it: the stretch over which an error in the
+    /// clock's nominal tick period accumulates.
+    #[must_use]
+    pub const fn distance(&self) -> Duration {
+        self.distance
+    }
+
+    /// Returns the clock the times were converted through, when their own
+    /// clock was only paired with another.
+    #[must_use]
+    pub const fn via(&self) -> Option<ClockId> {
+        self.via
+    }
 }
 
 impl Span {
@@ -111,10 +147,33 @@ impl Span {
     }
 
     /// Returns the thread that ran the span; resolve its name with
-    /// [`Trace::track`](crate::Trace::track).
+    /// [`Trace::track`](crate::Trace::track). For a span on a timeline, such
+    /// as a GPU pass, it is the thread that reported the span.
     #[must_use]
     pub const fn thread_id(&self) -> u64 {
         self.thread_id
+    }
+
+    /// Returns the timeline the span ran on, such as a GPU queue, or `None`
+    /// for a span on a CPU thread; resolve it with
+    /// [`Trace::timeline`](crate::Trace::timeline).
+    #[must_use]
+    pub const fn timeline(&self) -> Option<TimelineId> {
+        self.timeline
+    }
+
+    /// Returns the program's number for the frame the span belongs to, when
+    /// it was reported with one, as timeline spans are.
+    #[must_use]
+    pub const fn frame_number(&self) -> Option<u64> {
+        self.frame
+    }
+
+    /// Returns how a span timed by another clock was placed on the trace's
+    /// timeline, or `None` for a span timed by the runtime itself.
+    #[must_use]
+    pub const fn placement(&self) -> Option<Placement> {
+        self.placement
     }
 
     /// Returns when the span began.
@@ -253,16 +312,32 @@ impl OpenSpan {
     }
 }
 
-/// One thread's spans, in rows by depth, for drawing a timeline.
+/// One thread's spans, or one timeline's, such as a GPU queue's, in rows by
+/// depth, for drawing a timeline.
 ///
 /// Row `d` holds the spans of depth `d`, ordered by begin time, so a
 /// timeline draws [`spans_in`](Self::spans_in) for each visible row, or
 /// [`zones`](Self::zones) to merge spans too short to see at its zoom.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Track {
-    pub(crate) id: u64,
+    pub(crate) kind: TrackKind,
     pub(crate) name: Option<String>,
     pub(crate) rows: Vec<Row>,
+}
+
+/// What a [`Track`] holds: one CPU thread's spans, or one timeline's.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum TrackKind {
+    /// A CPU thread, by its id within the runtime instance.
+    Thread(u64),
+    /// A timeline that is not a CPU thread, such as a GPU queue.
+    Timeline {
+        /// The timeline's id within the runtime instance.
+        id: TimelineId,
+        /// What the timeline stands for.
+        kind: TimelineKind,
+    },
 }
 
 /// One row of a track: spans by begin time, with the latest end so far at
@@ -298,6 +373,13 @@ impl Row {
         self.spans.get(at).filter(|span| span.id == id)
     }
 
+    pub(crate) fn find_mut(&mut self, begin: Duration, id: SpanId) -> Option<&mut Span> {
+        let at = self
+            .spans
+            .partition_point(|held| (held.begin, held.id) < (begin, id));
+        self.spans.get_mut(at).filter(|span| span.id == id)
+    }
+
     pub(crate) fn overlapping(&self, range: TimeRange) -> impl Iterator<Item = &Span> {
         let first = self.latest_end.partition_point(|end| *end < range.start());
         self.spans[first..]
@@ -327,13 +409,41 @@ impl Row {
 }
 
 impl Track {
-    /// Returns the thread's id within the runtime instance.
-    #[must_use]
-    pub const fn id(&self) -> u64 {
-        self.id
+    pub(crate) const fn new(kind: TrackKind) -> Self {
+        Self {
+            kind,
+            name: None,
+            rows: Vec::new(),
+        }
     }
 
-    /// Returns the thread's name, if it had one.
+    /// Returns whether the track is a CPU thread's or a timeline's.
+    #[must_use]
+    pub const fn kind(&self) -> TrackKind {
+        self.kind
+    }
+
+    /// Returns the thread's id within the runtime instance, for a thread's
+    /// track.
+    #[must_use]
+    pub const fn thread_id(&self) -> Option<u64> {
+        match self.kind {
+            TrackKind::Thread(id) => Some(id),
+            TrackKind::Timeline { .. } => None,
+        }
+    }
+
+    /// Returns the timeline's id within the runtime instance, for a
+    /// timeline's track.
+    #[must_use]
+    pub const fn timeline_id(&self) -> Option<TimelineId> {
+        match self.kind {
+            TrackKind::Thread(_) => None,
+            TrackKind::Timeline { id, .. } => Some(id),
+        }
+    }
+
+    /// Returns the thread's or timeline's name, if it had one.
     #[must_use]
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()

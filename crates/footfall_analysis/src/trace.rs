@@ -7,18 +7,19 @@ use crate::basis::{Gap, Recorded, Signal};
 use crate::frame::{Frame, FrameCounter, FrameId};
 use crate::query::SpanQuery;
 use crate::signal::{CounterSample, CounterSeries, Flow, FlowStep, Message, Resource};
-use crate::span::{OpenSpan, Span, SpanId, Track};
+use crate::span::{OpenSpan, Placement, Span, SpanId, Track, TrackKind};
 use crate::time::{TimeRange, nanos};
 use core::fmt;
 use core::time::Duration;
 use footfall_core::{
-    ContextId, CounterDescId, FlowId, InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId,
-    ResourceKindId, ScopeDescId, ScopeToken,
+    ContextId, CounterDescId, FlowId, FlowPhase, InstrumentationLevel, MarkerKind, MarkerPhase,
+    ResourceId, ResourceKindId, ScopeDescId, ScopeToken, TimelineId,
 };
 use footfall_runtime::{CounterKind, Drops, SnapshotMetadata};
 use footfall_session::{
     Clocks, OwnedArgEntry, OwnedContextSnapshot, OwnedCounterSnapshot, OwnedHistogramSnapshot,
-    OwnedLabelValue, OwnedObservation, OwnedSnapshot, OwnedSourceLocation, SnapshotKind,
+    OwnedLabelValue, OwnedObservation, OwnedSnapshot, OwnedSourceLocation, OwnedTimelineWork,
+    SnapshotKind,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -55,8 +56,14 @@ pub struct Trace {
     forgotten_before: Duration,
     names: HashSet<Arc<str>>,
     tracks: BTreeMap<u64, Track>,
+    timelines: BTreeMap<TimelineId, Track>,
+    /// Placed timeline spans reported with a frame number, by that number.
+    frame_spans: HashMap<u64, Vec<SpanId>>,
+    /// Timeline spans whose clock has no path to the runtime's yet, with
+    /// their event's sequence number and reporting thread.
+    unplaced: Vec<(u64, u64, Box<OwnedTimelineWork>)>,
     contexts: BTreeMap<ContextId, OwnedContextSnapshot>,
-    span_index: HashMap<SpanId, (u64, u32, Duration)>,
+    span_index: HashMap<SpanId, (Lane, u32, Duration)>,
     begun: HashMap<ScopeToken, Begun>,
     stacks: HashMap<u64, Vec<ScopeToken>>,
     unmatched_ends: Vec<Duration>,
@@ -102,6 +109,13 @@ struct OpenMark {
     context_id: ContextId,
     thread_id: u64,
     begin: Duration,
+}
+
+/// Which track a span is on.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Lane {
+    Thread(u64),
+    Timeline(TimelineId),
 }
 
 /// How a pushed snapshot followed the ones before it, as
@@ -241,8 +255,10 @@ impl Trace {
         }
 
         for thread in snapshot.threads() {
-            let track = self.tracks.entry(thread.id()).or_default();
-            track.id = thread.id();
+            let track = self
+                .tracks
+                .entry(thread.id())
+                .or_insert_with(|| Track::new(TrackKind::Thread(thread.id())));
             if let Some(name) = thread.name() {
                 track.name = Some(name.to_owned());
             }
@@ -287,6 +303,9 @@ impl Trace {
             self.lose_continuity();
         }
         self.gaps.extend(new_gaps);
+        // Clock readings may follow the work they time, so place timeline
+        // spans once the whole snapshot is in, and keep trying later.
+        self.place_timeline_spans(&mut pushed);
 
         self.next_sequence = self.next_sequence.max(snapshot.window().next());
         self.captured_at = self.captured_at.max(nanos(snapshot.captured_at_nanos()));
@@ -452,12 +471,20 @@ impl Trace {
                     child_time: begun.child_time,
                     interrupted: begun.interrupted,
                     args: begun.args,
+                    timeline: None,
+                    frame: None,
+                    placement: None,
                 };
                 pushed.spans.push(span.id);
-                self.span_index
-                    .insert(span.id, (span.thread_id, span.depth, span.begin));
-                let track = self.tracks.entry(span.thread_id).or_default();
-                track.id = span.thread_id;
+                self.span_index.insert(
+                    span.id,
+                    (Lane::Thread(span.thread_id), span.depth, span.begin),
+                );
+                let thread_id = span.thread_id;
+                let track = self
+                    .tracks
+                    .entry(thread_id)
+                    .or_insert_with(|| Track::new(TrackKind::Thread(thread_id)));
                 track.row_mut(span.depth).insert(span);
             }
             OwnedObservation::FrameMarker {
@@ -659,8 +686,115 @@ impl Trace {
                         span,
                     });
             }
+            OwnedObservation::TimelineSpan { span } => {
+                self.unplaced
+                    .push((event.sequence(), thread_id, span.clone()));
+            }
             _ => {}
         }
+    }
+
+    /// Places the timeline spans whose clock now leads to the runtime's.
+    fn place_timeline_spans(&mut self, pushed: &mut Pushed) {
+        let waiting = core::mem::take(&mut self.unplaced);
+        for (sequence, thread_id, work) in waiting {
+            match self.place(sequence, thread_id, &work) {
+                Some(id) => pushed.spans.push(id),
+                None => self.unplaced.push((sequence, thread_id, work)),
+            }
+        }
+    }
+
+    /// Converts a timeline span's times and puts it on its timeline's track,
+    /// inside the deepest span already there that contains it.
+    fn place(&mut self, sequence: u64, thread_id: u64, work: &OwnedTimelineWork) -> Option<SpanId> {
+        let clock = work.begin().clock_id();
+        let begin = self.clocks.to_runtime(clock, work.begin().ticks())?;
+        let end = self.clocks.to_runtime(clock, work.end())?;
+        let begin_at = nanos(begin.nanos());
+        let end_at = nanos(end.nanos()).max(begin_at);
+        let id = SpanId::new(sequence);
+        let name = self.intern(work.name());
+        let timeline_id = work.timeline_id();
+        let track = self.timelines.entry(timeline_id).or_insert_with(|| {
+            let mut track = Track::new(TrackKind::Timeline {
+                id: timeline_id,
+                kind: work.timeline_kind(),
+            });
+            track.name = Some(work.timeline_name().to_owned());
+            track
+        });
+        let range = TimeRange::new(begin_at, end_at);
+        let mut depth = 0;
+        let mut parent = None;
+        for row in (0..track.depth()).rev() {
+            if let Some(outer) = track
+                .spans_in(row, range)
+                .find(|outer| outer.begin <= begin_at && end_at <= outer.end)
+            {
+                depth = row + 1;
+                parent = Some((outer.id, outer.begin));
+                break;
+            }
+        }
+        if let Some((parent_id, parent_begin)) = parent
+            && let Some(outer) = track.row_mut(depth - 1).find_mut(parent_begin, parent_id)
+        {
+            outer.child_time = outer
+                .child_time
+                .saturating_add(end_at.saturating_sub(begin_at));
+        }
+        track.row_mut(depth).insert(Span {
+            id,
+            end_sequence: sequence,
+            token: ScopeToken::INVALID,
+            desc_id: work.desc_id(),
+            name,
+            location: work.location().cloned(),
+            context_id: work.context_id(),
+            thread_id,
+            begin: begin_at,
+            end: end_at,
+            depth,
+            parent: parent.map(|(parent_id, _)| parent_id),
+            child_time: Duration::ZERO,
+            interrupted: false,
+            args: work.args().to_vec(),
+            timeline: Some(timeline_id),
+            frame: work.frame(),
+            placement: Some(Placement {
+                between_syncs: begin.between_syncs() && end.between_syncs(),
+                distance: nanos(begin.distance().max(end.distance())),
+                via: begin.via(),
+            }),
+        });
+        self.span_index
+            .insert(id, (Lane::Timeline(timeline_id), depth, begin_at));
+        if let Some(number) = work.frame() {
+            self.frame_spans.entry(number).or_default().push(id);
+        }
+        if let Some(flow) = work.flow() {
+            let steps = &mut self
+                .flows
+                .entry(flow)
+                .or_insert_with(|| Flow {
+                    id: flow,
+                    steps: Vec::new(),
+                })
+                .steps;
+            let step = FlowStep {
+                sequence,
+                at: begin_at,
+                thread_id,
+                phase: FlowPhase::End,
+                context_id: work.context_id(),
+                span: Some(id),
+            };
+            let at =
+                steps.partition_point(|held| (held.at, held.sequence) <= (step.at, step.sequence));
+            steps.insert(at, step);
+        }
+        Some(id)
     }
 
     /// Returns the live resource with this id, or one created before the
@@ -704,13 +838,18 @@ impl Trace {
             return;
         }
         self.forgotten_before = before;
-        for track in self.tracks.values_mut() {
+        for track in self.tracks.values_mut().chain(self.timelines.values_mut()) {
             for row in &mut track.rows {
                 for id in row.forget(before) {
                     self.span_index.remove(&id);
                 }
             }
         }
+        let span_index = &self.span_index;
+        self.frame_spans.retain(|_, ids| {
+            ids.retain(|id| span_index.contains_key(id));
+            !ids.is_empty()
+        });
         for marks in &mut self.marks {
             marks.retain(|frame| frame.end >= before);
         }
@@ -811,9 +950,10 @@ impl Trace {
         SpanQuery::new(self)
     }
 
-    /// Returns one track per thread that recorded anything, by thread id.
+    /// Returns one track per thread that recorded anything, by thread id,
+    /// then one per timeline, such as a GPU queue, by timeline id.
     pub fn tracks(&self) -> impl Iterator<Item = &Track> {
-        self.tracks.values()
+        self.tracks.values().chain(self.timelines.values())
     }
 
     /// Returns the track of the thread `thread_id`.
@@ -822,12 +962,63 @@ impl Trace {
         self.tracks.get(&thread_id)
     }
 
+    /// Returns the timelines that are not CPU threads, such as GPU queues,
+    /// by timeline id.
+    pub fn timelines(&self) -> impl Iterator<Item = &Track> {
+        self.timelines.values()
+    }
+
+    /// Returns the track of the timeline `timeline_id`.
+    #[must_use]
+    pub fn timeline(&self, timeline_id: TimelineId) -> Option<&Track> {
+        self.timelines.get(&timeline_id)
+    }
+
+    /// Returns the track of the timeline named `name`.
+    #[must_use]
+    pub fn timeline_named(&self, name: &str) -> Option<&Track> {
+        self.timelines
+            .values()
+            .find(|track| track.name.as_deref() == Some(name))
+    }
+
+    /// Returns the spans on timelines reported as part of the frame the
+    /// program numbered `number`, such as that frame's GPU passes.
+    pub fn frame_spans(&self, number: u64) -> impl Iterator<Item = &Span> {
+        self.frame_spans
+            .get(&number)
+            .into_iter()
+            .flatten()
+            .filter_map(|id| self.span(*id))
+    }
+
+    pub(crate) fn track_kind_of(&self, span: &Span) -> TrackKind {
+        match span.timeline.and_then(|id| self.timelines.get(&id)) {
+            Some(track) => track.kind(),
+            None => TrackKind::Thread(span.thread_id),
+        }
+    }
+
+    /// Returns how many timeline spans could not be placed on the trace's
+    /// timeline, because their clock has no sync or pair leading to the
+    /// runtime's clock.
+    #[must_use]
+    pub fn unplaced_spans(&self) -> usize {
+        self.unplaced.len()
+    }
+
+    fn lane(&self, lane: Lane) -> Option<&Track> {
+        match lane {
+            Lane::Thread(thread_id) => self.tracks.get(&thread_id),
+            Lane::Timeline(timeline_id) => self.timelines.get(&timeline_id),
+        }
+    }
+
     /// Returns the span with id `id`, if the trace holds it.
     #[must_use]
     pub fn span(&self, id: SpanId) -> Option<&Span> {
-        let (thread_id, depth, begin) = *self.span_index.get(&id)?;
-        self.tracks
-            .get(&thread_id)?
+        let (lane, depth, begin) = *self.span_index.get(&id)?;
+        self.lane(lane)?
             .rows
             .get(usize::try_from(depth).ok()?)?
             .find(begin, id)
@@ -842,7 +1033,10 @@ impl Trace {
     /// Returns the spans nested directly in `span`, by begin time.
     #[must_use]
     pub fn children(&self, span: &Span) -> Vec<&Span> {
-        self.track(span.thread_id)
+        let lane = span
+            .timeline
+            .map_or(Lane::Thread(span.thread_id), Lane::Timeline);
+        self.lane(lane)
             .map(|track| {
                 track
                     .spans_in(span.depth.saturating_add(1), span.range())

@@ -9,12 +9,12 @@ use std::collections::{HashMap, HashSet};
 use footfall_core::{
     ClockId, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, LabelValue, MarkerKind,
     MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, SourceLocation, TickPeriod,
-    Unit,
+    TimelineId, TimelineKind, Unit,
 };
 use footfall_runtime::{
     ClockTicks, ContextSnapshot, CounterKind, CounterSnapshot, Drops, EventCursor, EventWindow,
     HISTOGRAM_BUCKET_COUNT, HistogramSnapshot, Observation, Snapshot, SnapshotMetadata,
-    ThreadSnapshot, TimedObservation,
+    ThreadSnapshot, TimedObservation, TimelineWork,
 };
 
 use crate::{PROTOCOL_VERSION, ProtocolVersion};
@@ -1071,6 +1071,182 @@ pub enum OwnedObservation {
         /// The second clock's reading.
         second: OwnedClockTicks,
     },
+    /// Finished work on a timeline that is not a CPU thread, timed by
+    /// another clock; see `footfall_core::timeline_span`.
+    TimelineSpan {
+        /// The work.
+        span: Box<OwnedTimelineWork>,
+    },
+}
+
+/// Finished work on a timeline that is not a CPU thread, as
+/// [`OwnedObservation::TimelineSpan`] carries it. Its times are ticks of
+/// another clock; [`Clocks`](crate::Clocks) converts them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnedTimelineWork {
+    timeline_id: TimelineId,
+    timeline_name: String,
+    timeline_kind: TimelineKind,
+    desc_id: ScopeDescId,
+    name: String,
+    location: Option<OwnedSourceLocation>,
+    context_id: ContextId,
+    begin: OwnedClockTicks,
+    end: u64,
+    frame: Option<u64>,
+    flow: Option<FlowId>,
+    args: Vec<OwnedArgEntry>,
+}
+
+impl OwnedTimelineWork {
+    /// Describes work of the scope `desc_id`, named `name`, on the timeline
+    /// `timeline_id`, attributed to `context_id`, that began at
+    /// `begin`'s ticks and ended at `end` ticks of the same clock.
+    #[must_use]
+    pub const fn new(
+        timeline_id: TimelineId,
+        timeline_name: String,
+        timeline_kind: TimelineKind,
+        desc_id: ScopeDescId,
+        name: String,
+        context_id: ContextId,
+        begin: OwnedClockTicks,
+        end: u64,
+    ) -> Self {
+        Self {
+            timeline_id,
+            timeline_name,
+            timeline_kind,
+            desc_id,
+            name,
+            location: None,
+            context_id,
+            begin,
+            end,
+            frame: None,
+            flow: None,
+            args: Vec::new(),
+        }
+    }
+
+    /// Sets where the scope descriptor is declared.
+    #[must_use]
+    pub fn with_location(mut self, location: Option<OwnedSourceLocation>) -> Self {
+        self.location = location;
+        self
+    }
+
+    /// Sets the program's number for the frame the work belongs to.
+    #[must_use]
+    pub const fn with_frame(mut self, frame: Option<u64>) -> Self {
+        self.frame = frame;
+        self
+    }
+
+    /// Sets the flow the work ends.
+    #[must_use]
+    pub const fn with_flow(mut self, flow: Option<FlowId>) -> Self {
+        self.flow = flow;
+        self
+    }
+
+    /// Sets the per-instance arguments.
+    #[must_use]
+    pub fn with_args(mut self, args: Vec<OwnedArgEntry>) -> Self {
+        self.args = args;
+        self
+    }
+
+    /// Returns the timeline's id, local to the producing runtime instance.
+    #[must_use]
+    pub const fn timeline_id(&self) -> TimelineId {
+        self.timeline_id
+    }
+
+    /// Returns the timeline's name.
+    #[must_use]
+    pub fn timeline_name(&self) -> &str {
+        &self.timeline_name
+    }
+
+    /// Returns what the timeline stands for.
+    #[must_use]
+    pub const fn timeline_kind(&self) -> TimelineKind {
+        self.timeline_kind
+    }
+
+    /// Returns the scope descriptor's id.
+    #[must_use]
+    pub const fn desc_id(&self) -> ScopeDescId {
+        self.desc_id
+    }
+
+    /// Returns the scope descriptor's name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns where the scope descriptor is declared, when it records that.
+    #[must_use]
+    pub const fn location(&self) -> Option<&OwnedSourceLocation> {
+        self.location.as_ref()
+    }
+
+    /// Returns the context the work is attributed to.
+    #[must_use]
+    pub const fn context_id(&self) -> ContextId {
+        self.context_id
+    }
+
+    /// Returns the clock and the tick the work began at.
+    #[must_use]
+    pub const fn begin(&self) -> &OwnedClockTicks {
+        &self.begin
+    }
+
+    /// Returns the tick of the same clock the work ended at.
+    #[must_use]
+    pub const fn end(&self) -> u64 {
+        self.end
+    }
+
+    /// Returns the program's number for the frame the work belongs to.
+    #[must_use]
+    pub const fn frame(&self) -> Option<u64> {
+        self.frame
+    }
+
+    /// Returns the flow the work ends.
+    #[must_use]
+    pub const fn flow(&self) -> Option<FlowId> {
+        self.flow
+    }
+
+    /// Returns the per-instance arguments.
+    #[must_use]
+    pub fn args(&self) -> &[OwnedArgEntry] {
+        &self.args
+    }
+}
+
+impl From<&TimelineWork> for OwnedTimelineWork {
+    fn from(work: &TimelineWork) -> Self {
+        Self::new(
+            work.timeline_id(),
+            String::from(work.timeline_name()),
+            work.timeline_kind(),
+            work.desc_id(),
+            String::from(work.name()),
+            work.context_id(),
+            OwnedClockTicks::from(&work.begin()),
+            work.end(),
+        )
+        .with_location(work.location().map(OwnedSourceLocation::from))
+        .with_frame(work.frame())
+        .with_flow(work.flow())
+        .with_args(owned_args(*work.args()))
+    }
 }
 
 /// One reading of a clock other than the producer's, as
@@ -1686,6 +1862,9 @@ fn owned_observation(observation: &Observation) -> Option<OwnedObservation> {
         Observation::ClockPair { first, second } => OwnedObservation::ClockPair {
             first: first.into(),
             second: second.into(),
+        },
+        Observation::TimelineSpan { span } => OwnedObservation::TimelineSpan {
+            span: Box::new(span.as_ref().into()),
         },
         _ => return None,
     })

@@ -49,8 +49,8 @@ use footfall_core::{
     Args, Backend, ClockId, ClockReading, Context, ContextHandle, ContextId, CounterDesc,
     CounterDescId, EventDesc, EventDescId, FlowId, FlowPhase, InstallBackendError,
     InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ResourceKindId,
-    ScopeDesc, ScopeDescId, ScopeToken, SourceLocation, TickPeriod, Unit, install_backend,
-    set_max_level,
+    ScopeDesc, ScopeDescId, ScopeToken, SourceLocation, TickPeriod, TimelineId, TimelineKind,
+    TimelineSpan, Unit, install_backend, set_max_level,
 };
 use std::{
     boxed::Box,
@@ -2268,6 +2268,129 @@ pub enum Observation {
         /// The second clock's reading.
         second: ClockTicks,
     },
+    /// Finished work on a timeline that is not a CPU thread, timed by
+    /// another clock; see [`footfall_core::timeline_span`]. It is boxed, so
+    /// every other event stays as small as before.
+    TimelineSpan {
+        /// The work.
+        span: Box<TimelineWork>,
+    },
+}
+
+/// Finished work on a timeline that is not a CPU thread, as
+/// [`Observation::TimelineSpan`] carries it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimelineWork {
+    timeline_id: TimelineId,
+    timeline_name: &'static str,
+    timeline_kind: TimelineKind,
+    desc_id: ScopeDescId,
+    name: &'static str,
+    location: Option<&'static SourceLocation>,
+    context_id: ContextId,
+    begin: ClockTicks,
+    end: u64,
+    frame: Option<u64>,
+    flow: Option<FlowId>,
+    args: Args,
+}
+
+impl TimelineWork {
+    /// Captures `span`, recording its descriptors by id and name.
+    #[must_use]
+    pub fn new(span: &TimelineSpan) -> Self {
+        Self {
+            timeline_id: span.timeline().id(),
+            timeline_name: span.timeline().name(),
+            timeline_kind: span.timeline().kind(),
+            desc_id: span.scope().id(),
+            name: span.scope().name(),
+            location: span.scope().location(),
+            context_id: span.context().id(),
+            begin: ClockTicks::new(
+                span.clock().id(),
+                span.clock().name(),
+                span.begin(),
+                span.period(),
+            ),
+            end: span.end(),
+            frame: span.frame(),
+            flow: span.flow(),
+            args: *span.args(),
+        }
+    }
+
+    /// Returns the timeline descriptor's id; see [`Snapshot`].
+    #[must_use]
+    pub const fn timeline_id(&self) -> TimelineId {
+        self.timeline_id
+    }
+
+    /// Returns the timeline's name.
+    #[must_use]
+    pub const fn timeline_name(&self) -> &'static str {
+        self.timeline_name
+    }
+
+    /// Returns what the timeline stands for.
+    #[must_use]
+    pub const fn timeline_kind(&self) -> TimelineKind {
+        self.timeline_kind
+    }
+
+    /// Returns the scope descriptor's id; see [`Snapshot`].
+    #[must_use]
+    pub const fn desc_id(&self) -> ScopeDescId {
+        self.desc_id
+    }
+
+    /// Returns the scope descriptor's name.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// Returns where the scope descriptor is declared, when it records that.
+    #[must_use]
+    pub const fn location(&self) -> Option<&'static SourceLocation> {
+        self.location
+    }
+
+    /// Returns the context the work is attributed to.
+    #[must_use]
+    pub const fn context_id(&self) -> ContextId {
+        self.context_id
+    }
+
+    /// Returns the clock and the tick the work began at.
+    #[must_use]
+    pub const fn begin(&self) -> ClockTicks {
+        self.begin
+    }
+
+    /// Returns the tick of the same clock the work ended at.
+    #[must_use]
+    pub const fn end(&self) -> u64 {
+        self.end
+    }
+
+    /// Returns the program's number for the frame the work belongs to.
+    #[must_use]
+    pub const fn frame(&self) -> Option<u64> {
+        self.frame
+    }
+
+    /// Returns the flow the work ends.
+    #[must_use]
+    pub const fn flow(&self) -> Option<FlowId> {
+        self.flow
+    }
+
+    /// Returns the per-instance arguments.
+    #[must_use]
+    pub const fn args(&self) -> &Args {
+        &self.args
+    }
 }
 
 /// One reading of a clock other than the runtime's, as
@@ -2346,6 +2469,7 @@ impl Observation {
             | Self::Flow { context_id, .. }
             | Self::Message { context_id, .. }
             | Self::CounterSample { context_id, .. } => Some(*context_id),
+            Self::TimelineSpan { span } => Some(span.context_id),
             Self::ScopeEnd { .. } | Self::ClockSync { .. } | Self::ClockPair { .. } => None,
         }
     }
@@ -2360,6 +2484,7 @@ impl Observation {
             | Self::Flow { context_id, .. }
             | Self::Message { context_id, .. }
             | Self::CounterSample { context_id, .. } => Some(context_id),
+            Self::TimelineSpan { span } => Some(&mut span.context_id),
             Self::ScopeEnd { .. } | Self::ClockSync { .. } | Self::ClockPair { .. } => None,
         }
     }
@@ -2422,6 +2547,11 @@ impl DescriptorIds {
                 Observation::ClockPair { first, second } => {
                     first.clock_id = ClockId::new(self.dense(first.clock_id.get()));
                     second.clock_id = ClockId::new(self.dense(second.clock_id.get()));
+                }
+                Observation::TimelineSpan { span } => {
+                    span.timeline_id = TimelineId::new(self.dense(span.timeline_id.get()));
+                    span.desc_id = ScopeDescId::new(self.dense(span.desc_id.get()));
+                    span.begin.clock_id = ClockId::new(self.dense(span.begin.clock_id.get()));
                 }
                 Observation::ScopeEnd { .. }
                 | Observation::FrameMarker { .. }
@@ -2866,6 +2996,19 @@ impl Backend for Runtime {
             Observation::ClockPair {
                 first: first.into(),
                 second: second.into(),
+            },
+            at_nanos,
+        );
+    }
+
+    fn timeline_span(&self, span: &TimelineSpan) {
+        if !self.level().captures_markers() {
+            return;
+        }
+        let at_nanos = self.now_nanos();
+        self.push_event_at(
+            Observation::TimelineSpan {
+                span: Box::new(TimelineWork::new(span)),
             },
             at_nanos,
         );

@@ -144,6 +144,9 @@ pub struct Basis {
     pub(crate) unmatched_ends: u64,
     pub(crate) gaps: Vec<Gap>,
     pub(crate) unobserved: Duration,
+    pub(crate) converted: u64,
+    pub(crate) farthest_conversion: Duration,
+    pub(crate) unplaced: u64,
 }
 
 impl Basis {
@@ -215,6 +218,28 @@ impl Basis {
         self.unobserved
     }
 
+    /// Returns how many of the counted spans were timed by another clock,
+    /// such as a GPU's, and converted to the trace's time.
+    #[must_use]
+    pub const fn converted(&self) -> u64 {
+        self.converted
+    }
+
+    /// Returns how far the farthest converted time lay from the clock
+    /// reading used to place it; see [`Placement::distance`](crate::Placement::distance).
+    #[must_use]
+    pub const fn farthest_conversion(&self) -> Duration {
+        self.farthest_conversion
+    }
+
+    /// Returns how many spans on timelines the query covers could not be
+    /// placed at all, because their clock has no sync or pair leading to
+    /// the runtime's clock, and so were left out.
+    #[must_use]
+    pub const fn unplaced(&self) -> u64 {
+        self.unplaced
+    }
+
     /// Returns `true` when nothing qualifies the answer: spans were recorded,
     /// every span in the selected time was counted, no events are missing,
     /// and the whole selected time was observed.
@@ -224,6 +249,7 @@ impl Basis {
             && self.interrupted == 0
             && self.open == 0
             && self.unmatched_ends == 0
+            && self.unplaced == 0
             && self.gaps.is_empty()
             && self.unobserved.is_zero()
     }
@@ -252,6 +278,13 @@ impl fmt::Display for Basis {
                 f,
                 "left out: {} still open, {} ended without a begin",
                 self.open, self.unmatched_ends
+            )?;
+        }
+        if self.converted > 0 || self.unplaced > 0 {
+            writeln!(
+                f,
+                "other clocks: {} spans placed, up to {:?} from a clock reading; {} could not be placed",
+                self.converted, self.farthest_conversion, self.unplaced
             )?;
         }
         if self.interrupted > 0 {

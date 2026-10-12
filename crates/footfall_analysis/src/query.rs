@@ -5,12 +5,12 @@
 
 use crate::basis::{Basis, Signal};
 use crate::frame::FrameId;
-use crate::span::Span;
+use crate::span::{Span, TrackKind};
 use crate::time::{Selection, TimeRange, merge_ranges};
 use crate::trace::Trace;
 use core::fmt;
 use core::time::Duration;
-use footfall_core::ContextId;
+use footfall_core::{ContextId, TimelineId};
 use footfall_session::{OwnedArgEntry, OwnedLabelValue};
 use std::collections::BTreeMap;
 
@@ -49,9 +49,12 @@ use std::collections::BTreeMap;
 pub struct SpanQuery<'t> {
     trace: &'t Trace,
     ranges: Option<Vec<TimeRange>>,
+    /// The program's numbers of the frames selected, by which timeline
+    /// spans reported with a frame number are selected.
+    frame_numbers: Vec<u64>,
     selection: Selection,
     name: Option<String>,
-    thread: Option<u64>,
+    tracks: Tracks,
     context: Option<ContextId>,
     labels: Vec<(String, Option<OwnedLabelValue>)>,
     args: Vec<(String, Option<OwnedLabelValue>)>,
@@ -96,7 +99,8 @@ impl<'t> Selected<'t> {
 pub enum GroupBy {
     /// The scope descriptor's name.
     Name,
-    /// The thread that ran the span.
+    /// The thread that ran the span, or for a span on a timeline such as a
+    /// GPU queue, the timeline.
     Thread,
     /// The context the span was attributed to, as a whole.
     Context,
@@ -113,6 +117,16 @@ pub enum GroupBy {
     Arg(String),
 }
 
+/// Which tracks a query covers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Tracks {
+    All,
+    Thread(u64),
+    Threads,
+    Timeline(TimelineId),
+    Timelines,
+}
+
 /// One part of a [`TableRow`]'s key, for one [`GroupBy`].
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
@@ -125,6 +139,14 @@ pub enum KeyPart {
         id: u64,
         /// The thread's name, if it had one.
         name: Option<String>,
+    },
+    /// A timeline that is not a CPU thread, such as a GPU queue, for
+    /// [`GroupBy::Thread`].
+    Timeline {
+        /// The timeline's id within the runtime instance.
+        id: TimelineId,
+        /// The timeline's name.
+        name: String,
     },
     /// A context.
     Context {
@@ -159,6 +181,7 @@ impl KeyPart {
             Self::Thread {
                 name: Some(name), ..
             } => format!("thread {name}"),
+            Self::Timeline { name, .. } => format!("timeline {name}"),
             Self::Context { labels, .. } => format!("context {labels}"),
             other => other.to_string(),
         }
@@ -173,6 +196,7 @@ impl fmt::Display for KeyPart {
                 name: Some(name), ..
             } => f.write_str(name),
             Self::Thread { id, name: None } => write!(f, "thread {id}"),
+            Self::Timeline { name, .. } => f.write_str(name),
             Self::Context { labels, .. } => f.write_str(labels),
             Self::Label {
                 key,
@@ -457,9 +481,10 @@ impl<'t> SpanQuery<'t> {
         Self {
             trace,
             ranges: None,
+            frame_numbers: Vec::new(),
             selection: Selection::StartsWithin,
             name: None,
-            thread: None,
+            tracks: Tracks::All,
             context: None,
             labels: Vec::new(),
             args: Vec::new(),
@@ -478,15 +503,32 @@ impl<'t> SpanQuery<'t> {
     /// Selects spans in the frames, passes, or transactions `frames`.
     /// Ids the trace does not hold select nothing.
     #[must_use]
+    ///
+    /// Spans on timelines that were reported with a frame number, such as
+    /// GPU passes, count toward the frame with that number, whole, however
+    /// the frame's time compares with theirs: a frame's GPU work usually
+    /// runs while the CPU works on the next frame.
     pub fn in_frames(mut self, frames: &[FrameId]) -> Self {
         let ranges = self.ranges.get_or_insert_with(Vec::new);
-        ranges.extend(
-            frames
-                .iter()
-                .filter_map(|id| self.trace.frame(*id))
-                .map(crate::Frame::range),
-        );
+        for frame in frames.iter().filter_map(|id| self.trace.frame(*id)) {
+            ranges.push(frame.range());
+            self.frame_numbers.extend(frame.number());
+        }
         self
+    }
+
+    /// Selects the frame covering `range`, numbered `number` by the program
+    /// when it has a number, as [`in_frames`](Self::in_frames) does.
+    pub(crate) fn in_frame_range(mut self, range: TimeRange, number: Option<u64>) -> Self {
+        self.ranges.get_or_insert_with(Vec::new).push(range);
+        self.frame_numbers.extend(number);
+        self
+    }
+
+    /// Returns `true` when `span` is selected by its frame number rather
+    /// than by its time.
+    fn by_frame_number(&self, span: &Span) -> bool {
+        !self.frame_numbers.is_empty() && span.timeline.is_some() && span.frame.is_some()
     }
 
     /// Sets how spans count toward the selected ranges; the default is
@@ -507,8 +549,43 @@ impl<'t> SpanQuery<'t> {
     /// Selects only spans run by the thread `thread_id`.
     #[must_use]
     pub const fn on_thread(mut self, thread_id: u64) -> Self {
-        self.thread = Some(thread_id);
+        self.tracks = Tracks::Thread(thread_id);
         self
+    }
+
+    /// Selects only spans on CPU threads, leaving out timelines such as GPU
+    /// queues.
+    #[must_use]
+    pub const fn on_threads(mut self) -> Self {
+        self.tracks = Tracks::Threads;
+        self
+    }
+
+    /// Selects only spans on the timeline `timeline_id`, such as one GPU
+    /// queue.
+    #[must_use]
+    pub const fn on_timeline(mut self, timeline_id: TimelineId) -> Self {
+        self.tracks = Tracks::Timeline(timeline_id);
+        self
+    }
+
+    /// Selects only spans on timelines that are not CPU threads, such as
+    /// GPU queues.
+    #[must_use]
+    pub const fn on_timelines(mut self) -> Self {
+        self.tracks = Tracks::Timelines;
+        self
+    }
+
+    fn allows(&self, kind: TrackKind) -> bool {
+        match (self.tracks, kind) {
+            (Tracks::All, _)
+            | (Tracks::Threads, TrackKind::Thread(_))
+            | (Tracks::Timelines, TrackKind::Timeline { .. }) => true,
+            (Tracks::Thread(wanted), TrackKind::Thread(id)) => wanted == id,
+            (Tracks::Timeline(wanted), TrackKind::Timeline { id, .. }) => wanted == id,
+            _ => false,
+        }
     }
 
     /// Selects only spans attributed to the context `context_id`.
@@ -558,15 +635,8 @@ impl<'t> SpanQuery<'t> {
         self.ranges.clone().map(merge_ranges)
     }
 
-    fn matches(
-        &self,
-        name: &str,
-        context_id: ContextId,
-        thread_id: u64,
-        args: &[OwnedArgEntry],
-    ) -> bool {
+    fn matches(&self, name: &str, context_id: ContextId, args: &[OwnedArgEntry]) -> bool {
         self.name.as_deref().is_none_or(|wanted| wanted == name)
-            && self.thread.is_none_or(|wanted| wanted == thread_id)
             && self.context.is_none_or(|wanted| wanted == context_id)
             && self
                 .labels
@@ -579,7 +649,7 @@ impl<'t> SpanQuery<'t> {
     }
 
     fn selects(&self, span: &Span) -> bool {
-        self.matches(&span.name, span.context_id, span.thread_id, &span.args)
+        self.matches(&span.name, span.context_id, &span.args)
     }
 
     /// Returns every selected span with the time it counts for, by thread,
@@ -589,7 +659,7 @@ impl<'t> SpanQuery<'t> {
         let ranges = self.merged_ranges();
         let mut selected = Vec::new();
         for track in self.trace.tracks() {
-            if self.thread.is_some_and(|thread| thread != track.id()) {
+            if !self.allows(track.kind()) {
                 continue;
             }
             for depth in 0..track.depth() {
@@ -609,7 +679,7 @@ impl<'t> SpanQuery<'t> {
                 };
                 for (index, range) in ranges.iter().enumerate() {
                     for span in track.spans_in(depth, *range) {
-                        if !self.selects(span) {
+                        if !self.selects(span) || self.by_frame_number(span) {
                             continue;
                         }
                         let include = match self.selection {
@@ -651,6 +721,23 @@ impl<'t> SpanQuery<'t> {
                         });
                     }
                 }
+            }
+        }
+        let mut numbers = self.frame_numbers.clone();
+        numbers.sort_unstable();
+        numbers.dedup();
+        for number in numbers {
+            for span in self
+                .trace
+                .frame_spans(number)
+                .filter(|span| self.allows(self.trace.track_kind_of(span)))
+                .filter(|span| self.selects(span))
+            {
+                selected.push(Selected {
+                    span,
+                    time: span.duration(),
+                    self_time: span.self_time(),
+                });
             }
         }
         selected
@@ -718,12 +805,22 @@ impl<'t> SpanQuery<'t> {
             .iter()
             .map(|group| match group {
                 GroupBy::Name => KeyPart::Name(span.name.to_string()),
-                GroupBy::Thread => KeyPart::Thread {
-                    id: span.thread_id,
-                    name: self
-                        .trace
-                        .track(span.thread_id)
-                        .and_then(|track| track.name().map(ToOwned::to_owned)),
+                GroupBy::Thread => match span.timeline {
+                    Some(id) => KeyPart::Timeline {
+                        id,
+                        name: self
+                            .trace
+                            .timeline(id)
+                            .and_then(|track| track.name().map(ToOwned::to_owned))
+                            .unwrap_or_default(),
+                    },
+                    None => KeyPart::Thread {
+                        id: span.thread_id,
+                        name: self
+                            .trace
+                            .track(span.thread_id)
+                            .and_then(|track| track.name().map(ToOwned::to_owned)),
+                    },
                 },
                 GroupBy::Context => KeyPart::Context {
                     id: span.context_id,
@@ -755,7 +852,9 @@ impl<'t> SpanQuery<'t> {
             .trace
             .begun()
             .filter(|(name, context_id, thread_id, begin, args)| {
-                self.matches(name, *context_id, *thread_id, args) && in_scope(*begin)
+                self.allows(TrackKind::Thread(*thread_id))
+                    && self.matches(name, *context_id, args)
+                    && in_scope(*begin)
             })
             .count() as u64;
         let observed = self.trace.observed();
@@ -809,6 +908,21 @@ impl<'t> SpanQuery<'t> {
             unmatched_ends,
             gaps,
             unobserved,
+            converted: selected
+                .iter()
+                .filter(|selected| selected.span.placement.is_some())
+                .count() as u64,
+            farthest_conversion: selected
+                .iter()
+                .filter_map(|selected| selected.span.placement)
+                .map(|placement| placement.distance())
+                .max()
+                .unwrap_or_default(),
+            unplaced: if matches!(self.tracks, Tracks::Thread(_) | Tracks::Threads) {
+                0
+            } else {
+                self.trace.unplaced_spans() as u64
+            },
         }
     }
 }

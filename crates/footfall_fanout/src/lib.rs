@@ -26,7 +26,7 @@
 use footfall_core::{
     Args, Backend, ClockReading, Context, ContextHandle, CounterDesc, EventDesc, FlowId, FlowPhase,
     InstallBackendError, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ScopeDesc,
-    ScopeToken, install_backend,
+    ScopeToken, TimelineSpan, install_backend,
 };
 use std::{
     boxed::Box,
@@ -187,6 +187,11 @@ impl Backend for Fanout {
     ) {
         self.primary.numbered_marker(kind, phase, number, context);
         self.secondary.numbered_marker(kind, phase, number, context);
+    }
+
+    fn timeline_span(&self, span: &TimelineSpan) {
+        self.primary.timeline_span(span);
+        self.secondary.timeline_span(span);
     }
 
     fn clock_sync(&self, reading: ClockReading) {

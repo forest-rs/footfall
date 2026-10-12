@@ -269,7 +269,26 @@ fn info(path: &Path, budget_ms: f64) -> Result<()> {
     let trace = Trace::from_snapshot(&snapshot);
     report::frames(trace.frames(), budget);
     println!();
-    report::spans(&trace.spans().group_by(GroupBy::Name).table(), 12);
+    report::spans(
+        "Where the time went on the CPU",
+        &trace.spans().on_threads().group_by(GroupBy::Name).table(),
+        12,
+    );
+    for timeline in trace.timelines() {
+        let Some(id) = timeline.timeline_id() else {
+            continue;
+        };
+        println!();
+        report::spans(
+            &format!("On {}", track_label(timeline)),
+            &trace
+                .spans()
+                .on_timeline(id)
+                .group_by(GroupBy::Name)
+                .table(),
+            8,
+        );
+    }
     println!();
     report::counters(&snapshot, 16);
     println!();
@@ -357,10 +376,7 @@ fn slow(path: &Path, budget_ms: f64, top: usize, by_arg: Option<&str>) -> Result
                 || String::from("nothing"),
                 |parent| parent.name().to_owned(),
             );
-            let thread = trace
-                .track(span.thread_id())
-                .and_then(|track| track.name())
-                .unwrap_or("unnamed thread");
+            let thread = span_track(&trace, span);
             println!(
                 "\n{HEADING}Worst {NAME}{name}{NAME:#}{HEADING:#} {DIM}· {} ({}) on {thread}, inside {parent}, in {}{DIM:#}",
                 format::duration(span.duration()),
@@ -400,15 +416,26 @@ fn span(path: &Path, id: SpanId) -> Result<()> {
     let Some(span) = trace.span(id) else {
         return Err(format!("{} holds no completed span {id}", path.display()).into());
     };
-    let thread = trace
-        .track(span.thread_id())
-        .and_then(|track| track.name())
-        .map_or_else(|| format!("thread {}", span.thread_id()), str::to_owned);
+    let thread = span_track(&trace, span);
     println!(
         "{HEADING}{NAME}{}{NAME:#}{HEADING:#} {DIM}· {id} · {thread} · depth {}{DIM:#}",
         span.name(),
         span.depth()
     );
+    if let Some(number) = span.frame_number() {
+        println!("  frame number {number}");
+    }
+    if let Some(placement) = span.placement() {
+        let how = if placement.between_syncs() {
+            "between two syncs of its clock"
+        } else {
+            "by extending from its clock's nearest sync"
+        };
+        println!(
+            "  {DIM}timed by another clock; placed {how}, {} from a reading{DIM:#}",
+            format::duration(placement.distance())
+        );
+    }
     println!(
         "  {} from {} to {}, {} of it its own",
         format::duration(span.duration()),
@@ -489,6 +516,31 @@ fn span(path: &Path, id: SpanId) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Names the track a span ran on: its thread, or its timeline.
+fn span_track(trace: &Trace, span: &footfall::analysis::Span) -> String {
+    match span.timeline().and_then(|id| trace.timeline(id)) {
+        Some(timeline) => track_label(timeline),
+        None => trace
+            .track(span.thread_id())
+            .and_then(|track| track.name())
+            .map_or_else(|| format!("thread {}", span.thread_id()), str::to_owned),
+    }
+}
+
+/// Names a track for a heading: a thread's name, or a timeline's kind and
+/// name, such as `GPU graphics`.
+fn track_label(track: &footfall::analysis::Track) -> String {
+    let name = track.name().unwrap_or("unnamed");
+    match track.kind() {
+        footfall::analysis::TrackKind::Timeline { kind, .. } => match kind {
+            footfall::TimelineKind::Gpu => format!("GPU {name}"),
+            footfall::TimelineKind::Display => format!("display {name}"),
+            _ => format!("timeline {name}"),
+        },
+        _ => name.to_owned(),
+    }
 }
 
 fn export(path: &Path, output: &Path) -> Result<()> {

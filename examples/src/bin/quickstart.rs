@@ -64,7 +64,11 @@ fn main() -> std::io::Result<()> {
     let trace = Trace::from_snapshot(&snapshot);
     report::frames(trace.frames(), 16_667);
     println!();
-    report::spans(&trace.spans().group_by(GroupBy::Name).table(), 10);
+    report::spans(
+        "Where the time went",
+        &trace.spans().group_by(GroupBy::Name).table(),
+        10,
+    );
     println!();
     report::spans_by_label(&trace, "pass");
     println!();

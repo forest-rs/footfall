@@ -69,7 +69,11 @@ fn main() {
     let trace = Trace::from_snapshot(&snapshot);
     report::frames(trace.frames(), 1_000_000 / u64::from(args.fps.max(1)));
     println!();
-    report::spans(&trace.spans().group_by(GroupBy::Name).table(), 8);
+    report::spans(
+        "Where the time went",
+        &trace.spans().group_by(GroupBy::Name).table(),
+        8,
+    );
 }
 
 /// Blocks this thread until Ctrl-C.

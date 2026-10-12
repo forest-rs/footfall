@@ -3,7 +3,7 @@
 
 //! Golden fixtures and decoder limits.
 
-use alloc::{format, string::String, vec, vec::Vec};
+use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
 
 use footfall_core::{
     Context, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, LabelKey, MarkerKind,
@@ -22,7 +22,8 @@ use crate::{
     Chunking, Envelope, EnvelopeHeader, OwnedArgEntry, OwnedClockTicks, OwnedContextEntry,
     OwnedContextSnapshot, OwnedCounterSnapshot, OwnedLabelValue, OwnedObservation,
     OwnedSessionEnvelope, OwnedSessionPayload, OwnedSnapshotSummary, OwnedSourceLocation,
-    OwnedTimedObservation, PROTOCOL_VERSION, Payload, RowCounts, collect_snapshot,
+    OwnedTimedObservation, OwnedTimelineWork, PROTOCOL_VERSION, Payload, RowCounts,
+    collect_snapshot,
 };
 
 static FRAME: LabelKey = LabelKey::new("frame");
@@ -464,6 +465,61 @@ fn clock_readings_match_their_golden_fixture() {
          04686f737480ecb80b7d03\
          1202010a0103677075d8360101\
          00f0edb80b7d03"
+    );
+    assert_eq!(
+        decode_envelope(&encoded).expect("decoding should succeed"),
+        envelope
+    );
+}
+
+/// Timeline spans carry their timeline, scope, context, the clock reading
+/// they began at, their length in ticks, frame, flow, and args.
+#[test]
+fn timeline_spans_match_their_golden_fixture() {
+    let work = OwnedTimelineWork::new(
+        footfall_core::TimelineId::new(0),
+        String::from("gpu"),
+        footfall_core::TimelineKind::Gpu,
+        footfall_core::ScopeDescId::new(1),
+        String::from("shadow"),
+        ContextId::new(0),
+        OwnedClockTicks::new(
+            footfall_core::ClockId::new(2),
+            String::from("ts"),
+            1_000,
+            footfall_core::TickPeriod::NANOSECOND,
+        ),
+        1_400,
+    )
+    .with_frame(Some(7))
+    .with_flow(Some(FlowId::new(3)));
+    let envelope = OwnedSessionEnvelope::new(
+        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+        OwnedSessionPayload::Events(vec![OwnedTimedObservation::new(
+            0,
+            0,
+            1,
+            OwnedObservation::TimelineSpan {
+                span: Box::new(work),
+            },
+        )]),
+    );
+    let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
+    // Tag `0b`; timeline `00` "gpu", kind `00`; scope `01` "shadow", no
+    // location; context `00`; clock `02` "ts" at 1,000 ticks of 1/1 ns;
+    // 400 ticks long; frame 7 and flow 3, each written one more; no args.
+    assert_eq!(
+        to_hex(&encoded),
+        "01000000000601\
+         0000010b\
+         000367707500\
+         0106736861646f7700\
+         00\
+         02027473e8070101\
+         9003\
+         08\
+         04\
+         00"
     );
     assert_eq!(
         decode_envelope(&encoded).expect("decoding should succeed"),
