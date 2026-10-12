@@ -527,6 +527,56 @@ fn timeline_spans_match_their_golden_fixture() {
     );
 }
 
+/// Frame points carry the frame's number, the kind, and a tagged clock
+/// reading when they have a time.
+#[test]
+fn frame_points_match_their_golden_fixture() {
+    let envelope = OwnedSessionEnvelope::new(
+        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+        OwnedSessionPayload::Events(vec![
+            OwnedTimedObservation::new(
+                0,
+                0,
+                1,
+                OwnedObservation::FramePoint {
+                    number: 7,
+                    kind: footfall_core::FramePointKind::Target,
+                    time: Some(OwnedClockTicks::new(
+                        footfall_core::ClockId::new(0),
+                        String::from("host"),
+                        1_000,
+                        footfall_core::TickPeriod::NANOSECOND,
+                    )),
+                },
+            ),
+            OwnedTimedObservation::new(
+                5,
+                1,
+                1,
+                OwnedObservation::FramePoint {
+                    number: 8,
+                    kind: footfall_core::FramePointKind::Dropped,
+                    time: None,
+                },
+            ),
+        ]),
+    );
+    let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
+    // Tag `0c`; frame 7, target `01`, time `01`, clock `00` "host" at
+    // 1,000 ticks of 1/1 ns; then frame 8, dropped `03`, no time `00`.
+    assert_eq!(
+        to_hex(&encoded),
+        "01000000000602\
+         0000010c070101\
+         0004686f7374e8070101\
+         0a02010c080300"
+    );
+    assert_eq!(
+        decode_envelope(&encoded).expect("decoding should succeed"),
+        envelope
+    );
+}
+
 #[test]
 fn cursor_detects_trailing_bytes() {
     let envelope = OwnedSessionEnvelope::new(

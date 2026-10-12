@@ -14,7 +14,9 @@
 //! `graphics` timeline, timed by a 24 MHz GPU clock that runs a little fast
 //! against the CPU's; the renderer reads the GPU's timestamps back a frame
 //! later, the way real timestamp queries arrive, and syncs the GPU clock
-//! each frame so analysis can place the work.
+//! each frame so analysis can place the work. A pretend 60 Hz display
+//! reports when each frame was shown, against the target and deadline the
+//! renderer planned for it.
 //!
 //! The instrumentation follows the guide: descriptors are `static`, each
 //! long-lived owner (the window, each pass, the glyph cache, each worker)
@@ -22,11 +24,11 @@
 //! and `frame_end_numbered`, and the work runs under the owner's handle.
 
 use footfall::{
-    ClockDesc, ClockReading, CounterDesc, EventDesc, FlowId, LabelKey, RegisteredContext,
-    ResourceId, ResourceKindDesc, ScopeDesc, TickPeriod, TimelineDesc, TimelineSpan, args,
-    clock_sync, context, counter_add, flow_begin, flow_end, flow_step, frame_begin_numbered,
-    frame_end_numbered, gauge_set, histogram_record, message_with, resource_create, resource_drop,
-    resource_update, timeline_span,
+    ClockDesc, ClockReading, CounterDesc, EventDesc, FlowId, FramePoint, FramePointKind, LabelKey,
+    RegisteredContext, ResourceId, ResourceKindDesc, ScopeDesc, TickPeriod, TimelineDesc,
+    TimelineSpan, args, clock_sync, context, counter_add, flow_begin, flow_end, flow_step,
+    frame_begin_numbered, frame_end_numbered, frame_point, gauge_set, histogram_record,
+    message_with, resource_create, resource_drop, resource_update, timeline_span,
 };
 use footfall_memory::{CacheMetrics, CacheStats};
 use std::collections::VecDeque;
@@ -57,6 +59,13 @@ static GPU_POST: ScopeDesc = footfall::scope_desc!("post", "demo::Gpu::run");
 
 static GRAPHICS: TimelineDesc = TimelineDesc::gpu("graphics");
 static GPU_CLOCK: ClockDesc = ClockDesc::new("gpu");
+/// The host clock the pretend display and frame planning use, in
+/// nanoseconds since the renderer started.
+static HOST_CLOCK: ClockDesc = ClockDesc::new("host");
+/// The pretend display's refresh interval: 60 Hz.
+const REFRESH: Duration = Duration::from_nanos(16_666_667);
+/// How long after a frame starts the renderer plans to show it.
+const FRAME_BUDGET: Duration = Duration::from_millis(12);
 /// The pretend GPU's timestamp period: 125 ns per 3 ticks, 24 MHz.
 const GPU_PERIOD: TickPeriod = TickPeriod::new(125, 3);
 
@@ -164,8 +173,10 @@ impl Renderer {
         // frame, such as when it was shown, can find it.
         frame_begin_numbered(self.frame, window);
         // Read back the GPU work that has finished, as timestamp queries
-        // arrive a frame or more later, and sync the GPU clock.
+        // arrive a frame or more later, and sync the clocks.
         self.gpu.read_back(self.paint.handle());
+        // Plan when this frame should be shown, as a frame scheduler would.
+        self.gpu.plan(self.frame);
         {
             footfall::scope!(&FRAME, window);
             {
@@ -387,7 +398,7 @@ struct Gpu {
     idle_at: Duration,
     /// Submitted frames whose timestamps have not been read back: the
     /// frame, its flow, and each pass with its begin and end ticks.
-    in_flight: VecDeque<(u64, FlowId, Vec<GpuPass>)>,
+    in_flight: VecDeque<(u64, FlowId, Vec<GpuPass>, Duration)>,
 }
 
 /// One pass the pretend GPU ran: its scope and begin and end ticks.
@@ -399,6 +410,36 @@ impl Gpu {
             start: Instant::now(),
             idle_at: Duration::ZERO,
             in_flight: VecDeque::new(),
+        }
+    }
+
+    /// Returns the host clock's reading at `at` since the start.
+    fn host_ticks(at: Duration) -> u64 {
+        u64::try_from(at.as_nanos()).unwrap_or(u64::MAX)
+    }
+
+    /// Returns the first refresh of the pretend display at or after `at`.
+    fn next_refresh(at: Duration) -> Duration {
+        let refreshes = at.as_nanos().div_ceil(REFRESH.as_nanos());
+        REFRESH * u32::try_from(refreshes).unwrap_or(u32::MAX)
+    }
+
+    /// Records when frame `number` should be shown, and the latest it can
+    /// be submitted for that.
+    fn plan(&self, number: u64) {
+        let target = Self::next_refresh(self.start.elapsed() + FRAME_BUDGET);
+        let deadline = target.saturating_sub(REFRESH / 4);
+        for (kind, at) in [
+            (FramePointKind::Target, target),
+            (FramePointKind::Deadline, deadline),
+        ] {
+            frame_point(&FramePoint::at(
+                number,
+                kind,
+                &HOST_CLOCK,
+                TickPeriod::NANOSECOND,
+                Self::host_ticks(at),
+            ));
         }
     }
 
@@ -417,7 +458,7 @@ impl Gpu {
             at += *length;
         }
         self.idle_at = at;
-        self.in_flight.push_back((frame, flow, timed));
+        self.in_flight.push_back((frame, flow, timed, at));
     }
 
     /// Reports the frames the GPU has finished, the whole frame before the
@@ -425,8 +466,13 @@ impl Gpu {
     fn read_back(&mut self, context: footfall::ContextHandle) {
         let now = self.start.elapsed();
         clock_sync(ClockReading::new(&GPU_CLOCK, Self::ticks(now), GPU_PERIOD));
+        clock_sync(ClockReading::new(
+            &HOST_CLOCK,
+            Self::host_ticks(now),
+            TickPeriod::NANOSECOND,
+        ));
         let done = Self::ticks(now);
-        while let Some((frame, flow, passes)) = self.in_flight.front() {
+        while let Some((frame, flow, passes, finished)) = self.in_flight.front() {
             let (Some(first), Some(last)) = (passes.first(), passes.last()) else {
                 self.in_flight.pop_front();
                 continue;
@@ -444,6 +490,15 @@ impl Gpu {
             for (scope, begin, end) in passes {
                 timeline_span(&span(scope, *begin, *end));
             }
+            // The display shows the frame at the first refresh after the GPU
+            // finished it.
+            frame_point(&FramePoint::at(
+                *frame,
+                FramePointKind::Presented,
+                &HOST_CLOCK,
+                TickPeriod::NANOSECOND,
+                Self::host_ticks(Self::next_refresh(*finished)),
+            ));
             self.in_flight.pop_front();
         }
     }

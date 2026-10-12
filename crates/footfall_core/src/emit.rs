@@ -6,8 +6,8 @@ use crate::InstrumentationLevel;
 #[cfg(not(footfall_compile_out))]
 use crate::max_level;
 use crate::{
-    Args, ClockReading, Context, ContextHandle, CounterDesc, EventDesc, FlowId, ResourceId,
-    ResourceKindDesc, ScopeDesc, TimelineSpan,
+    Args, ClockReading, Context, ContextHandle, CounterDesc, EventDesc, FlowId, FramePoint,
+    ResourceId, ResourceKindDesc, ScopeDesc, TimelineSpan,
 };
 #[cfg(feature = "std")]
 use std::sync::OnceLock;
@@ -328,6 +328,12 @@ pub trait Backend: Send + Sync {
         let _ = span;
     }
 
+    /// Observes a time a frame scheduler or display knows about a numbered
+    /// frame; see [`FramePoint`].
+    fn frame_point(&self, point: &FramePoint) {
+        let _ = point;
+    }
+
     /// Observes one phase of a causal flow.
     fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: ContextHandle) {
         let _ = (flow_id, phase, context);
@@ -599,6 +605,14 @@ pub fn clock_pair(first: ClockReading, second: ClockReading) {
 #[cfg_attr(not(footfall_compile_out), inline)]
 pub fn timeline_span(span: &TimelineSpan) {
     dispatch!(when max_level().captures_markers() => timeline_span(span));
+}
+
+/// Records a time a frame scheduler or display knows about a numbered
+/// frame, such as its deadline or when it was shown; see [`FramePoint`].
+#[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
+pub fn frame_point(point: &FramePoint) {
+    dispatch!(when max_level().captures_markers() => frame_point(point));
 }
 
 /// Starts a causal flow under a semantic context.

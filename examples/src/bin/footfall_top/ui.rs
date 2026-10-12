@@ -99,12 +99,31 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
         }
         None => Line::styled("waiting for complete frames…", DIM),
     };
+    // Shown on time, from what the frame scheduler or display reported.
+    let shown = match app.pacing {
+        Some(counts) => {
+            let missed = counts.late + counts.dropped + counts.submitted_late;
+            let missed = if missed == 0 {
+                Span::from("none missed").fg(FAST)
+            } else {
+                Span::from(format!(
+                    "{} late, {} dropped, {} submitted late",
+                    counts.late, counts.dropped, counts.submitted_late
+                ))
+                .fg(SLOW)
+                .bold()
+            };
+            Line::from(vec![
+                Span::styled("shown  ", DIM),
+                Span::from(format!("{} on time", counts.on_time)),
+                Span::styled(" · ", DIM),
+                missed,
+            ])
+        }
+        None => Line::styled(app.source.clone(), DIM),
+    };
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(title),
-            summary,
-            Line::styled(app.source.clone(), DIM),
-        ]),
+        Paragraph::new(vec![Line::from(title), summary, shown]),
         area,
     );
 }

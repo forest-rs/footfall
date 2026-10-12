@@ -1,9 +1,12 @@
 // Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Work on timelines that are not CPU threads.
+//! Work on timelines that are not CPU threads, and what frame schedulers
+//! and displays report about frames.
 
-use crate::{Args, ClockDesc, ContextHandle, FlowId, ScopeDesc, TickPeriod, TimelineDesc};
+use crate::{
+    Args, ClockDesc, ClockReading, ContextHandle, FlowId, ScopeDesc, TickPeriod, TimelineDesc,
+};
 
 /// One finished piece of work on a timeline that is not a CPU thread, such
 /// as a render pass on a GPU queue, timed by that timeline's clock.
@@ -157,5 +160,96 @@ impl TimelineSpan {
     #[must_use]
     pub const fn args(&self) -> &Args {
         &self.args
+    }
+}
+
+/// What a [`FramePoint`] says about a frame.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum FramePointKind {
+    /// The latest time the frame's work could be submitted and still be
+    /// shown at its target.
+    Deadline,
+    /// When the frame was meant to be shown.
+    Target,
+    /// When the frame was shown.
+    Presented,
+    /// The frame was never shown: dropped, discarded, or replaced by a
+    /// newer one. It carries no time.
+    Dropped,
+}
+
+/// A time a frame scheduler or display knows about a frame the program
+/// numbers, such as its deadline, its target, or when it was shown,
+/// recorded with [`frame_point`](crate::frame_point) whenever it becomes
+/// known, often frames later.
+///
+/// Times are ticks of a clock other than the backend's, typically the host
+/// clock the frame scheduler uses; relate it with
+/// [`clock_sync`](crate::clock_sync).
+///
+/// ```
+/// use footfall_core::{ClockDesc, FramePoint, FramePointKind, TickPeriod};
+///
+/// static HOST: ClockDesc = ClockDesc::new("host");
+/// let period = TickPeriod::new(125, 3);
+///
+/// // When planning frame 1234.
+/// footfall_core::frame_point(&FramePoint::at(1234, FramePointKind::Target, &HOST, period, 400_000));
+/// // Frames later, when the display reports it.
+/// footfall_core::frame_point(&FramePoint::at(1234, FramePointKind::Presented, &HOST, period, 400_000));
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FramePoint {
+    number: u64,
+    kind: FramePointKind,
+    time: Option<ClockReading>,
+}
+
+impl FramePoint {
+    /// Says the frame numbered `number` reached `kind` at `ticks` of
+    /// `clock`.
+    #[must_use]
+    pub const fn at(
+        number: u64,
+        kind: FramePointKind,
+        clock: &'static ClockDesc,
+        period: TickPeriod,
+        ticks: u64,
+    ) -> Self {
+        Self {
+            number,
+            kind,
+            time: Some(ClockReading::new(clock, ticks, period)),
+        }
+    }
+
+    /// Says the frame numbered `number` was never shown.
+    #[must_use]
+    pub const fn dropped(number: u64) -> Self {
+        Self {
+            number,
+            kind: FramePointKind::Dropped,
+            time: None,
+        }
+    }
+
+    /// Returns the program's number for the frame.
+    #[must_use]
+    pub const fn number(&self) -> u64 {
+        self.number
+    }
+
+    /// Returns what the point says about the frame.
+    #[must_use]
+    pub const fn kind(&self) -> FramePointKind {
+        self.kind
+    }
+
+    /// Returns when, as a reading of another clock, or `None` for a dropped
+    /// frame.
+    #[must_use]
+    pub const fn time(&self) -> Option<ClockReading> {
+        self.time
     }
 }

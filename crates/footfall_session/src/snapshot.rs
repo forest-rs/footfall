@@ -7,9 +7,9 @@ use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use std::collections::{HashMap, HashSet};
 
 use footfall_core::{
-    ClockId, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, LabelValue, MarkerKind,
-    MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, SourceLocation, TickPeriod,
-    TimelineId, TimelineKind, Unit,
+    ClockId, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, FramePointKind, LabelValue,
+    MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, SourceLocation,
+    TickPeriod, TimelineId, TimelineKind, Unit,
 };
 use footfall_runtime::{
     ClockTicks, ContextSnapshot, CounterKind, CounterSnapshot, Drops, EventCursor, EventWindow,
@@ -1077,6 +1077,16 @@ pub enum OwnedObservation {
         /// The work.
         span: Box<OwnedTimelineWork>,
     },
+    /// A time a frame scheduler or display knows about a numbered frame;
+    /// see `footfall_core::frame_point`.
+    FramePoint {
+        /// The program's number for the frame.
+        number: u64,
+        /// What the point says about the frame.
+        kind: FramePointKind,
+        /// When, as a reading of another clock; `None` for a dropped frame.
+        time: Option<OwnedClockTicks>,
+    },
 }
 
 /// Finished work on a timeline that is not a CPU thread, as
@@ -1865,6 +1875,11 @@ fn owned_observation(observation: &Observation) -> Option<OwnedObservation> {
         },
         Observation::TimelineSpan { span } => OwnedObservation::TimelineSpan {
             span: Box::new(span.as_ref().into()),
+        },
+        Observation::FramePoint { number, kind, time } => OwnedObservation::FramePoint {
+            number: *number,
+            kind: *kind,
+            time: time.as_ref().map(OwnedClockTicks::from),
         },
         _ => return None,
     })

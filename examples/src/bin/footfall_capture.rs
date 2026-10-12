@@ -9,6 +9,7 @@
 //! cargo run -p footfall_examples --bin footfall_capture -- record demo.ffcap
 //! cargo run -p footfall_examples --bin footfall_capture -- info demo.ffcap
 //! cargo run -p footfall_examples --bin footfall_capture -- slow demo.ffcap
+//! cargo run -p footfall_examples --bin footfall_capture -- pacing demo.ffcap
 //! cargo run -p footfall_examples --bin footfall_capture -- slow demo.ffcap --by-arg nodes
 //! cargo run -p footfall_examples --bin footfall_capture -- compare before.ffcap after.ffcap
 //! cargo run -p footfall_examples --bin footfall_capture -- span demo.ffcap 13909
@@ -21,7 +22,7 @@ use footfall::analysis::{Comparison, GroupBy, KeyPart, Population, Selection, Sp
 use footfall::session::OwnedSnapshot;
 use footfall::session::capture::{CaptureReader, CaptureWriter};
 use footfall::wtransport::{ClientError, SessionClient};
-use footfall_examples::style::{BAD, DIM, HEADING, HINT, NAME, WARN};
+use footfall_examples::style::{BAD, DIM, GOOD, HEADING, HINT, NAME, WARN};
 use footfall_examples::{format, report};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
@@ -73,6 +74,20 @@ enum Command {
         /// `nodes`, to see whether slow spans did more of something.
         #[arg(long, value_name = "KEY")]
         by_arg: Option<String>,
+    },
+    /// Show frame pacing: which frames were shown on time, late, or not at
+    /// all, from what the frame scheduler and display reported, and what
+    /// the late frames did differently.
+    Pacing {
+        /// The capture file to read.
+        file: PathBuf,
+        /// How late, in milliseconds, a frame may be shown and still count
+        /// as on time.
+        #[arg(long, default_value_t = 1.0)]
+        tolerance_ms: f64,
+        /// How many late frames and scopes to show.
+        #[arg(long, default_value_t = 8)]
+        top: usize,
     },
     /// Compare two captures of the same workload frame by frame: which
     /// scopes changed, and whether they ran more often or each ran slower.
@@ -131,6 +146,11 @@ async fn main() {
             candidate,
             top,
         } => compare(&baseline, &candidate, top),
+        Command::Pacing {
+            file,
+            tolerance_ms,
+            top,
+        } => pacing(&file, tolerance_ms, top),
         Command::Span { file, id } => span(&file, SpanId::new(id)),
         Command::Export { file, output } => {
             let output = output.unwrap_or_else(|| file.with_extension("json"));
@@ -388,6 +408,124 @@ fn slow(path: &Path, budget_ms: f64, top: usize, by_arg: Option<&str>) -> Result
         }
     }
     Ok(())
+}
+
+fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
+    let trace = read_trace(path)?;
+    let pacing = trace.pacing(Duration::from_secs_f64(tolerance_ms / 1000.0));
+    let counts = pacing.counts();
+    println!(
+        "{HEADING}Frame pacing{HEADING:#} {DIM}· {} numbered frames · on time within {}{DIM:#}",
+        format::count(counts.total()),
+        format::duration(pacing.tolerance()),
+    );
+    if counts.total() == 0 {
+        println!("No numbered frames: mark frames with frame_begin_numbered.");
+        return Ok(());
+    }
+    let missed = counts.late + counts.dropped + counts.submitted_late;
+    let style = if missed == 0 { GOOD } else { BAD };
+    println!(
+        "  {GOOD}{} on time{GOOD:#} · {style}{} late · {} dropped · {} submitted late{style:#} · {DIM}{} unknown{DIM:#}",
+        format::count(counts.on_time),
+        format::count(counts.late),
+        format::count(counts.dropped),
+        format::count(counts.submitted_late),
+        format::count(counts.unknown),
+    );
+    let intervals = pacing.intervals();
+    if intervals.count() > 0 {
+        println!(
+            "  shown every {} {DIM}(median){DIM:#}, p99 {} · {} stutters",
+            format::duration(intervals.median()),
+            format::duration(intervals.p99()),
+            pacing.stutters(),
+        );
+    }
+    let latency = pacing.latency();
+    if latency.count() > 0 {
+        println!(
+            "  from start of work to shown: median {}, p99 {}",
+            format::duration(latency.median()),
+            format::duration(latency.p99()),
+        );
+    }
+    if counts.unknown == counts.total() {
+        println!(
+            "  {WARN}no presentation feedback: report Presented and Target frame points to judge pacing{WARN:#}"
+        );
+    }
+    if pacing.unplaced_points() > 0 {
+        println!(
+            "  {WARN}{} frame points could not be placed: their clock was never synced{WARN:#}",
+            pacing.unplaced_points()
+        );
+    }
+
+    let mut late: Vec<_> = pacing
+        .frames()
+        .iter()
+        .filter(|frame| frame.outcome().missed())
+        .collect();
+    if late.is_empty() {
+        return Ok(());
+    }
+    late.sort_by_key(|frame| core::cmp::Reverse(late_by(frame.outcome())));
+    println!("\n{HEADING}Latest frames{HEADING:#}");
+    println!(
+        "  {DIM}{:>7}  {:<14}  {:>10}  {:>10}  {:>16}{DIM:#}",
+        "frame", "outcome", "CPU work", "GPU busy", "past deadline"
+    );
+    for frame in late.iter().take(top) {
+        let outcome = match frame.outcome() {
+            footfall::analysis::Outcome::Late { by } => {
+                format!("late {}", format::duration(by))
+            }
+            footfall::analysis::Outcome::Dropped => String::from("dropped"),
+            footfall::analysis::Outcome::SubmittedLate { .. } => String::from("submitted late"),
+            other => format!("{other:?}"),
+        };
+        let past_deadline = frame
+            .deadline()
+            .zip(frame.work())
+            .and_then(|(deadline, work)| work.end().checked_sub(deadline))
+            .map_or_else(|| String::from("-"), format::duration);
+        println!(
+            "  {:>7}  {BAD}{outcome:<14}{BAD:#}  {:>10}  {:>10}  {:>16}",
+            frame.number(),
+            frame
+                .work()
+                .map_or_else(|| String::from("-"), |work| format::duration(work.length())),
+            format::duration(frame.gpu_busy()),
+            past_deadline,
+        );
+    }
+
+    // What the missed frames did differently, CPU and GPU together. GPU
+    // spans count toward their frame by number, wherever they ran.
+    let missed_ids = pacing.frame_ids(footfall::analysis::Outcome::missed);
+    let on_time_ids = pacing.frame_ids(|outcome| outcome == footfall::analysis::Outcome::OnTime);
+    let frames = |ids: &[footfall::analysis::FrameId]| {
+        Population::frames(&trace, ids.iter().filter_map(|id| trace.frame(*id)))
+    };
+    let (on_time, missed) = (frames(&on_time_ids), frames(&missed_ids));
+    let comparison = Comparison::between(&on_time, &missed)
+        .selecting(Selection::Inside)
+        .group_by(GroupBy::Name)
+        .run();
+    println!("\n{HEADING}What the missed frames did differently{HEADING:#}");
+    report::comparison(&comparison, "on time", "missed", top);
+    Ok(())
+}
+
+/// Orders missed frames: dropped first, then by how late.
+fn late_by(outcome: footfall::analysis::Outcome) -> Duration {
+    match outcome {
+        footfall::analysis::Outcome::Dropped => Duration::MAX,
+        footfall::analysis::Outcome::Late { by }
+        | footfall::analysis::Outcome::SubmittedLate { by } => by,
+        _ => Duration::ZERO,
+    }
 }
 
 fn compare(baseline: &Path, candidate: &Path, top: usize) -> Result<()> {
