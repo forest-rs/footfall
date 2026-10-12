@@ -192,6 +192,18 @@ followed, and through a pair when a clock, like a GPU's, is only related to
 another clock. The same conversion serves analysis and export, and each
 converted time says how it was made.
 
+## Timelines
+
+Work that does not run on a CPU thread, a GPU queue's passes or a display's
+scanouts, is recorded on a timeline once its times are known: a
+`TimelineDesc` names the timeline, and each `TimelineSpan` carries ticks of
+the timeline's clock, the frame it belongs to, and the flow its submit
+began. The runtime stores the span as one boxed event, so CPU events stay
+as small as before. Analysis places it through the clock conversion, on a
+track of its own, nested by containment, and counts it toward its frame by
+number rather than by time, since a frame's GPU work runs while the CPU
+works on the next frame.
+
 ## Invariants
 
 - Core emission never allocates and never formats strings.

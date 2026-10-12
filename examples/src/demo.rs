@@ -10,18 +10,26 @@
 //! compiles in the middle of a frame, or an asset streams in. That gives a
 //! trace viewer or `footfall_top` something worth looking at.
 //!
+//! It also pretends to have a GPU. Each frame submits work that runs on the
+//! `graphics` timeline, timed by a 24 MHz GPU clock that runs a little fast
+//! against the CPU's; the renderer reads the GPU's timestamps back a frame
+//! later, the way real timestamp queries arrive, and syncs the GPU clock
+//! each frame so analysis can place the work.
+//!
 //! The instrumentation follows the guide: descriptors are `static`, each
 //! long-lived owner (the window, each pass, the glyph cache, each worker)
 //! registers its context once, frames are marked with `frame_begin_numbered`
 //! and `frame_end_numbered`, and the work runs under the owner's handle.
 
 use footfall::{
-    CounterDesc, EventDesc, FlowId, LabelKey, RegisteredContext, ResourceId, ResourceKindDesc,
-    ScopeDesc, args, context, counter_add, flow_begin, flow_end, flow_step, frame_begin_numbered,
+    ClockDesc, ClockReading, CounterDesc, EventDesc, FlowId, LabelKey, RegisteredContext,
+    ResourceId, ResourceKindDesc, ScopeDesc, TickPeriod, TimelineDesc, TimelineSpan, args,
+    clock_sync, context, counter_add, flow_begin, flow_end, flow_step, frame_begin_numbered,
     frame_end_numbered, gauge_set, histogram_record, message_with, resource_create, resource_drop,
-    resource_update,
+    resource_update, timeline_span,
 };
 use footfall_memory::{CacheMetrics, CacheStats};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
@@ -41,6 +49,16 @@ static RASTER_TILE: ScopeDesc = footfall::scope_desc!("raster_tile", "demo::work
 static SHAPE_TEXT: ScopeDesc = footfall::scope_desc!("shape_text", "demo::Renderer::text");
 static UPLOAD_GLYPHS: ScopeDesc = footfall::scope_desc!("upload_glyphs", "demo::Renderer::text");
 static COMPOSITE: ScopeDesc = footfall::scope_desc!("composite", "demo::Renderer::frame");
+static SUBMIT: ScopeDesc = footfall::scope_desc!("submit", "demo::Renderer::submit");
+static GPU_FRAME: ScopeDesc = footfall::scope_desc!("gpu_frame", "demo::Gpu::run");
+static GPU_SHADOWS: ScopeDesc = footfall::scope_desc!("shadows", "demo::Gpu::run");
+static GPU_OPAQUE: ScopeDesc = footfall::scope_desc!("opaque", "demo::Gpu::run");
+static GPU_POST: ScopeDesc = footfall::scope_desc!("post", "demo::Gpu::run");
+
+static GRAPHICS: TimelineDesc = TimelineDesc::gpu("graphics");
+static GPU_CLOCK: ClockDesc = ClockDesc::new("gpu");
+/// The pretend GPU's timestamp period: 125 ns per 3 ticks, 24 MHz.
+const GPU_PERIOD: TickPeriod = TickPeriod::new(125, 3);
 
 static DRAW_CALLS: CounterDesc = footfall::counter_desc!(count, "draw_calls");
 static TILES: CounterDesc = footfall::counter_desc!(count, "tiles_rastered");
@@ -79,6 +97,7 @@ pub struct Renderer {
     next_flow: u64,
     workers: Vec<Worker>,
     finished: mpsc::Receiver<()>,
+    gpu: Gpu,
 }
 
 impl Renderer {
@@ -115,6 +134,7 @@ impl Renderer {
             next_flow: 1,
             workers,
             finished,
+            gpu: Gpu::new(),
         }
     }
 
@@ -143,6 +163,9 @@ impl Renderer {
         // The renderer's own frame number, so later observations of this
         // frame, such as when it was shown, can find it.
         frame_begin_numbered(self.frame, window);
+        // Read back the GPU work that has finished, as timestamp queries
+        // arrive a frame or more later, and sync the GPU clock.
+        self.gpu.read_back(self.paint.handle());
         {
             footfall::scope!(&FRAME, window);
             {
@@ -150,7 +173,9 @@ impl Renderer {
                 busy(self.rng.micros(150, 500));
             }
             let invalidated = self.layout();
+            let storm = invalidated.is_some();
             self.paint(invalidated);
+            self.submit(storm);
             self.text();
             {
                 footfall::scope!(&COMPOSITE, self.composite.handle());
@@ -222,6 +247,28 @@ impl Renderer {
             let _ = self.finished.recv();
         }
         counter_add(&DRAW_CALLS, paint, 40 + self.rng.below(60));
+    }
+
+    /// Submits the frame's GPU work, which starts a flow the GPU work ends.
+    /// A relayout storm makes the GPU's opaque pass heavy too.
+    fn submit(&mut self, storm: bool) {
+        let paint = self.paint.handle();
+        footfall::scope!(&SUBMIT, paint);
+        let flow = FlowId::new(self.next_flow);
+        self.next_flow += 1;
+        flow_begin(flow, paint);
+        let opaque = if storm {
+            self.rng.micros(9_000, 13_000)
+        } else {
+            self.rng.micros(2_000, 4_000)
+        };
+        let passes = [
+            (&GPU_SHADOWS, self.rng.micros(600, 1_200)),
+            (&GPU_OPAQUE, opaque),
+            (&GPU_POST, self.rng.micros(400, 800)),
+        ];
+        self.gpu.submit(self.frame, flow, &passes);
+        sleep(self.rng.micros(50, 150));
     }
 
     /// Shapes text through the glyph cache. Misses upload glyphs to an
@@ -331,6 +378,77 @@ impl Worker {
 }
 
 /// Simulates work that blocks, such as waiting on the GPU.
+/// A pretend GPU: a queue that runs each submitted frame's passes in turn
+/// after the work before it, timed by a 24 MHz timestamp counter that runs
+/// 20 parts per million fast against the CPU's clock.
+struct Gpu {
+    start: Instant,
+    /// When the queue next falls idle, in CPU time since `start`.
+    idle_at: Duration,
+    /// Submitted frames whose timestamps have not been read back: the
+    /// frame, its flow, and each pass with its begin and end ticks.
+    in_flight: VecDeque<(u64, FlowId, Vec<GpuPass>)>,
+}
+
+/// One pass the pretend GPU ran: its scope and begin and end ticks.
+type GpuPass = (&'static ScopeDesc, u64, u64);
+
+impl Gpu {
+    fn new() -> Self {
+        Self {
+            start: Instant::now(),
+            idle_at: Duration::ZERO,
+            in_flight: VecDeque::new(),
+        }
+    }
+
+    /// Returns the GPU's timestamp at `at` CPU time since the start.
+    fn ticks(at: Duration) -> u64 {
+        // 20 ppm fast, 24 ticks per microsecond, from an arbitrary origin.
+        let nanos = at.as_nanos() * 1_000_020 / 1_000_000;
+        u64::try_from(nanos * 3 / 125).unwrap_or(u64::MAX) + 1_000_000_000
+    }
+
+    fn submit(&mut self, frame: u64, flow: FlowId, passes: &[(&'static ScopeDesc, Duration)]) {
+        let mut at = self.idle_at.max(self.start.elapsed());
+        let mut timed = Vec::with_capacity(passes.len());
+        for (scope, length) in passes {
+            timed.push((*scope, Self::ticks(at), Self::ticks(at + *length)));
+            at += *length;
+        }
+        self.idle_at = at;
+        self.in_flight.push_back((frame, flow, timed));
+    }
+
+    /// Reports the frames the GPU has finished, the whole frame before the
+    /// passes inside it, and syncs the GPU clock.
+    fn read_back(&mut self, context: footfall::ContextHandle) {
+        let now = self.start.elapsed();
+        clock_sync(ClockReading::new(&GPU_CLOCK, Self::ticks(now), GPU_PERIOD));
+        let done = Self::ticks(now);
+        while let Some((frame, flow, passes)) = self.in_flight.front() {
+            let (Some(first), Some(last)) = (passes.first(), passes.last()) else {
+                self.in_flight.pop_front();
+                continue;
+            };
+            if last.2 > done {
+                break;
+            }
+            let span = |scope, begin, end| {
+                TimelineSpan::new(
+                    &GRAPHICS, scope, context, &GPU_CLOCK, GPU_PERIOD, begin, end,
+                )
+                .in_frame(*frame)
+            };
+            timeline_span(&span(&GPU_FRAME, first.1, last.2).after_flow(*flow));
+            for (scope, begin, end) in passes {
+                timeline_span(&span(scope, *begin, *end));
+            }
+            self.in_flight.pop_front();
+        }
+    }
+}
+
 fn sleep(duration: Duration) {
     thread::sleep(duration);
 }

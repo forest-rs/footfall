@@ -47,6 +47,22 @@ A trace following a live session grows until the tool calls
 `forget_before`, which drops what ended earlier; answers then count the
 forgotten time as unobserved.
 
+## GPU Work
+
+Work recorded on a timeline that is not a CPU thread, such as a GPU queue,
+gets a `Track` of its own: `Trace::timelines` lists them, and its spans
+nest and have self time like a thread's. Their times come from another
+clock, converted through the trace's `Clocks`; `Span::placement` says how,
+and an answer's `Basis` counts converted spans, how far the farthest lay
+from a clock reading, and spans that could not be placed because their
+clock was never synced.
+
+Queries cover every track unless narrowed: `on_threads` for the CPU,
+`on_timelines` or `on_timeline` for GPU work. A frame's GPU work usually
+runs while the CPU works on the next frame, so spans reported with a frame
+number count toward that frame when a query or comparison selects frames,
+whole, wherever they ran; `Trace::frame_spans` lists them.
+
 ## Asking Where the Time Went
 
 `Trace::spans` starts a `SpanQuery`. Narrow it, choose how spans count, group

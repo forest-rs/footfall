@@ -79,7 +79,7 @@ pub use query::{
     DurationStats, GroupBy, Instances, KeyPart, Selected, SpanQuery, SpanStats, SpanTable, TableRow,
 };
 pub use signal::{CounterSample, CounterSeries, Flow, FlowStep, Message, Resource};
-pub use span::{OpenSpan, Span, SpanId, Track, Zone};
+pub use span::{OpenSpan, Placement, Span, SpanId, Track, TrackKind, Zone};
 pub use time::{Selection, TimeRange};
 pub use trace::{Continuity, PushError, Pushed, Trace};
 

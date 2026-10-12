@@ -15,14 +15,17 @@
 //! assert!(json.starts_with('{'));
 //! ```
 
-use footfall_core::{ContextId, FlowPhase, MarkerKind, MarkerPhase, ResourceId, ScopeToken, Unit};
+use footfall_core::{
+    ContextId, FlowPhase, MarkerKind, MarkerPhase, ResourceId, ScopeToken, TimelineId,
+    TimelineKind, Unit,
+};
 use footfall_runtime::CounterKind;
 use footfall_session::{
-    OwnedArgEntry, OwnedContextEntry, OwnedCounterSnapshot, OwnedHistogramSnapshot,
-    OwnedLabelValue, OwnedObservation, OwnedSnapshot, OwnedTimedObservation,
+    Clocks, OwnedArgEntry, OwnedContextEntry, OwnedCounterSnapshot, OwnedHistogramSnapshot,
+    OwnedLabelValue, OwnedObservation, OwnedSnapshot, OwnedTimedObservation, OwnedTimelineWork,
 };
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fmt::{self, Write},
     fs,
     path::Path,
@@ -96,6 +99,28 @@ pub fn write_chrome_trace_json(snapshot: &OwnedSnapshot, writer: &mut impl Write
             &name,
         ));
     }
+    // Each timeline that is not a CPU thread, such as a GPU queue, gets a
+    // track of its own.
+    let timelines: BTreeMap<TimelineId, (&str, TimelineKind)> = snapshot
+        .events()
+        .iter()
+        .filter_map(|event| match event.observation() {
+            OwnedObservation::TimelineSpan { span } => Some((
+                span.timeline_id(),
+                (span.timeline_name(), span.timeline_kind()),
+            )),
+            _ => None,
+        })
+        .collect();
+    for (timeline_id, (name, kind)) in &timelines {
+        events.push(build_metadata_event(
+            "thread_name",
+            trace_pid(snapshot),
+            timeline_tid(*timeline_id),
+            "name",
+            &format!("{} {name}", timeline_kind_name(*kind)),
+        ));
+    }
     events.push(build_capture_window_event(snapshot));
     events.push(build_contexts_event(snapshot)?);
 
@@ -107,23 +132,37 @@ pub fn write_chrome_trace_json(snapshot: &OwnedSnapshot, writer: &mut impl Write
         events.push(build_histogram_event(snapshot, histogram)?);
     }
 
+    let clocks = Clocks::from_snapshot(snapshot);
     let mut scope_tracks = HashMap::<ScopeToken, u64>::new();
     let mut unmatched_scope_ends = 0_u64;
+    let mut unplaced_timeline_spans = 0_u64;
     for event in snapshot.events() {
-        match build_timed_observation(snapshot, event, &mut scope_tracks)? {
+        let exported = match event.observation() {
+            OwnedObservation::TimelineSpan { span } => {
+                build_timeline_span(snapshot, &clocks, span, &mut events)?
+            }
+            _ => build_timed_observation(snapshot, event, &mut scope_tracks)?,
+        };
+        match exported {
             Exported::Event(json) => events.push(json),
             Exported::UnmatchedScopeEnd => unmatched_scope_ends += 1,
+            Exported::UnplacedTimelineSpan => unplaced_timeline_spans += 1,
             Exported::Skipped => {}
         }
     }
 
-    if unmatched_scope_ends > 0 {
-        events.push(build_internal_counter_event(
-            snapshot,
-            snapshot.captured_at_nanos(),
-            "footfall_unmatched_scope_ends",
-            unmatched_scope_ends,
-        ));
+    for (name, count) in [
+        ("footfall_unmatched_scope_ends", unmatched_scope_ends),
+        ("footfall_unplaced_timeline_spans", unplaced_timeline_spans),
+    ] {
+        if count > 0 {
+            events.push(build_internal_counter_event(
+                snapshot,
+                snapshot.captured_at_nanos(),
+                name,
+                count,
+            ));
+        }
     }
 
     let drops = snapshot.drops();
@@ -509,8 +548,95 @@ enum Exported {
     Event(String),
     /// Nothing: a scope end whose begin is not in the snapshot.
     UnmatchedScopeEnd,
+    /// Nothing: a timeline span whose clock has no sync or pair leading to
+    /// the producer's clock.
+    UnplacedTimelineSpan,
     /// Nothing: an observation kind this exporter does not know.
     Skipped,
+}
+
+/// The Chrome trace track of a timeline: past every thread id.
+fn timeline_tid(timeline_id: TimelineId) -> u64 {
+    (1 << 32) + timeline_id.get()
+}
+
+fn timeline_kind_name(kind: TimelineKind) -> &'static str {
+    match kind {
+        TimelineKind::Gpu => "GPU",
+        TimelineKind::Display => "display",
+        _ => "timeline",
+    }
+}
+
+/// Builds a timeline span as a complete slice on its timeline's track, with
+/// its times converted through the snapshot's clocks, and the end of its
+/// flow, if it has one, into `events`.
+fn build_timeline_span(
+    snapshot: &OwnedSnapshot,
+    clocks: &Clocks,
+    span: &OwnedTimelineWork,
+    events: &mut Vec<String>,
+) -> Result<Exported, fmt::Error> {
+    let clock = span.begin().clock_id();
+    let (Some(begin), Some(end)) = (
+        clocks.to_runtime(clock, span.begin().ticks()),
+        clocks.to_runtime(clock, span.end()),
+    ) else {
+        return Ok(Exported::UnplacedTimelineSpan);
+    };
+    let (begin, end) = (begin.nanos(), end.nanos().max(begin.nanos()));
+    let tid = timeline_tid(span.timeline_id());
+    let context = snapshot
+        .context(span.context_id())
+        .map_or(&[][..], |context| context.entries());
+    let mut json = String::new();
+    json.push('{');
+    write_json_field_str(&mut json, "name", span.name())?;
+    json.push(',');
+    write_json_field_str(&mut json, "cat", "timeline")?;
+    json.push(',');
+    write_json_field_str(&mut json, "ph", "X")?;
+    json.push(',');
+    write_json_field_time(&mut json, "ts", wall_nanos(snapshot, begin))?;
+    json.push(',');
+    write_json_field_time(&mut json, "dur", end - begin)?;
+    json.push(',');
+    write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
+    json.push(',');
+    write_json_field_u64(&mut json, "tid", tid)?;
+    json.push_str(",\"args\":{");
+    if let Some(frame) = span.frame() {
+        write_json_field_u64(&mut json, "frame", frame)?;
+        json.push(',');
+    }
+    write_json_field_u64(&mut json, "context_id", span.context_id().get())?;
+    if !span.args().is_empty() {
+        json.push_str(",\"values\":");
+        write_args(&mut json, span.args())?;
+    }
+    json.push_str(",\"context\":");
+    write_context(&mut json, context)?;
+    json.push_str("}}");
+    if let Some(flow) = span.flow() {
+        let mut end_of_flow = String::new();
+        end_of_flow.push('{');
+        write_json_field_str(&mut end_of_flow, "name", "flow")?;
+        end_of_flow.push(',');
+        write_json_field_str(&mut end_of_flow, "cat", "flow")?;
+        end_of_flow.push(',');
+        write_json_field_str(&mut end_of_flow, "ph", flow_phase_code(FlowPhase::End))?;
+        end_of_flow.push_str(",\"bp\":\"e\",");
+        write_json_field_time(&mut end_of_flow, "ts", wall_nanos(snapshot, begin))?;
+        end_of_flow.push(',');
+        write_json_field_u64(&mut end_of_flow, "pid", trace_pid(snapshot))?;
+        end_of_flow.push(',');
+        write_json_field_u64(&mut end_of_flow, "tid", tid)?;
+        end_of_flow.push(',');
+        write_json_field_u64(&mut end_of_flow, "id", flow.get())?;
+        end_of_flow.push('}');
+        events.push(end_of_flow);
+    }
+    Ok(Exported::Event(json))
 }
 
 /// Builds one timed observation.
@@ -958,6 +1084,70 @@ mod tests {
 
     static FRAME: LabelKey = LabelKey::new("frame");
     static PASS: LabelKey = LabelKey::new("pass");
+
+    #[test]
+    fn timeline_spans_become_slices_on_their_own_track() {
+        use footfall_core::{
+            ClockDesc, ClockReading, ContextHandle, ScopeDesc, TickPeriod, TimelineDesc,
+            TimelineSpan,
+        };
+        use footfall_runtime::{ClockTicks, TimelineWork};
+        static GRAPHICS: TimelineDesc = TimelineDesc::gpu("graphics");
+        static GPU_CLOCK: ClockDesc = ClockDesc::new("gpu");
+        static NEVER_SYNCED: ClockDesc = ClockDesc::new("never synced");
+        static SHADOWS: ScopeDesc = ScopeDesc::new("shadows");
+        let gpu = |clock: &'static ClockDesc, begin, end| Observation::TimelineSpan {
+            span: Box::new(TimelineWork::new(
+                &TimelineSpan::new(
+                    &GRAPHICS,
+                    &SHADOWS,
+                    ContextHandle::ROOT,
+                    clock,
+                    TickPeriod::NANOSECOND,
+                    begin,
+                    end,
+                )
+                .in_frame(7)
+                .after_flow(FlowId::new(3)),
+            )),
+        };
+        let snapshot = Snapshot::builder(SnapshotMetadata::new("app"))
+            .event(TimedObservation::new(
+                1_000,
+                0,
+                1,
+                Observation::ClockSync {
+                    clock: ClockTicks::from(ClockReading::new(
+                        &GPU_CLOCK,
+                        50_000,
+                        TickPeriod::NANOSECOND,
+                    )),
+                },
+            ))
+            .event(TimedObservation::new(
+                2_000,
+                1,
+                1,
+                gpu(&GPU_CLOCK, 50_250, 50_750),
+            ))
+            .event(TimedObservation::new(2_000, 2, 1, gpu(&NEVER_SYNCED, 0, 1)))
+            .build();
+        let json = to_chrome_trace_json(&snapshot.into());
+        let tid = (1_u64 << 32) + GRAPHICS.id().get();
+        assert!(
+            json.contains(&format!(
+                "\"name\":\"shadows\",\"cat\":\"timeline\",\"ph\":\"X\",\"ts\":1.250,\"dur\":0.500,\"pid\":1,\"tid\":{tid},\"args\":{{\"frame\":7,"
+            )),
+            "{json}"
+        );
+        assert!(json.contains(&format!(
+            "\"tid\":{tid},\"args\":{{\"name\":\"GPU graphics\"}}"
+        )));
+        assert!(json.contains(&format!(
+            "\"ph\":\"f\",\"bp\":\"e\",\"ts\":1.250,\"pid\":1,\"tid\":{tid},\"id\":3"
+        )));
+        assert!(json.contains("footfall_unplaced_timeline_spans"));
+    }
     static RECORD_AT: SourceLocation = SourceLocation::new("app::record", "src/app.rs", 42);
 
     #[test]

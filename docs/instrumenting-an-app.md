@@ -267,6 +267,47 @@ footfall::clock_pair(
 );
 ```
 
+## GPU and Other Timelines
+
+Work that does not run on a CPU thread, such as passes on a GPU queue,
+goes on a timeline: name it with a static `TimelineDesc` (`TimelineDesc::gpu`
+for a GPU queue) and report each piece of work once its times are known,
+with `timeline_span`. The times are ticks of the timeline's clock, such as
+the GPU's timestamp counter; relate that clock to the runtime's with
+`clock_sync` or `clock_pair`, as above, and analysis places the work.
+
+Give each span the frame it belongs to with `in_frame`, and the flow its
+CPU submit began with `after_flow`, so analysis can count a frame's GPU
+work toward that frame, even though it runs while the CPU works on the next
+one, and lead from the submit to the work. Report a frame's whole span
+before the passes inside it, so they nest.
+
+```rust
+use footfall::{
+    ClockDesc, ClockReading, ContextHandle, FlowId, ScopeDesc, TickPeriod, TimelineDesc,
+    TimelineSpan,
+};
+
+static GRAPHICS: TimelineDesc = TimelineDesc::gpu("graphics");
+static GPU_CLOCK: ClockDesc = ClockDesc::new("gpu");
+static SHADOWS: ScopeDesc = ScopeDesc::new("shadows");
+
+let frame = 1234_u64;
+// When submitting: start a flow the GPU work will end.
+footfall::flow_begin(FlowId::new(frame), ContextHandle::ROOT);
+
+// Frames later, with the pass's timestamps read back and the clock synced:
+footfall::clock_sync(ClockReading::new(&GPU_CLOCK, 9_000_000, TickPeriod::NANOSECOND));
+footfall::timeline_span(
+    &TimelineSpan::new(
+        &GRAPHICS, &SHADOWS, ContextHandle::ROOT,
+        &GPU_CLOCK, TickPeriod::NANOSECOND, 8_000_000, 8_400_000,
+    )
+    .in_frame(frame)
+    .after_flow(FlowId::new(frame)),
+);
+```
+
 ## What Lives Where
 
 Call sites should stay in subsystem code:

@@ -3,7 +3,7 @@
 
 //! Static descriptors. See the crate docs for the identity rules.
 
-use crate::{ClockId, CounterDescId, EventDescId, ResourceKindId, ScopeDescId, Unit};
+use crate::{ClockId, CounterDescId, EventDescId, ResourceKindId, ScopeDescId, TimelineId, Unit};
 use core::{fmt, ptr, sync::atomic::AtomicU8};
 
 /// Private marker that keeps descriptors out of `const` evaluation.
@@ -318,6 +318,72 @@ impl ClockDesc {
     }
 }
 
+/// What a [`TimelineDesc`] stands for, so tools can lay timelines out and
+/// analysis can tell GPU time from display time.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum TimelineKind {
+    /// A GPU queue or engine: render, compute, copy, or video work.
+    Gpu,
+    /// A display: when frames were scanned out or composited.
+    Display,
+    /// Anything else that does work on its own clock, such as an audio
+    /// device or an accelerator.
+    Other,
+}
+
+/// Names a timeline that is not a CPU thread, such as a GPU queue, on which
+/// [`timeline_span`](crate::timeline_span) records work timed by another
+/// clock.
+///
+/// Identity is the descriptor's address; see the [crate docs](crate#descriptors) for why
+/// descriptors must be `static` items. Snapshots identify it by a
+/// [`TimelineId`].
+pub struct TimelineDesc {
+    name: &'static str,
+    kind: TimelineKind,
+    _static_only: StaticOnly,
+}
+
+impl TimelineDesc {
+    /// Creates a timeline descriptor.
+    #[must_use]
+    pub const fn new(name: &'static str, kind: TimelineKind) -> Self {
+        Self {
+            name,
+            kind,
+            _static_only: StaticOnly::new(),
+        }
+    }
+
+    /// Creates a descriptor for a GPU queue or engine.
+    #[must_use]
+    pub const fn gpu(name: &'static str) -> Self {
+        Self::new(name, TimelineKind::Gpu)
+    }
+
+    /// Returns the opaque id derived from this descriptor's address.
+    ///
+    /// Ids are unique among live descriptors within one process run and are
+    /// not stable across runs.
+    #[must_use]
+    pub fn id(&'static self) -> TimelineId {
+        TimelineId::new(address_id(self))
+    }
+
+    /// Returns the stable timeline name.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// Returns what the timeline stands for.
+    #[must_use]
+    pub const fn kind(&self) -> TimelineKind {
+        self.kind
+    }
+}
+
 /// Implements identity equality and a compact `Debug` for a descriptor type.
 macro_rules! descriptor_identity {
     ($name:ident { $($field:ident),* }) => {
@@ -346,6 +412,7 @@ descriptor_identity!(EventDesc { name });
 descriptor_identity!(CounterDesc { name, unit });
 descriptor_identity!(ResourceKindDesc { name });
 descriptor_identity!(ClockDesc { name });
+descriptor_identity!(TimelineDesc { name, kind });
 
 #[cfg(test)]
 mod tests {

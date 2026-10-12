@@ -50,7 +50,11 @@ fn main() -> std::io::Result<()> {
     println!(
         "{HEADING}footfall tracing_bridge{HEADING:#} {DIM}· five frames of plain `tracing` spans{DIM:#}\n"
     );
-    report::spans(&trace.spans().group_by(GroupBy::Name).table(), 10);
+    report::spans(
+        "Where the time went",
+        &trace.spans().group_by(GroupBy::Name).table(),
+        10,
+    );
     println!();
     // Span fields become context labels, so time can be split by them.
     report::spans_by_label(&trace, "paths");

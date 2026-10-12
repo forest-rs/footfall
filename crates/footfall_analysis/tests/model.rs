@@ -12,12 +12,13 @@ use footfall_analysis::{
     OwnedLabelValue, Population, PushError, Recorded, Selection, SpanId, TimeRange, Trace, Zone,
 };
 use footfall_core::{
-    Args, Context, ContextId, CounterDesc, EventDesc, FlowId, FlowPhase, InstrumentationLevel,
-    LabelKey, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ScopeDesc, ScopeToken,
+    Args, ClockDesc, ClockReading, Context, ContextId, CounterDesc, EventDesc, FlowId, FlowPhase,
+    InstrumentationLevel, LabelKey, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc,
+    ScopeDesc, ScopeToken, TickPeriod, TimelineDesc, TimelineSpan,
 };
 use footfall_runtime::{
-    CaptureSettings, ContextSnapshot, CounterKind, EventWindow, Observation, Snapshot,
-    SnapshotMetadata, ThreadSnapshot, TimedObservation,
+    CaptureSettings, ClockTicks, ContextSnapshot, CounterKind, EventWindow, Observation, Snapshot,
+    SnapshotMetadata, ThreadSnapshot, TimedObservation, TimelineWork,
 };
 use footfall_session::OwnedSnapshot;
 
@@ -172,6 +173,30 @@ impl Recording {
                 value,
             },
         );
+    }
+
+    /// Records that `clock` read `ticks` nanosecond ticks at `at` µs.
+    fn clock_sync(&mut self, at: u64, clock: &'static ClockDesc, ticks: u64) {
+        self.record(
+            at,
+            MAIN,
+            Observation::ClockSync {
+                clock: ClockTicks::from(ClockReading::new(clock, ticks, TickPeriod::NANOSECOND)),
+            },
+        );
+    }
+
+    /// Reports finished GPU work at `at` µs, timed in `clock`'s ticks.
+    fn timeline_span(&mut self, at: u64, span: &TimelineSpan) -> SpanId {
+        let id = SpanId::new(self.next());
+        self.record(
+            at,
+            MAIN,
+            Observation::TimelineSpan {
+                span: Box::new(TimelineWork::new(span)),
+            },
+        );
+        id
     }
 
     /// A snapshot holding the events in `[since, next)` except `missing`.
@@ -993,4 +1018,166 @@ fn duration_stats_use_nearest_rank_percentiles() {
     assert_eq!(stats.p99(), us(99));
     assert_eq!(stats.mean(), Duration::from_nanos(50_500));
     assert_eq!(DurationStats::of([]), DurationStats::default());
+}
+
+static GRAPHICS: TimelineDesc = TimelineDesc::gpu("graphics");
+static GPU_CLOCK: ClockDesc = ClockDesc::new("gpu");
+static LOST_CLOCK: ClockDesc = ClockDesc::new("lost");
+static GPU_FRAME: ScopeDesc = ScopeDesc::new("gpu_frame");
+static SHADOWS: ScopeDesc = ScopeDesc::new("shadows");
+static OPAQUE: ScopeDesc = ScopeDesc::new("opaque");
+
+fn gpu(scope: &'static ScopeDesc, begin: u64, end: u64) -> TimelineSpan {
+    TimelineSpan::new(
+        &GRAPHICS,
+        scope,
+        footfall_core::ContextHandle::ROOT,
+        &GPU_CLOCK,
+        TickPeriod::NANOSECOND,
+        begin,
+        end,
+    )
+    .in_frame(1234)
+}
+
+#[test]
+fn gpu_work_is_placed_on_its_own_timeline_through_its_clock() {
+    let mut recording = Recording::new(7);
+    // The GPU clock read 5 ms of ticks 1,000 µs into the runtime.
+    recording.clock_sync(1_000, &GPU_CLOCK, 5_000_000);
+    // The CPU submits frame 1234's GPU work under flow 1234.
+    let submit = SpanId::new(recording.next());
+    let token = recording.begin(1_040, MAIN, &UPDATE, 0);
+    recording.record(
+        1_050,
+        MAIN,
+        Observation::Flow {
+            flow_id: FlowId::new(1234),
+            phase: FlowPhase::Begin,
+            context_id: ContextId::new(0),
+        },
+    );
+    recording.end(1_060, MAIN, token);
+    // Read back later: the whole frame, then the passes inside it.
+    let frame = recording.timeline_span(
+        2_000,
+        &gpu(&GPU_FRAME, 5_100_000, 5_600_000).after_flow(FlowId::new(1234)),
+    );
+    let shadows = recording.timeline_span(2_000, &gpu(&SHADOWS, 5_150_000, 5_250_000));
+    recording.timeline_span(2_000, &gpu(&OPAQUE, 5_300_000, 5_550_000));
+    let trace = Trace::from_snapshot(&recording.snapshot(3_000));
+
+    let graphics = trace.timeline_named("graphics").expect("the GPU timeline");
+    assert!(matches!(
+        graphics.kind(),
+        footfall_analysis::TrackKind::Timeline {
+            kind: footfall_core::TimelineKind::Gpu,
+            ..
+        }
+    ));
+    let gpu_frame = trace.span(frame).expect("placed");
+    assert_eq!(gpu_frame.range(), range(1_100, 1_600));
+    assert_eq!(gpu_frame.depth(), 0);
+    assert_eq!(
+        gpu_frame.self_time(),
+        us(150),
+        "500 less the passes' 100 and 250"
+    );
+    assert_eq!(gpu_frame.frame_number(), Some(1234));
+    assert_eq!(gpu_frame.timeline(), graphics.timeline_id());
+    let placement = gpu_frame.placement().expect("timed by another clock");
+    assert!(!placement.between_syncs(), "one sync, so extended from it");
+    assert_eq!(placement.distance(), us(600));
+    let pass = trace.span(shadows).expect("placed");
+    assert_eq!((pass.depth(), pass.parent()), (1, Some(frame)));
+    assert_eq!(trace.children(gpu_frame).len(), 2);
+
+    // The flow leads from the CPU submit to the GPU work.
+    let flows: Vec<_> = trace.flows_through(frame).collect();
+    let spans: Vec<_> = flows[0].steps().iter().map(|step| step.span()).collect();
+    assert_eq!(spans, [Some(submit), Some(frame)]);
+
+    // Queries cover timelines, or leave them out.
+    let gpu_only = trace.spans().on_timelines().group_by(GroupBy::Name).table();
+    assert_eq!(gpu_only.rows().len(), 3);
+    assert_eq!(gpu_only.basis().converted(), 3);
+    assert_eq!(gpu_only.basis().farthest_conversion(), us(600));
+    assert!(
+        trace
+            .spans()
+            .on_threads()
+            .named("shadows")
+            .table()
+            .rows()
+            .is_empty()
+    );
+    let by_track = trace.spans().group_by(GroupBy::Thread).table();
+    assert!(by_track.row("graphics").is_some());
+    assert!(by_track.row("main").is_some());
+}
+
+#[test]
+fn gpu_work_without_a_clock_reading_waits_to_be_placed() {
+    let mut recording = Recording::new(7);
+    let lost = recording.timeline_span(
+        10,
+        &TimelineSpan::new(
+            &GRAPHICS,
+            &SHADOWS,
+            footfall_core::ContextHandle::ROOT,
+            &LOST_CLOCK,
+            TickPeriod::NANOSECOND,
+            9_000,
+            9_500,
+        ),
+    );
+    let first_next = recording.next();
+    recording.clock_sync(20, &LOST_CLOCK, 10_000);
+
+    let mut trace = Trace::new();
+    trace
+        .push(&recording.window(0, first_next, &[], 15))
+        .expect("one instance");
+    assert_eq!(trace.unplaced_spans(), 1);
+    let basis = trace.spans().table().basis().clone();
+    assert_eq!(basis.unplaced(), 1);
+    assert!(!basis.is_complete());
+    assert_eq!(trace.spans().on_threads().table().basis().unplaced(), 0);
+
+    // The clock's first reading arrives with the next window.
+    let pushed = trace
+        .push(&recording.window(first_next, recording.next(), &[], 30))
+        .expect("one instance");
+    assert_eq!(pushed.spans(), [lost]);
+    assert_eq!(trace.unplaced_spans(), 0);
+    assert_eq!(
+        trace.span(lost).map(|span| span.range()),
+        Some(TimeRange::new(us(19), Duration::from_nanos(19_500)))
+    );
+}
+
+#[test]
+fn a_frames_gpu_work_counts_toward_that_frame_wherever_it_ran() {
+    let mut recording = Recording::new(7);
+    recording.clock_sync(0, &GPU_CLOCK, 0);
+    // Frame 1234's CPU work, then frame 1235's, while 1234's GPU work runs.
+    let first = FrameId::new(recording.numbered_marker(0, MarkerPhase::Begin, Some(1234)));
+    recording.numbered_marker(100, MarkerPhase::End, Some(1234));
+    let second = FrameId::new(recording.numbered_marker(100, MarkerPhase::Begin, Some(1235)));
+    recording.numbered_marker(200, MarkerPhase::End, Some(1235));
+    recording.timeline_span(250, &gpu(&OPAQUE, 120_000, 180_000));
+    let trace = Trace::from_snapshot(&recording.snapshot(300));
+
+    let gpu_time = |frame| {
+        trace
+            .spans()
+            .in_frames(&[frame])
+            .selecting(Selection::Inside)
+            .on_timelines()
+            .table()
+            .total()
+            .total()
+    };
+    assert_eq!(gpu_time(first), us(60), "frame 1234's opaque pass, whole");
+    assert_eq!(gpu_time(second), us(0), "though it ran during frame 1235");
 }

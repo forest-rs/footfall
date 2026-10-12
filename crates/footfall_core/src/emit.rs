@@ -7,7 +7,7 @@ use crate::InstrumentationLevel;
 use crate::max_level;
 use crate::{
     Args, ClockReading, Context, ContextHandle, CounterDesc, EventDesc, FlowId, ResourceId,
-    ResourceKindDesc, ScopeDesc,
+    ResourceKindDesc, ScopeDesc, TimelineSpan,
 };
 #[cfg(feature = "std")]
 use std::sync::OnceLock;
@@ -322,6 +322,12 @@ pub trait Backend: Send + Sync {
         let _ = (first, second);
     }
 
+    /// Observes finished work on a timeline that is not a CPU thread, timed
+    /// by another clock; see [`TimelineSpan`].
+    fn timeline_span(&self, span: &TimelineSpan) {
+        let _ = span;
+    }
+
     /// Observes one phase of a causal flow.
     fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: ContextHandle) {
         let _ = (flow_id, phase, context);
@@ -585,6 +591,14 @@ pub fn clock_sync(reading: ClockReading) {
 #[cfg_attr(not(footfall_compile_out), inline)]
 pub fn clock_pair(first: ClockReading, second: ClockReading) {
     dispatch!(when max_level().captures_markers() => clock_pair(first, second));
+}
+
+/// Records finished work on a timeline that is not a CPU thread, such as a
+/// GPU pass, once its times are known; see [`TimelineSpan`].
+#[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
+pub fn timeline_span(span: &TimelineSpan) {
+    dispatch!(when max_level().captures_markers() => timeline_span(span));
 }
 
 /// Starts a causal flow under a semantic context.

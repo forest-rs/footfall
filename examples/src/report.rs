@@ -12,9 +12,10 @@ use footfall::analysis::{Basis, Caveat, Comparison, Frame, GroupBy, SpanTable, T
 use footfall::session::OwnedSnapshot;
 use std::collections::BTreeMap;
 
-/// Prints which scopes took the most time, from a table grouped by name.
-pub fn spans(table: &SpanTable, limit: usize) {
-    println!("{HEADING}Where the time went{HEADING:#}");
+/// Prints which scopes took the most time under `title`, from a table
+/// grouped by name.
+pub fn spans(title: &str, table: &SpanTable, limit: usize) {
+    println!("{HEADING}{title}{HEADING:#}");
     let rows = table.rows();
     if rows.is_empty() {
         println!("  {DIM}no completed scopes{DIM:#}");

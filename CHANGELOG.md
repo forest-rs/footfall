@@ -20,6 +20,10 @@ The first release.
 - Clock syncs and pairs relate other clocks, such as a GPU's or a frame
   scheduler's host clock, to the runtime's, and `Clocks` converts their
   times, following drift between syncs.
+- Timelines that are not CPU threads, such as GPU queues: `timeline_span`
+  records finished work in the timeline's clock with its frame and flow.
+  Analysis places it on a track of its own and counts it toward its frame;
+  the Chrome export draws each timeline as a track.
 - `scope!` for a scope that lasts to the end of the block; `context!` and
   `args!` for labels and per-instance arguments.
 - Instrumentation levels, and `--cfg footfall_compile_out` to compile every
