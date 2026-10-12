@@ -408,7 +408,9 @@ impl OwnedContextEntry {
 }
 
 /// Owned label value suitable for transport.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// Values order by kind and then by value, so they can key sorted maps.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub enum OwnedLabelValue {
     /// Unsigned numeric payload.

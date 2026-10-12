@@ -364,6 +364,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "footfall_analysis"
+version = "0.1.0"
+dependencies = [
+ "footfall_core",
+ "footfall_runtime",
+ "footfall_session",
+]
+
+[[package]]
 name = "footfall_benchmarks"
 version = "0.1.0"
 dependencies = [

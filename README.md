@@ -19,6 +19,8 @@ The crates:
   consumers
 - `footfall_session_wtransport`: serves and fetches sessions over local
   WebTransport
+- `footfall_analysis`: scope, frame, and counter analysis over snapshots,
+  live or from capture files
 
 The workspace also holds `footfall_benchmarks`, the Criterion benchmarks for
 emission overhead, and `examples/basic`, which keeps example dev-dependencies
