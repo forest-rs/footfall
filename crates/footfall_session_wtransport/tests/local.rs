@@ -70,3 +70,88 @@ fn every_local_server_is_found_and_unregisters_on_drop() {
         drop(first);
     });
 }
+
+#[test]
+fn duplicate_session_ids_and_stale_registrations_are_reported() {
+    // As above, run in a child process with a state directory of its own.
+    if std::env::var_os("FOOTFALL_STATE_DIR").is_none() {
+        let state = std::env::temp_dir().join(format!(
+            "footfall-local-dup-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("the clock is after the epoch")
+                .as_nanos()
+        ));
+        let status = std::process::Command::new(
+            std::env::current_exe().expect("the test binary has a path"),
+        )
+        .args([
+            "--exact",
+            "duplicate_session_ids_and_stale_registrations_are_reported",
+        ])
+        .env("FOOTFALL_STATE_DIR", &state)
+        .status()
+        .expect("the test binary should run");
+        let _ = std::fs::remove_dir_all(&state);
+        assert!(status.success(), "the check failed in the child process");
+        return;
+    }
+
+    let tokio = tokio::runtime::Runtime::new().expect("tokio should start");
+    tokio.block_on(async {
+        // Nothing registered yet: an empty discovery, not an error.
+        let empty = SessionClient::discover_local(std::time::Duration::from_secs(1))
+            .await
+            .expect("no producers is not an error");
+        assert!(empty.sessions().is_empty());
+
+        let first_runtime: &'static Runtime =
+            Box::leak(Box::new(Runtime::builder().process_name("first").build()));
+        let second_runtime: &'static Runtime =
+            Box::leak(Box::new(Runtime::builder().process_name("second").build()));
+        let _first = LocalSessionServer::start(vec![ServedSession::new("main", first_runtime)])
+            .await
+            .expect("the first server should start");
+        let _second = LocalSessionServer::start(vec![ServedSession::new("main", second_runtime)])
+            .await
+            .expect("the second server should start");
+
+        // A registration left behind by a producer that exited.
+        let registry = std::path::Path::new(
+            &std::env::var_os("FOOTFALL_STATE_DIR").expect("set by the parent"),
+        )
+        .join("wtransport")
+        .join("servers");
+        let free_port = std::net::UdpSocket::bind("127.0.0.1:0")
+            .and_then(|socket| socket.local_addr())
+            .expect("an ephemeral port")
+            .port();
+        let stale = registry.join(free_port.to_string());
+        std::fs::write(
+            &stale,
+            format!("https://127.0.0.1:{free_port}/footfall/session"),
+        )
+        .expect("the registry is writable");
+
+        let discovery = SessionClient::discover_local(std::time::Duration::from_secs(1))
+            .await
+            .expect("discovery should succeed");
+        assert!(!stale.exists(), "the stale registration is pruned");
+        assert!(discovery.unreachable().is_empty());
+        assert_eq!(discovery.sessions().len(), 2);
+        let error = discovery
+            .session("main")
+            .expect_err("two producers offer main");
+        let message = error.to_string();
+        assert!(
+            message.contains("first") && message.contains("second"),
+            "{message}"
+        );
+        assert!(
+            discovery
+                .sessions()
+                .iter()
+                .all(|session| session.announcement().instance_id() != 0)
+        );
+    });
+}

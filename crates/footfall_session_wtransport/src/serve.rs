@@ -71,6 +71,7 @@ impl ServedSession {
             self.runtime.process_name(),
             self.runtime.session_name(),
         )
+        .with_producer(self.runtime.instance_id(), self.runtime.process_id())
     }
 }
 

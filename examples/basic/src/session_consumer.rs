@@ -86,10 +86,11 @@ fn list_sessions(discovery: &LocalDiscovery) {
     for session in discovery.sessions() {
         let announcement = session.announcement();
         println!(
-            "{} {} process={} session={}",
+            "{} {} process={} pid={} session={}",
             session.client().url(),
             announcement.id(),
             announcement.process_name(),
+            announcement.process_id(),
             announcement.session_name().unwrap_or("-"),
         );
     }
@@ -102,7 +103,7 @@ fn select_session<'a>(
     if let Some(requested_id) = requested_id {
         return discovery
             .session(requested_id)
-            .ok_or_else(|| format!("no local session named `{requested_id}`"));
+            .map_err(|error| error.to_string());
     }
     match discovery.sessions() {
         [] => Err(String::from("no local sessions")),
