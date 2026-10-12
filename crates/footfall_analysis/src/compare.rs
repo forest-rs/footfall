@@ -72,8 +72,9 @@ pub enum Caveat {
     /// the per-unit figures vary, and no difference can be told from noise.
     FewUnits,
     /// The sides come from different runtime instances, so rows were
-    /// matched by names, labels, thread names, and context labels rather
-    /// than ids; [`GroupBy::Thread`] matches unnamed threads only by chance.
+    /// matched by names, label and argument values, thread names, and
+    /// context labels rather than ids; [`GroupBy::Thread`] matches unnamed
+    /// threads only by chance.
     DifferentInstances,
     /// The producers' versions differ.
     DifferentProducers {

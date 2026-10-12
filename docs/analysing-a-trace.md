@@ -86,6 +86,46 @@ fn slow_frame_breakdown(trace: &Trace) {
 Rows come most total time first. Grouping by a label never drops spans:
 those whose context lacks the label form a `(no pass)` group of their own.
 
+### Grouping by an Argument
+
+A label belongs to a span's context, shared by everything recorded under
+it. An argument belongs to one span, such as the number of nodes one layout
+pass handled. `GroupBy::Arg` groups by an argument's value, `with_arg` and
+`without_arg` narrow to spans with or without one, and `Span::arg` reads
+one. Spans without the argument form a `(no nodes)` group of their own.
+
+Each distinct value is a group, so a number that rarely repeats makes
+nearly as many groups as spans. To see cost against such a number, read it
+from each span and group the spans in ranges that suit it:
+
+```rust
+use footfall::analysis::{DurationStats, OwnedLabelValue, Trace};
+use std::collections::BTreeMap;
+
+fn layout_by_nodes(trace: &Trace) {
+    let mut by_thousands = BTreeMap::<u64, Vec<_>>::new();
+    for selected in trace.spans().named("layout").iter() {
+        if let Some(OwnedLabelValue::Unsigned(nodes)) = selected.span().arg("nodes") {
+            by_thousands
+                .entry(nodes / 1000)
+                .or_default()
+                .push(selected.time());
+        }
+    }
+    for (thousands, times) in by_thousands {
+        let stats = DurationStats::of(times);
+        println!(
+            "{}..{} nodes: {} spans, median {:?}, max {:?}",
+            thousands * 1000,
+            thousands * 1000 + 999,
+            stats.count(),
+            stats.median(),
+            stats.max()
+        );
+    }
+}
+```
+
 ### How Spans Count Toward a Range
 
 A span that crosses a range's edge, such as a worker task that began in one
@@ -165,6 +205,12 @@ fn why_slow(trace: &Trace) {
     }
 }
 ```
+
+Grouping a comparison by an argument as well as by name can change the
+answer. When slow frames' layouts each took longer because each handled
+far more nodes, `layout` alone shows the change as cost, but
+`GroupBy::Arg("nodes".into())` shows it as volume: spans like
+`layout / nodes=12000`, which normal frames never ran.
 
 `standard_error_micros` estimates how much of a change is noise from how
 much the per-unit time varies; it needs at least two units a side. A

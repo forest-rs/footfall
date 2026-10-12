@@ -42,7 +42,8 @@ The first release.
   snapshot or a subscription's windows: spans on per-thread tracks with ids
   that hold across snapshots and captures, frames with counter changes,
   counter series, messages, resource lifetimes, and flows. Span queries
-  filter by frame, time, name, thread, or label and group into tables;
+  filter by frame, time, name, thread, label, or argument and group into
+  tables by name, thread, context, label, or argument;
   comparisons split a change into more work and slower work; and every
   answer says what it covers.
 - `footfall_export`: Chrome Trace JSON for Perfetto.

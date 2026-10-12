@@ -11,17 +11,17 @@ use crate::trace::Trace;
 use core::fmt;
 use core::time::Duration;
 use footfall_core::ContextId;
-use footfall_session::OwnedLabelValue;
+use footfall_session::{OwnedArgEntry, OwnedLabelValue};
 use std::collections::BTreeMap;
 
 /// A query over a trace's completed spans, from [`Trace::spans`].
 ///
-/// Narrow it by time, name, thread, context, or label, choose how spans
-/// crossing a range's edge count with a [`Selection`], then ask for every
-/// matching span with [`iter`](Self::iter), a summary grouped by name,
-/// thread, context, or label with [`table`](Self::table), or typical and
-/// worst examples with [`instances`](Self::instances). Every answer carries
-/// a [`Basis`] saying what it covers.
+/// Narrow it by time, name, thread, context, label, or argument, choose how
+/// spans crossing a range's edge count with a [`Selection`], then ask for
+/// every matching span with [`iter`](Self::iter), a summary grouped by
+/// name, thread, context, label, or argument with [`table`](Self::table), or
+/// typical and worst examples with [`instances`](Self::instances). Every
+/// answer carries a [`Basis`] saying what it covers.
 ///
 /// ```
 /// # use footfall_analysis::{GroupBy, Selection, Trace};
@@ -54,6 +54,7 @@ pub struct SpanQuery<'t> {
     thread: Option<u64>,
     context: Option<ContextId>,
     labels: Vec<(String, Option<OwnedLabelValue>)>,
+    args: Vec<(String, Option<OwnedLabelValue>)>,
     group_by: Vec<GroupBy>,
 }
 
@@ -102,6 +103,14 @@ pub enum GroupBy {
     /// The value of one label of the span's context. Spans whose context
     /// lacks the label form their own group rather than being left out.
     Label(String),
+    /// The value of one of the span's own arguments, such as the number of
+    /// nodes one layout pass handled. Spans without the argument form their
+    /// own group rather than being left out.
+    ///
+    /// Each distinct value is a group. For a number that rarely repeats,
+    /// read it with [`Span::arg`] from each span [`SpanQuery::iter`]
+    /// returns, and group the spans in ranges that suit it.
+    Arg(String),
 }
 
 /// One part of a [`TableRow`]'s key, for one [`GroupBy`].
@@ -131,12 +140,19 @@ pub enum KeyPart {
         /// Its value, or `None` for spans whose context lacks the label.
         value: Option<OwnedLabelValue>,
     },
+    /// An argument's value.
+    Arg {
+        /// The argument key.
+        key: String,
+        /// Its value, or `None` for spans without the argument.
+        value: Option<OwnedLabelValue>,
+    },
 }
 
 impl KeyPart {
     /// Returns what the part means independent of its runtime instance:
-    /// names, label values, thread names, and context labels, but not ids.
-    /// Comparisons across instances match rows by it.
+    /// names, label and argument values, thread names, and context labels,
+    /// but not ids. Comparisons across instances match rows by it.
     #[must_use]
     pub fn semantic(&self) -> String {
         match self {
@@ -161,8 +177,14 @@ impl fmt::Display for KeyPart {
             Self::Label {
                 key,
                 value: Some(value),
+            }
+            | Self::Arg {
+                key,
+                value: Some(value),
             } => write!(f, "{key}={value}"),
-            Self::Label { key, value: None } => write!(f, "(no {key})"),
+            Self::Label { key, value: None } | Self::Arg { key, value: None } => {
+                write!(f, "(no {key})")
+            }
         }
     }
 }
@@ -440,6 +462,7 @@ impl<'t> SpanQuery<'t> {
             thread: None,
             context: None,
             labels: Vec::new(),
+            args: Vec::new(),
             group_by: Vec::new(),
         }
     }
@@ -509,6 +532,20 @@ impl<'t> SpanQuery<'t> {
         self
     }
 
+    /// Selects only spans with the argument `key` set to `value`.
+    #[must_use]
+    pub fn with_arg(mut self, key: impl Into<String>, value: impl Into<OwnedLabelValue>) -> Self {
+        self.args.push((key.into(), Some(value.into())));
+        self
+    }
+
+    /// Selects only spans without the argument `key`.
+    #[must_use]
+    pub fn without_arg(mut self, key: impl Into<String>) -> Self {
+        self.args.push((key.into(), None));
+        self
+    }
+
     /// Groups [`table`](Self::table) rows by `group`, after any grouping
     /// already set.
     #[must_use]
@@ -521,7 +558,13 @@ impl<'t> SpanQuery<'t> {
         self.ranges.clone().map(merge_ranges)
     }
 
-    fn matches(&self, name: &str, context_id: ContextId, thread_id: u64) -> bool {
+    fn matches(
+        &self,
+        name: &str,
+        context_id: ContextId,
+        thread_id: u64,
+        args: &[OwnedArgEntry],
+    ) -> bool {
         self.name.as_deref().is_none_or(|wanted| wanted == name)
             && self.thread.is_none_or(|wanted| wanted == thread_id)
             && self.context.is_none_or(|wanted| wanted == context_id)
@@ -529,6 +572,14 @@ impl<'t> SpanQuery<'t> {
                 .labels
                 .iter()
                 .all(|(key, value)| self.trace.label(context_id, key) == value.as_ref())
+            && self
+                .args
+                .iter()
+                .all(|(key, value)| arg(args, key) == value.as_ref())
+    }
+
+    fn selects(&self, span: &Span) -> bool {
+        self.matches(&span.name, span.context_id, span.thread_id, &span.args)
     }
 
     /// Returns every selected span with the time it counts for, by thread,
@@ -547,9 +598,7 @@ impl<'t> SpanQuery<'t> {
                         track
                             .spans(depth)
                             .iter()
-                            .filter(|span| {
-                                self.matches(&span.name, span.context_id, span.thread_id)
-                            })
+                            .filter(|span| self.selects(span))
                             .map(|span| Selected {
                                 span,
                                 time: span.duration(),
@@ -560,7 +609,7 @@ impl<'t> SpanQuery<'t> {
                 };
                 for (index, range) in ranges.iter().enumerate() {
                     for span in track.spans_in(depth, *range) {
-                        if !self.matches(&span.name, span.context_id, span.thread_id) {
+                        if !self.selects(span) {
                             continue;
                         }
                         let include = match self.selection {
@@ -684,6 +733,10 @@ impl<'t> SpanQuery<'t> {
                     key: key.clone(),
                     value: self.trace.label(span.context_id, key).cloned(),
                 },
+                GroupBy::Arg(key) => KeyPart::Arg {
+                    key: key.clone(),
+                    value: span.arg(key).cloned(),
+                },
             })
             .collect()
     }
@@ -701,8 +754,8 @@ impl<'t> SpanQuery<'t> {
         let open = self
             .trace
             .begun()
-            .filter(|(name, context_id, thread_id, begin)| {
-                self.matches(name, *context_id, *thread_id) && in_scope(*begin)
+            .filter(|(name, context_id, thread_id, begin, args)| {
+                self.matches(name, *context_id, *thread_id, args) && in_scope(*begin)
             })
             .count() as u64;
         let observed = self.trace.observed();
@@ -758,6 +811,13 @@ impl<'t> SpanQuery<'t> {
             unobserved,
         }
     }
+}
+
+/// Returns the value of the argument `key` among `args`.
+pub(crate) fn arg<'a>(args: &'a [OwnedArgEntry], key: &str) -> Option<&'a OwnedLabelValue> {
+    args.iter()
+        .find(|entry| entry.key() == key)
+        .map(OwnedArgEntry::value)
 }
 
 /// Returns how much of the interval from `begin` to `end` lies in the

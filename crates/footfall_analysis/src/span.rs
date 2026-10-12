@@ -7,7 +7,7 @@ use crate::time::TimeRange;
 use core::fmt;
 use core::time::Duration;
 use footfall_core::{ContextId, ScopeDescId, ScopeToken};
-use footfall_session::OwnedArgEntry;
+use footfall_session::{OwnedArgEntry, OwnedLabelValue};
 use std::sync::Arc;
 
 /// Identifies a span within its runtime instance: the sequence number of
@@ -170,6 +170,12 @@ impl Span {
     #[must_use]
     pub fn args(&self) -> &[OwnedArgEntry] {
         &self.args
+    }
+
+    /// Returns the value of the argument `key`, if the span has it.
+    #[must_use]
+    pub fn arg(&self, key: &str) -> Option<&OwnedLabelValue> {
+        crate::query::arg(&self.args, key)
     }
 }
 

@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! The trace model on hand-built snapshots, with exact times: nesting and
-//! identity, how spans count toward ranges, grouping, what answers cover,
-//! gaps, comparisons, and what a timeline draws.
+//! identity, how spans count toward ranges, grouping by labels and
+//! arguments, what answers cover, gaps, comparisons, and what a timeline
+//! draws.
 
 use core::time::Duration;
 use footfall_analysis::{
-    Caveat, Comparison, Continuity, DurationStats, FrameId, GroupBy, KeyPart, Metric, Population,
-    PushError, Recorded, Selection, SpanId, TimeRange, Trace, Zone,
+    Caveat, Comparison, Continuity, DurationStats, FrameId, GroupBy, KeyPart, Metric,
+    OwnedLabelValue, Population, PushError, Recorded, Selection, SpanId, TimeRange, Trace, Zone,
 };
 use footfall_core::{
     Args, Context, ContextId, CounterDesc, EventDesc, FlowId, FlowPhase, InstrumentationLevel,
@@ -81,6 +82,17 @@ impl Recording {
         desc: &'static ScopeDesc,
         context: u64,
     ) -> ScopeToken {
+        self.begin_with(at, thread, desc, context, Args::none())
+    }
+
+    fn begin_with(
+        &mut self,
+        at: u64,
+        thread: u64,
+        desc: &'static ScopeDesc,
+        context: u64,
+        args: Args,
+    ) -> ScopeToken {
         let token = ScopeToken::new(self.next() + 1);
         self.record(
             at,
@@ -90,7 +102,7 @@ impl Recording {
                 name: desc.name(),
                 context_id: ContextId::new(context),
                 token,
-                args: Args::none(),
+                args,
             },
         );
         token
@@ -109,8 +121,22 @@ impl Recording {
         begin: u64,
         end: u64,
     ) -> SpanId {
+        self.scope_with(thread, desc, context, begin, end, Args::none())
+    }
+
+    /// Records a scope with arguments and nothing nested in it, returning
+    /// its id.
+    fn scope_with(
+        &mut self,
+        thread: u64,
+        desc: &'static ScopeDesc,
+        context: u64,
+        begin: u64,
+        end: u64,
+        args: Args,
+    ) -> SpanId {
         let id = SpanId::new(self.next());
-        let token = self.begin(begin, thread, desc, context);
+        let token = self.begin_with(begin, thread, desc, context, args);
         self.end(end, thread, token);
         id
     }
@@ -326,6 +352,97 @@ fn spans_without_a_label_form_their_own_group() {
 }
 
 #[test]
+fn spans_group_by_an_argument_and_those_without_it_form_their_own_group() {
+    let mut recording = Recording::new(7);
+    let nodes = |count: u64| Args::none().with("nodes", count);
+    recording.scope_with(MAIN, &LAYOUT, 0, 0, 10, nodes(800));
+    recording.scope_with(MAIN, &LAYOUT, 0, 10, 30, nodes(800));
+    let storm = recording.scope_with(MAIN, &LAYOUT, 0, 30, 130, nodes(12_000));
+    recording.scope_with(
+        MAIN,
+        &DECODE,
+        0,
+        130,
+        132,
+        Args::none().with("format", "png"),
+    );
+    recording.scope(MAIN, &PAINT, 0, 132, 137);
+    // Still running, so counted only as open.
+    recording.begin_with(140, MAIN, &LAYOUT, 0, nodes(12_000));
+    let trace = Trace::from_snapshot(&recording.snapshot(150));
+
+    let span = trace.span(storm).expect("the storm's layout is held");
+    assert_eq!(span.arg("nodes"), Some(&OwnedLabelValue::Unsigned(12_000)));
+    assert_eq!(span.arg("glyphs"), None);
+
+    let table = trace
+        .spans()
+        .group_by(GroupBy::Name)
+        .group_by(GroupBy::Arg("nodes".into()))
+        .table();
+    let rows: Vec<_> = table
+        .rows()
+        .iter()
+        .map(|row| {
+            (
+                row.describe(),
+                row.stats().count(),
+                row.stats().total(),
+                row.stats().time().max(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (String::from("layout / nodes=12000"), 1, us(100), us(100)),
+            (String::from("layout / nodes=800"), 2, us(30), us(20)),
+            (String::from("paint / (no nodes)"), 1, us(5), us(5)),
+            (String::from("decode / (no nodes)"), 1, us(2), us(2)),
+        ]
+    );
+    assert_eq!(table.total().total(), us(137), "no span is left out");
+    let storm_key = KeyPart::Arg {
+        key: "nodes".into(),
+        value: Some(12_000_u64.into()),
+    };
+    assert_eq!(table.rows()[0].key()[1], storm_key);
+    assert_eq!(storm_key.semantic(), "nodes=12000");
+    assert_eq!(table.rows()[2].key()[1].semantic(), "(no nodes)");
+
+    // String values read as label values do: quoted.
+    let by_format = trace
+        .spans()
+        .group_by(GroupBy::Arg("format".into()))
+        .table();
+    assert_eq!(
+        by_format
+            .row("format=\"png\"")
+            .map(|row| row.stats().count()),
+        Some(1)
+    );
+
+    let storms = trace.spans().with_arg("nodes", 12_000_u64);
+    assert_eq!(storms.table().total().count(), 1);
+    assert_eq!(storms.basis().open(), 1, "the open layout had 12000 nodes");
+    let usual = trace.spans().with_arg("nodes", 800_u64);
+    assert_eq!(usual.table().total().total(), us(30));
+    assert_eq!(usual.basis().open(), 0);
+    let without = trace.spans().without_arg("nodes").table();
+    assert_eq!(without.total().count(), 2, "paint and decode");
+    assert_eq!(
+        trace
+            .spans()
+            .with_arg("nodes", 800_i64)
+            .table()
+            .total()
+            .count(),
+        0,
+        "values match by kind as well as number"
+    );
+}
+
+#[test]
 fn an_answer_says_what_it_left_out_and_whether_anything_was_recorded() {
     let mut recording = Recording::new(7);
     recording.scope(MAIN, &LAYOUT, 0, 0, 10);
@@ -516,6 +633,79 @@ fn a_comparison_separates_more_work_from_slower_work() {
     assert_eq!(paint.volume_micros(), 0.0, "one call either way");
     assert_eq!(paint.cost_micros(), 20.0, "each twice as slow");
     assert_eq!(paint.standard_error_micros(), Some(0.0));
+}
+
+#[test]
+fn grouping_by_an_argument_turns_slower_work_into_different_work() {
+    let mut recording = Recording::new(7);
+    let mut normal = Vec::new();
+    let mut slow = Vec::new();
+    for index in 0..6 {
+        let start = index * 1000;
+        let id = FrameId::new(recording.marker(start, MarkerPhase::Begin));
+        // Two of six frames lay out a hundred times the nodes, ten times
+        // slower.
+        let (nodes, length) = if index % 3 == 2 {
+            slow.push(id);
+            (12_000_u64, 100)
+        } else {
+            normal.push(id);
+            (120_u64, 10)
+        };
+        recording.scope_with(
+            MAIN,
+            &LAYOUT,
+            0,
+            start + 10,
+            start + 10 + length,
+            Args::none().with("nodes", nodes),
+        );
+        recording.scope(MAIN, &PAINT, 0, start + 200, start + 220);
+        recording.marker(start + 500, MarkerPhase::End);
+    }
+    let trace = Trace::from_snapshot(&recording.snapshot(6000));
+    let frames =
+        |ids: &[FrameId]| Population::frames(&trace, ids.iter().filter_map(|id| trace.frame(*id)));
+    let (normal, slow) = (frames(&normal), frames(&slow));
+
+    // By name, layout looks the same work done slower.
+    let by_name = Comparison::between(&normal, &slow)
+        .group_by(GroupBy::Name)
+        .run();
+    let layout = by_name.row("layout").expect("layout ran in both");
+    assert_eq!(layout.change_micros(), 90.0);
+    assert_eq!(layout.volume_micros(), 0.0, "one call either way");
+    assert_eq!(layout.cost_micros(), 90.0);
+
+    // By node count, it is different work: layouts of 12000 nodes, which
+    // normal frames never ran, in place of layouts of 120.
+    let by_nodes = Comparison::between(&normal, &slow)
+        .group_by(GroupBy::Name)
+        .group_by(GroupBy::Arg("nodes".into()))
+        .run();
+    let rows: Vec<_> = by_nodes
+        .rows()
+        .iter()
+        .map(|row| {
+            (
+                row.describe(),
+                row.change_micros(),
+                row.volume_micros(),
+                row.cost_micros(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (String::from("layout / nodes=12000"), 100.0, 100.0, 0.0),
+            (String::from("layout / nodes=120"), -10.0, -10.0, 0.0),
+            (String::from("paint / (no nodes)"), 0.0, 0.0, 0.0),
+        ]
+    );
+    let storm = by_nodes.row("layout / nodes=12000").expect("a row");
+    assert_eq!(storm.baseline().count_per_unit(), 0.0);
+    assert_eq!(storm.candidate().count_per_unit(), 1.0);
 }
 
 #[test]

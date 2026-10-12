@@ -12,8 +12,9 @@
 //! Then ask it questions:
 //!
 //! - **Where did the time go?** [`Trace::spans`] starts a [`SpanQuery`]:
-//!   narrow it to frames, time ranges, names, threads, or labels, and group
-//!   it into a [`SpanTable`] by name, thread, context, or label.
+//!   narrow it to frames, time ranges, names, threads, labels, or
+//!   arguments, and group it into a [`SpanTable`] by name, thread, context,
+//!   label, or argument, such as how many nodes one layout pass handled.
 //! - **Show me examples.** [`SpanQuery::instances`] returns typical and
 //!   worst spans, each with a [`SpanId`] that names it in every snapshot and
 //!   capture of the instance, and [`Trace::parent`], [`Trace::children`],

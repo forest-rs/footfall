@@ -9,6 +9,7 @@
 //! cargo run -p footfall_examples --bin footfall_capture -- record demo.ffcap
 //! cargo run -p footfall_examples --bin footfall_capture -- info demo.ffcap
 //! cargo run -p footfall_examples --bin footfall_capture -- slow demo.ffcap
+//! cargo run -p footfall_examples --bin footfall_capture -- slow demo.ffcap --by-arg nodes
 //! cargo run -p footfall_examples --bin footfall_capture -- compare before.ffcap after.ffcap
 //! cargo run -p footfall_examples --bin footfall_capture -- span demo.ffcap 13909
 //! cargo run -p footfall_examples --bin footfall_capture -- export demo.ffcap
@@ -16,7 +17,7 @@
 
 use anstream::{eprintln, println};
 use clap::{Parser, Subcommand};
-use footfall::analysis::{Comparison, GroupBy, Population, Selection, SpanId, Trace};
+use footfall::analysis::{Comparison, GroupBy, KeyPart, Population, Selection, SpanId, Trace};
 use footfall::session::OwnedSnapshot;
 use footfall::session::capture::{CaptureReader, CaptureWriter};
 use footfall::wtransport::{ClientError, SessionClient};
@@ -68,6 +69,10 @@ enum Command {
         /// How many scopes to show.
         #[arg(long, default_value_t = 10)]
         top: usize,
+        /// Also split each scope by the value of its argument KEY, such as
+        /// `nodes`, to see whether slow spans did more of something.
+        #[arg(long, value_name = "KEY")]
+        by_arg: Option<String>,
     },
     /// Compare two captures of the same workload frame by frame: which
     /// scopes changed, and whether they ran more often or each ran slower.
@@ -119,7 +124,8 @@ async fn main() {
             file,
             budget_ms,
             top,
-        } => slow(&file, budget_ms, top),
+            by_arg,
+        } => slow(&file, budget_ms, top, by_arg.as_deref()),
         Command::Compare {
             baseline,
             candidate,
@@ -296,7 +302,7 @@ fn read_trace(path: &Path) -> Result<Trace> {
     Ok(trace)
 }
 
-fn slow(path: &Path, budget_ms: f64, top: usize) -> Result<()> {
+fn slow(path: &Path, budget_ms: f64, top: usize, by_arg: Option<&str>) -> Result<()> {
     let trace = read_trace(path)?;
     let budget = Duration::from_secs_f64(budget_ms / 1000.0);
     let (slow, normal): (Vec<_>, Vec<_>) = trace
@@ -315,25 +321,36 @@ fn slow(path: &Path, budget_ms: f64, top: usize) -> Result<()> {
     }
     // Time inside each frame, so work that crosses a frame boundary counts
     // where it ran.
-    let comparison = Comparison::between(
-        &Population::frames(&trace, normal),
-        &Population::frames(&trace, slow.iter().copied()),
-    )
-    .selecting(Selection::Inside)
-    .group_by(GroupBy::Name)
-    .run();
+    let (normal, slow_frames) = (
+        Population::frames(&trace, normal),
+        Population::frames(&trace, slow.iter().copied()),
+    );
+    let mut comparison = Comparison::between(&normal, &slow_frames)
+        .selecting(Selection::Inside)
+        .group_by(GroupBy::Name);
+    if let Some(key) = by_arg {
+        comparison = comparison.group_by(GroupBy::Arg(key.to_owned()));
+    }
+    let comparison = comparison.run();
     report::comparison(&comparison, "normal", "slow", top);
 
     // The worst example of the biggest change, to look at.
     if let Some(row) = comparison.rows().first() {
         let name = row.describe();
         let ids: Vec<_> = slow.iter().map(|frame| frame.id()).collect();
-        let instances = trace
-            .spans()
-            .in_frames(&ids)
-            .selecting(Selection::Inside)
-            .named(name.as_str())
-            .instances(1);
+        let mut query = trace.spans().in_frames(&ids).selecting(Selection::Inside);
+        for part in row.key() {
+            query = match part {
+                KeyPart::Name(scope) => query.named(scope.as_str()),
+                KeyPart::Arg {
+                    key,
+                    value: Some(value),
+                } => query.with_arg(key.as_str(), value.clone()),
+                KeyPart::Arg { key, value: None } => query.without_arg(key.as_str()),
+                _ => query,
+            };
+        }
+        let instances = query.instances(1);
         if let Some(worst) = instances.worst().first() {
             let span = worst.span();
             let parent = trace.parent(span).map_or_else(
