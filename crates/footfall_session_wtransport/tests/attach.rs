@@ -20,9 +20,9 @@ fn demo_snapshot() -> Snapshot {
     let metadata = SnapshotMetadata::new("attach_test")
         .with_session_name("e2e")
         .with_instance_id(0xfeed)
-        .with_wall_clock_anchor_micros(1_700_000_000_000_000);
+        .with_wall_clock_anchor_nanos(1_700_000_000_000_000);
     Snapshot::builder(metadata)
-        .captured_at_micros(40)
+        .captured_at_nanos(40)
         .window(EventWindow::new(1, 2, 0))
         .context(ContextSnapshot::new(ContextId::new(0), Context::root()))
         .context(ContextSnapshot::new(

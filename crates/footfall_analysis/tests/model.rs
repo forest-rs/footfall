@@ -42,7 +42,8 @@ fn range(start: u64, end: u64) -> TimeRange {
     TimeRange::new(us(start), us(end))
 }
 
-/// Events recorded by hand, with sequence numbers in call order.
+/// Events recorded by hand, with sequence numbers in call order. Times are
+/// given in microseconds.
 struct Recording {
     instance: u64,
     level: InstrumentationLevel,
@@ -64,8 +65,12 @@ impl Recording {
 
     fn record(&mut self, at: u64, thread: u64, observation: Observation) -> u64 {
         let sequence = self.next();
-        self.events
-            .push(TimedObservation::new(at, sequence, thread, observation));
+        self.events.push(TimedObservation::new(
+            at * 1000,
+            sequence,
+            thread,
+            observation,
+        ));
         sequence
     }
 
@@ -145,7 +150,7 @@ impl Recording {
             .with_producer_version("1.0.0")
             .with_capture(capture);
         let mut builder = Snapshot::builder(metadata)
-            .captured_at_micros(captured_at)
+            .captured_at_nanos(captured_at * 1000)
             .window(EventWindow::new(since, next, missing.len() as u64))
             .thread(ThreadSnapshot::new(MAIN, Some(String::from("main"))))
             .thread(ThreadSnapshot::new(WORKER, None))

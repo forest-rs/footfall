@@ -8,7 +8,7 @@ use crate::frame::{Frame, FrameCounter, FrameId};
 use crate::query::SpanQuery;
 use crate::signal::{CounterSample, CounterSeries, Flow, FlowStep, Message, Resource};
 use crate::span::{OpenSpan, Span, SpanId, Track};
-use crate::time::{TimeRange, micros};
+use crate::time::{TimeRange, nanos};
 use core::fmt;
 use core::time::Duration;
 use footfall_core::{
@@ -269,7 +269,7 @@ impl Trace {
         // The frame end whose counter samples are being collected.
         let mut collecting: Option<(FrameId, u64, Duration)> = None;
         for event in events {
-            let at = micros(event.at_micros());
+            let at = nanos(event.at_nanos());
             while pending.next_if(|gap| gap.range.start() <= at).is_some() {
                 self.lose_continuity();
                 collecting = None;
@@ -283,7 +283,7 @@ impl Trace {
         self.gaps.extend(new_gaps);
 
         self.next_sequence = self.next_sequence.max(snapshot.window().next());
-        self.captured_at = self.captured_at.max(micros(snapshot.captured_at_micros()));
+        self.captured_at = self.captured_at.max(nanos(snapshot.captured_at_nanos()));
         self.metadata = Some(snapshot.metadata().clone());
         self.drops = snapshot.drops();
         self.counters = snapshot.counters().to_vec();
@@ -300,7 +300,7 @@ impl Trace {
     ) -> Vec<Gap> {
         let mut present: Vec<(u64, Duration)> = events
             .iter()
-            .map(|event| (event.sequence(), micros(event.at_micros())))
+            .map(|event| (event.sequence(), nanos(event.at_nanos())))
             .collect();
         present.sort_unstable();
         let end = snapshot.window().next().max(self.next_sequence);
@@ -318,7 +318,7 @@ impl Trace {
             before = at;
         }
         if end > expected {
-            let captured = micros(snapshot.captured_at_micros());
+            let captured = nanos(snapshot.captured_at_nanos());
             holes.push(Gap {
                 range: TimeRange::new(before, captured.max(before)),
                 missed: end - expected,

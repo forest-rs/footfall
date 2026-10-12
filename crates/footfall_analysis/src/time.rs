@@ -150,7 +150,7 @@ pub(crate) fn merge_ranges(mut ranges: Vec<TimeRange>) -> Vec<TimeRange> {
     merged
 }
 
-/// Converts a runtime timestamp, in microseconds, to a trace time.
-pub(crate) const fn micros(at: u64) -> Duration {
-    Duration::from_micros(at)
+/// Converts a runtime timestamp, in nanoseconds, to a trace time.
+pub(crate) const fn nanos(at: u64) -> Duration {
+    Duration::from_nanos(at)
 }

@@ -173,8 +173,9 @@ before the trace, and where events are missing. A consumer can tell
 "nothing happened" from "nothing was recorded" from "the data is
 incomplete" without consulting anything else.
 
-Analysis works on `Duration`s rather than the runtime's microsecond
-timestamps, so a finer clock would not change its interface.
+Timestamps are nanoseconds on a monotonic clock that starts at runtime
+creation, so even the shortest scopes have a duration. Analysis works on
+`Duration`s rather than raw timestamps.
 
 ## Invariants
 

@@ -176,7 +176,7 @@ pub struct Runtime {
     instance_id: u64,
     process_id: u32,
     created_at: Instant,
-    wall_clock_anchor_micros: u64,
+    wall_clock_anchor_nanos: u64,
     process_name: String,
     level: AtomicU8,
     /// Set once this runtime is the process-wide backend; its level then
@@ -187,7 +187,7 @@ pub struct Runtime {
     context_capacity: usize,
     counter_samples: bool,
     /// When the previous frame end sampled counters.
-    last_counter_sample_micros: AtomicU64,
+    last_counter_sample_nanos: AtomicU64,
     next_scope_token: AtomicU64,
     /// Sequence number of the next event.
     ///
@@ -253,7 +253,7 @@ impl Runtime {
             instance_id: new_instance_id(wall_clock),
             process_id: current_process_id(),
             created_at: Instant::now(),
-            wall_clock_anchor_micros: duration_to_micros(wall_clock),
+            wall_clock_anchor_nanos: duration_to_nanos(wall_clock),
             process_name: process_name.unwrap_or_else(default_process_name),
             level: AtomicU8::new(level_to_u8(level)),
             drives_max_level: AtomicBool::new(false),
@@ -261,7 +261,7 @@ impl Runtime {
             event_capacity,
             context_capacity,
             counter_samples,
-            last_counter_sample_micros: AtomicU64::new(0),
+            last_counter_sample_nanos: AtomicU64::new(0),
             next_scope_token: AtomicU64::new(1),
             next_event_sequence: AtomicU64::new(0),
             admitted_keys: Mutex::new(HashSet::new()),
@@ -415,7 +415,7 @@ impl Runtime {
             process_name: self.process_name.clone(),
             session_name: labels.session_name.clone(),
             instance_id: self.instance_id,
-            wall_clock_anchor_micros: self.wall_clock_anchor_micros,
+            wall_clock_anchor_nanos: self.wall_clock_anchor_nanos,
             producer_version: String::from(PRODUCER_VERSION),
             process_id: self.process_id,
             capture: CaptureSettings {
@@ -431,16 +431,16 @@ impl Runtime {
         }
     }
 
-    fn now_micros(&self) -> u64 {
+    fn now_nanos(&self) -> u64 {
         // A thread's first emission registers the thread, which takes a lock
         // and copies its name; do it before reading the clock, so the first
         // scope a thread records is not inflated by that setup.
         let _ = current_thread_id();
-        duration_to_micros(self.created_at.elapsed())
+        duration_to_nanos(self.created_at.elapsed())
     }
 
     fn snapshot_from(&self, since: u64) -> Snapshot {
-        let captured_at_micros = self.now_micros();
+        let captured_at_nanos = self.now_nanos();
         // Load the watermark before locking any event shard: every event
         // numbered below it was pushed under its shard's lock before the
         // number was published, so the reads below see it unless it was
@@ -469,7 +469,7 @@ impl Runtime {
             for counter in shard.counters.values() {
                 let mut counter = counter.clone();
                 counter.context_id =
-                    contexts.resolve_row(counter.context_id, counter.updated_at_micros, &mut tally);
+                    contexts.resolve_row(counter.context_id, counter.updated_at_nanos, &mut tally);
                 let key = CounterKey::new(counter.desc_id, counter.context_id, counter.kind);
                 match merged_counters.get_mut(&key) {
                     Some(existing) => existing.merge(&counter),
@@ -482,7 +482,7 @@ impl Runtime {
                 let mut histogram = histogram.clone();
                 histogram.context_id = contexts.resolve_row(
                     histogram.context_id,
-                    histogram.updated_at_micros,
+                    histogram.updated_at_nanos,
                     &mut tally,
                 );
                 let key = HistogramKey {
@@ -548,7 +548,7 @@ impl Runtime {
 
         Snapshot {
             metadata: self.metadata(&labels),
-            captured_at_micros,
+            captured_at_nanos,
             window,
             threads,
             contexts: contexts.snapshot(),
@@ -571,9 +571,9 @@ impl Runtime {
         desc: &'static CounterDesc,
         context: ContextHandle,
         value: u64,
-        at_micros: u64,
+        at_nanos: u64,
     ) {
-        self.counter_update_at(desc, context, value, at_micros, CounterKind::Counter);
+        self.counter_update_at(desc, context, value, at_nanos, CounterKind::Counter);
     }
 
     fn gauge_set_at(
@@ -581,9 +581,9 @@ impl Runtime {
         desc: &'static CounterDesc,
         context: ContextHandle,
         value: u64,
-        at_micros: u64,
+        at_nanos: u64,
     ) {
-        self.counter_update_at(desc, context, value, at_micros, CounterKind::Gauge);
+        self.counter_update_at(desc, context, value, at_nanos, CounterKind::Gauge);
     }
 
     fn histogram_record_at(
@@ -591,7 +591,7 @@ impl Runtime {
         desc: &'static CounterDesc,
         context: ContextHandle,
         value: u64,
-        at_micros: u64,
+        at_nanos: u64,
     ) {
         let context_id = context.id();
         let key = HistogramKey {
@@ -602,7 +602,7 @@ impl Runtime {
         {
             let mut shard = self.lock_counter_shard(shard_index);
             if let Some(histogram) = shard.histograms.get_mut(&key) {
-                histogram.record(value, at_micros);
+                histogram.record(value, at_nanos);
                 return;
             }
         }
@@ -618,7 +618,7 @@ impl Runtime {
             .or_insert_with(|| {
                 HistogramSnapshot::new(desc.id(), desc.name(), desc.unit(), context_id)
             })
-            .record(value, at_micros);
+            .record(value, at_nanos);
     }
 
     fn counter_update_at(
@@ -626,7 +626,7 @@ impl Runtime {
         desc: &'static CounterDesc,
         context: ContextHandle,
         value: u64,
-        at_micros: u64,
+        at_nanos: u64,
         kind: CounterKind,
     ) {
         let context_id = context.id();
@@ -635,7 +635,7 @@ impl Runtime {
         {
             let mut shard = self.lock_counter_shard(shard_index);
             if let Some(snapshot) = shard.counters.get_mut(&key) {
-                snapshot.apply(value, at_micros);
+                snapshot.apply(value, at_nanos);
                 return;
             }
         }
@@ -658,9 +658,9 @@ impl Runtime {
                     CounterKind::Counter => 0,
                     CounterKind::Gauge => value,
                 },
-                updated_at_micros: at_micros,
+                updated_at_nanos: at_nanos,
             })
-            .apply(value, at_micros);
+            .apply(value, at_nanos);
     }
 
     fn lock_counter_shard(&self, index: usize) -> std::sync::MutexGuard<'_, CounterShard> {
@@ -673,7 +673,7 @@ impl Runtime {
         ScopeToken::new(self.next_scope_token.fetch_add(1, Ordering::Relaxed))
     }
 
-    fn push_event_at(&self, observation: Observation, at_micros: u64) {
+    fn push_event_at(&self, observation: Observation, at_nanos: u64) {
         let shard_index = self.thread_shard_index();
         let mut shard = self.event_shards[shard_index]
             .lock()
@@ -697,11 +697,11 @@ impl Runtime {
 
         // Allocating the sequence number under the shard lock keeps it in
         // program order for the recording thread, which timestamps alone
-        // cannot guarantee at microsecond resolution, and lets readers use
+        // cannot guarantee when the clock ticks coarsely, and lets readers use
         // the next number as a watermark; see `next_event_sequence`.
         let sequence = self.next_event_sequence.fetch_add(1, Ordering::SeqCst);
         shard.events.push_back(TimedObservation {
-            at_micros,
+            at_nanos,
             sequence,
             thread_id: current_thread_id(),
             observation,
@@ -710,10 +710,10 @@ impl Runtime {
 
     /// Records a sample of every counter and gauge updated since the previous
     /// frame end, with its value merged across threads.
-    fn sample_counters(&self, at_micros: u64) {
+    fn sample_counters(&self, at_nanos: u64) {
         let since = self
-            .last_counter_sample_micros
-            .swap(at_micros, Ordering::Relaxed);
+            .last_counter_sample_nanos
+            .swap(at_nanos, Ordering::Relaxed);
         let mut changed = HashSet::new();
         let mut merged: HashMap<CounterKey, CounterSnapshot> = HashMap::new();
         for shard in &self.counter_shards {
@@ -721,7 +721,7 @@ impl Runtime {
                 .lock()
                 .expect("runtime counter shard should not be poisoned");
             for (key, counter) in &shard.counters {
-                if counter.updated_at_micros >= since {
+                if counter.updated_at_nanos >= since {
                     changed.insert(*key);
                 }
                 match merged.get_mut(key) {
@@ -754,7 +754,7 @@ impl Runtime {
                     kind: counter.kind,
                     value: counter.value,
                 },
-                at_micros,
+                at_nanos,
             );
         }
     }
@@ -1027,7 +1027,7 @@ impl RuntimeBuilder {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Snapshot {
     metadata: SnapshotMetadata,
-    captured_at_micros: u64,
+    captured_at_nanos: u64,
     window: EventWindow,
     threads: Vec<ThreadSnapshot>,
     contexts: Vec<ContextSnapshot>,
@@ -1058,8 +1058,8 @@ impl Snapshot {
 
     /// Returns the time since runtime creation when the snapshot was taken.
     #[must_use]
-    pub const fn captured_at_micros(&self) -> u64 {
-        self.captured_at_micros
+    pub const fn captured_at_nanos(&self) -> u64 {
+        self.captured_at_nanos
     }
 
     /// Returns the range of event sequence numbers this snapshot covers.
@@ -1154,8 +1154,8 @@ pub struct SnapshotBuilder {
 
 impl SnapshotBuilder {
     /// Sets the time since runtime creation when the snapshot was taken.
-    pub const fn captured_at_micros(mut self, captured_at_micros: u64) -> Self {
-        self.snapshot.captured_at_micros = captured_at_micros;
+    pub const fn captured_at_nanos(mut self, captured_at_nanos: u64) -> Self {
+        self.snapshot.captured_at_nanos = captured_at_nanos;
         self
     }
 
@@ -1471,7 +1471,7 @@ pub struct SnapshotMetadata {
     session_name: Option<String>,
     instance_id: u64,
     process_id: u32,
-    wall_clock_anchor_micros: u64,
+    wall_clock_anchor_nanos: u64,
     producer_version: String,
     capture: CaptureSettings,
 }
@@ -1508,10 +1508,10 @@ impl SnapshotMetadata {
         self
     }
 
-    /// Sets the wall-clock anchor in microseconds since the Unix epoch.
+    /// Sets the wall-clock anchor in nanoseconds since the Unix epoch.
     #[must_use]
-    pub const fn with_wall_clock_anchor_micros(mut self, wall_clock_anchor_micros: u64) -> Self {
-        self.wall_clock_anchor_micros = wall_clock_anchor_micros;
+    pub const fn with_wall_clock_anchor_nanos(mut self, wall_clock_anchor_nanos: u64) -> Self {
+        self.wall_clock_anchor_nanos = wall_clock_anchor_nanos;
         self
     }
 
@@ -1559,17 +1559,17 @@ impl SnapshotMetadata {
         self.process_id
     }
 
-    /// Returns the wall-clock time of runtime creation in microseconds since
+    /// Returns the wall-clock time of runtime creation in nanoseconds since
     /// the Unix epoch.
     ///
-    /// All snapshot timestamps are microseconds on a monotonic clock that
-    /// starts at runtime creation, so adding this anchor to any `*_micros`
+    /// All snapshot timestamps are nanoseconds on a monotonic clock that
+    /// starts at runtime creation, so adding this anchor to any `*_nanos`
     /// value yields wall-clock time. The anchor lets consumers correlate
     /// captures with logs and merge captures from several processes onto one
     /// timeline.
     #[must_use]
-    pub const fn wall_clock_anchor_micros(&self) -> u64 {
-        self.wall_clock_anchor_micros
+    pub const fn wall_clock_anchor_nanos(&self) -> u64 {
+        self.wall_clock_anchor_nanos
     }
 
     /// Returns the version of `footfall_runtime` that produced the snapshot.
@@ -1774,7 +1774,7 @@ pub struct CounterSnapshot {
     /// Aggregated value.
     value: u64,
     /// Last update time relative to runtime creation.
-    updated_at_micros: u64,
+    updated_at_nanos: u64,
 }
 
 impl CounterSnapshot {
@@ -1787,7 +1787,7 @@ impl CounterSnapshot {
         context_id: ContextId,
         kind: CounterKind,
         value: u64,
-        updated_at_micros: u64,
+        updated_at_nanos: u64,
     ) -> Self {
         Self {
             desc_id,
@@ -1796,7 +1796,7 @@ impl CounterSnapshot {
             context_id,
             kind,
             value,
-            updated_at_micros,
+            updated_at_nanos,
         }
     }
 
@@ -1838,17 +1838,17 @@ impl CounterSnapshot {
 
     /// Returns the last update time relative to runtime creation.
     #[must_use]
-    pub const fn updated_at_micros(&self) -> u64 {
-        self.updated_at_micros
+    pub const fn updated_at_nanos(&self) -> u64 {
+        self.updated_at_nanos
     }
 
-    /// Applies one update recorded at `at_micros`.
-    fn apply(&mut self, value: u64, at_micros: u64) {
+    /// Applies one update recorded at `at_nanos`.
+    fn apply(&mut self, value: u64, at_nanos: u64) {
         self.value = match self.kind {
             CounterKind::Counter => self.value.saturating_add(value),
             CounterKind::Gauge => value,
         };
-        self.updated_at_micros = at_micros;
+        self.updated_at_nanos = at_nanos;
     }
 
     /// Folds another shard's value for the same key into this one.
@@ -1856,14 +1856,14 @@ impl CounterSnapshot {
         match self.kind {
             CounterKind::Counter => self.value = self.value.saturating_add(other.value),
             // The most recent write wins; writes from different threads in
-            // the same microsecond are ordered arbitrarily.
+            // the same nanosecond are ordered arbitrarily.
             CounterKind::Gauge => {
-                if other.updated_at_micros >= self.updated_at_micros {
+                if other.updated_at_nanos >= self.updated_at_nanos {
                     self.value = other.value;
                 }
             }
         }
-        self.updated_at_micros = self.updated_at_micros.max(other.updated_at_micros);
+        self.updated_at_nanos = self.updated_at_nanos.max(other.updated_at_nanos);
     }
 }
 
@@ -1908,7 +1908,7 @@ pub struct HistogramSnapshot {
     /// Power-of-two bucket counts indexed by sample bit length.
     buckets: [u64; HISTOGRAM_BUCKET_COUNT],
     /// Last update time relative to runtime creation.
-    updated_at_micros: u64,
+    updated_at_nanos: u64,
 }
 
 impl HistogramSnapshot {
@@ -1931,7 +1931,7 @@ impl HistogramSnapshot {
             min: u64::MAX,
             max: 0,
             buckets: [0; HISTOGRAM_BUCKET_COUNT],
-            updated_at_micros: 0,
+            updated_at_nanos: 0,
         }
     }
 
@@ -1944,7 +1944,7 @@ impl HistogramSnapshot {
         for (bucket, other) in self.buckets.iter_mut().zip(other.buckets) {
             *bucket = bucket.saturating_add(other);
         }
-        self.updated_at_micros = self.updated_at_micros.max(other.updated_at_micros);
+        self.updated_at_nanos = self.updated_at_nanos.max(other.updated_at_nanos);
     }
 
     /// Returns the opaque counter descriptor id; see [`Snapshot`].
@@ -2004,18 +2004,18 @@ impl HistogramSnapshot {
 
     /// Returns the last update time relative to runtime creation.
     #[must_use]
-    pub const fn updated_at_micros(&self) -> u64 {
-        self.updated_at_micros
+    pub const fn updated_at_nanos(&self) -> u64 {
+        self.updated_at_nanos
     }
 
     /// Records one sample at the given time relative to runtime creation.
-    pub fn record(&mut self, value: u64, at_micros: u64) {
+    pub fn record(&mut self, value: u64, at_nanos: u64) {
         self.count = self.count.saturating_add(1);
         self.sum = self.sum.saturating_add(value);
         self.min = self.min.min(value);
         self.max = self.max.max(value);
         self.buckets[histogram_bucket_index(value)] += 1;
-        self.updated_at_micros = at_micros;
+        self.updated_at_nanos = at_nanos;
     }
 }
 
@@ -2036,15 +2036,15 @@ struct HistogramKey {
 /// to runtime creation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TimedObservation {
-    /// Observation time in microseconds since runtime creation.
-    at_micros: u64,
+    /// Observation time in nanoseconds since runtime creation.
+    at_nanos: u64,
     /// Runtime-assigned recording sequence number.
     ///
     /// Sequence numbers start at `0` for each runtime instance and increase
     /// by one per event in recording order across all threads; cursors and
     /// [`EventWindow`]s are positions in this sequence. Snapshots order
     /// events by timestamp and then by sequence, so events recorded by one
-    /// thread within the same microsecond keep their program order.
+    /// thread at the same timestamp keep their program order.
     sequence: u64,
     /// Runtime-assigned id of the thread that recorded the observation.
     ///
@@ -2059,23 +2059,23 @@ impl TimedObservation {
     /// Creates a timed observation.
     #[must_use]
     pub const fn new(
-        at_micros: u64,
+        at_nanos: u64,
         sequence: u64,
         thread_id: u64,
         observation: Observation,
     ) -> Self {
         Self {
-            at_micros,
+            at_nanos,
             sequence,
             thread_id,
             observation,
         }
     }
 
-    /// Returns the observation time in microseconds since runtime creation.
+    /// Returns the observation time in nanoseconds since runtime creation.
     #[must_use]
-    pub const fn at_micros(&self) -> u64 {
-        self.at_micros
+    pub const fn at_nanos(&self) -> u64 {
+        self.at_nanos
     }
 
     /// Returns the runtime-assigned recording sequence number.
@@ -2084,7 +2084,7 @@ impl TimedObservation {
     /// by one per event in recording order across all threads; cursors and
     /// [`EventWindow`]s are positions in this sequence. Snapshots order
     /// events by timestamp and then by sequence, so events recorded by one
-    /// thread within the same microsecond keep their program order.
+    /// thread at the same timestamp keep their program order.
     #[must_use]
     pub const fn sequence(&self) -> u64 {
         self.sequence
@@ -2344,7 +2344,7 @@ struct RegisteredEntry {
 #[derive(Clone, Copy, Debug)]
 struct Release {
     sequence: u64,
-    micros: u64,
+    nanos: u64,
 }
 
 /// Attribution problems found while resolving one snapshot.
@@ -2422,13 +2422,13 @@ impl ContextTable {
     /// Returns `context_id` when the table knows it, and otherwise the root
     /// context, counting the miss.
     /// Resolves the context of a counter or histogram row last updated at
-    /// `updated_at_micros`: the row keeps a context the table knows, counted
+    /// `updated_at_nanos`: the row keeps a context the table knows, counted
     /// when it was updated after the context's release, and otherwise goes
     /// to the root context, counted as unattributed.
     fn resolve_row(
         &self,
         context_id: ContextId,
-        updated_at_micros: u64,
+        updated_at_nanos: u64,
         tally: &mut ResolveTally,
     ) -> ContextId {
         if context_id.get() == 0 {
@@ -2438,7 +2438,7 @@ impl ContextTable {
             Some(entry) => {
                 if entry
                     .released_at
-                    .is_some_and(|release| updated_at_micros > release.micros)
+                    .is_some_and(|release| updated_at_nanos > release.nanos)
                 {
                     tally.updated_after_release += 1;
                 }
@@ -2572,7 +2572,7 @@ impl Backend for Runtime {
         // context.
         let release = Release {
             sequence: self.next_event_sequence.load(Ordering::SeqCst),
-            micros: self.now_micros(),
+            nanos: self.now_nanos(),
         };
         self.contexts
             .lock()
@@ -2584,24 +2584,24 @@ impl Backend for Runtime {
         if !self.level().captures_counters() {
             return;
         }
-        let at_micros = self.now_micros();
-        self.counter_add_at(desc, context, value, at_micros);
+        let at_nanos = self.now_nanos();
+        self.counter_add_at(desc, context, value, at_nanos);
     }
 
     fn gauge_set(&self, desc: &'static CounterDesc, context: ContextHandle, value: u64) {
         if !self.level().captures_counters() {
             return;
         }
-        let at_micros = self.now_micros();
-        self.gauge_set_at(desc, context, value, at_micros);
+        let at_nanos = self.now_nanos();
+        self.gauge_set_at(desc, context, value, at_nanos);
     }
 
     fn histogram_record(&self, desc: &'static CounterDesc, context: ContextHandle, value: u64) {
         if !self.level().captures_counters() {
             return;
         }
-        let at_micros = self.now_micros();
-        self.histogram_record_at(desc, context, value, at_micros);
+        let at_nanos = self.now_nanos();
+        self.histogram_record_at(desc, context, value, at_nanos);
     }
 
     fn scope_begin(
@@ -2613,7 +2613,7 @@ impl Backend for Runtime {
         if !self.level().captures_scopes() {
             return ScopeToken::INVALID;
         }
-        let at_micros = self.now_micros();
+        let at_nanos = self.now_nanos();
         let context_id = context.id();
         let token = self.next_scope_token();
         self.push_event_at(
@@ -2624,7 +2624,7 @@ impl Backend for Runtime {
                 token,
                 args: *args,
             },
-            at_micros,
+            at_nanos,
         );
         token
     }
@@ -2636,8 +2636,8 @@ impl Backend for Runtime {
         if !self.level().captures_scopes() {
             return;
         }
-        let at_micros = self.now_micros();
-        self.push_event_at(Observation::ScopeEnd { token }, at_micros);
+        let at_nanos = self.now_nanos();
+        self.push_event_at(Observation::ScopeEnd { token }, at_nanos);
     }
 
     fn resource_create(
@@ -2650,7 +2650,7 @@ impl Backend for Runtime {
         if !self.level().captures_resources() {
             return;
         }
-        let at_micros = self.now_micros();
+        let at_nanos = self.now_nanos();
         let context_id = context.id();
         self.push_event_at(
             Observation::ResourceCreate {
@@ -2660,7 +2660,7 @@ impl Backend for Runtime {
                 context_id,
                 size,
             },
-            at_micros,
+            at_nanos,
         );
     }
 
@@ -2674,7 +2674,7 @@ impl Backend for Runtime {
         if !self.level().captures_resources() {
             return;
         }
-        let at_micros = self.now_micros();
+        let at_nanos = self.now_nanos();
         let context_id = context.id();
         self.push_event_at(
             Observation::ResourceUpdate {
@@ -2684,7 +2684,7 @@ impl Backend for Runtime {
                 context_id,
                 size,
             },
-            at_micros,
+            at_nanos,
         );
     }
 
@@ -2697,7 +2697,7 @@ impl Backend for Runtime {
         if !self.level().captures_resources() {
             return;
         }
-        let at_micros = self.now_micros();
+        let at_nanos = self.now_nanos();
         let context_id = context.id();
         self.push_event_at(
             Observation::ResourceDrop {
@@ -2706,7 +2706,7 @@ impl Backend for Runtime {
                 resource_id,
                 context_id,
             },
-            at_micros,
+            at_nanos,
         );
     }
 
@@ -2714,7 +2714,7 @@ impl Backend for Runtime {
         if !self.level().captures_markers() {
             return;
         }
-        let at_micros = self.now_micros();
+        let at_nanos = self.now_nanos();
         let context_id = context.id();
         self.push_event_at(
             Observation::FrameMarker {
@@ -2722,10 +2722,10 @@ impl Backend for Runtime {
                 phase,
                 context_id,
             },
-            at_micros,
+            at_nanos,
         );
         if self.counter_samples && kind == MarkerKind::Frame && phase == MarkerPhase::End {
-            self.sample_counters(at_micros);
+            self.sample_counters(at_nanos);
         }
     }
 
@@ -2733,7 +2733,7 @@ impl Backend for Runtime {
         if !self.level().captures_flows() {
             return;
         }
-        let at_micros = self.now_micros();
+        let at_nanos = self.now_nanos();
         let context_id = context.id();
         self.push_event_at(
             Observation::Flow {
@@ -2741,7 +2741,7 @@ impl Backend for Runtime {
                 phase,
                 context_id,
             },
-            at_micros,
+            at_nanos,
         );
     }
 
@@ -2749,7 +2749,7 @@ impl Backend for Runtime {
         if !self.level().captures_messages() {
             return;
         }
-        let at_micros = self.now_micros();
+        let at_nanos = self.now_nanos();
         let context_id = context.id();
         self.push_event_at(
             Observation::Message {
@@ -2759,7 +2759,7 @@ impl Backend for Runtime {
                 text: truncate_message_text(text),
                 args: *args,
             },
-            at_micros,
+            at_nanos,
         );
     }
 }
@@ -2885,12 +2885,11 @@ const fn counter_kind_discriminant(kind: CounterKind) -> u64 {
 }
 
 fn event_sort_key(event: &TimedObservation) -> (u64, u64) {
-    (event.at_micros, event.sequence)
+    (event.at_nanos, event.sequence)
 }
 
-fn duration_to_micros(duration: Duration) -> u64 {
-    let micros = duration.as_micros();
-    u64::try_from(micros).unwrap_or(u64::MAX)
+fn duration_to_nanos(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 const fn level_to_u8(level: InstrumentationLevel) -> u8 {
@@ -3003,7 +3002,7 @@ mod tests {
         assert_eq!(histogram.buckets[super::histogram_bucket_index(1)], 1);
         assert_eq!(histogram.buckets[super::histogram_bucket_index(3)], 1);
         assert_eq!(histogram.buckets[super::histogram_bucket_index(1000)], 1);
-        assert_eq!(histogram.updated_at_micros, 4);
+        assert_eq!(histogram.updated_at_nanos, 4);
 
         assert_eq!(
             runtime.snapshot().histograms,
@@ -3183,7 +3182,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(1));
 
         // The owner is gone, but its handle is used again.
-        let late = runtime.now_micros();
+        let late = runtime.now_nanos();
         runtime.push_event_at(marker(owner.id()), late);
         runtime.counter_add_at(&OPS, owner, 10, late);
 
@@ -3367,7 +3366,7 @@ mod tests {
             "the process is named after the executable where there is one"
         );
         assert!(
-            snapshot.metadata.wall_clock_anchor_micros > 0,
+            snapshot.metadata.wall_clock_anchor_nanos > 0,
             "runtime creation should anchor snapshots to wall-clock time"
         );
         assert_eq!(snapshot.contexts[0].id, ContextId::new(0));
@@ -3381,7 +3380,7 @@ mod tests {
                 && counter.context_id == context_id
         }));
         assert_eq!(snapshot.events.len(), 5);
-        assert_eq!(snapshot.events[0].at_micros, 12);
+        assert_eq!(snapshot.events[0].at_nanos, 12);
         assert_eq!(snapshot.events[0].thread_id, super::current_thread_id());
         assert_eq!(
             snapshot.events[0].observation.context_id(),
@@ -3390,7 +3389,7 @@ mod tests {
     }
 
     #[test]
-    fn sequential_scopes_in_one_microsecond_keep_program_order() {
+    fn sequential_scopes_at_one_timestamp_keep_program_order() {
         let runtime = test_runtime(8, 8);
         static FIRST: ScopeDesc = ScopeDesc::new("first");
         static SECOND: ScopeDesc = ScopeDesc::new("second");
@@ -3431,7 +3430,7 @@ mod tests {
                 ("begin", "second"),
                 ("end", "second"),
             ],
-            "same-microsecond scopes must not appear nested"
+            "scopes at one timestamp must not appear nested"
         );
         assert!(
             snapshot
@@ -3506,11 +3505,7 @@ mod tests {
         runtime.push_event_at(marker(MarkerPhase::Begin), 3);
 
         let snapshot = runtime.snapshot();
-        let times: Vec<_> = snapshot
-            .events
-            .iter()
-            .map(|event| event.at_micros)
-            .collect();
+        let times: Vec<_> = snapshot.events.iter().map(|event| event.at_nanos).collect();
         assert_eq!(times, [2, 3], "the newest events are kept");
         assert_eq!(snapshot.drops.evicted_events(), 1);
         assert_eq!(snapshot.window, EventWindow::new(0, 3, 1));
@@ -3532,7 +3527,7 @@ mod tests {
 
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.events.len(), 1);
-        assert_eq!(snapshot.events[0].at_micros, 2);
+        assert_eq!(snapshot.events[0].at_nanos, 2);
         assert_eq!(snapshot.drops.evicted_events(), 1);
     }
 

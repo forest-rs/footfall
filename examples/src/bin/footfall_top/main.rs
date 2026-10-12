@@ -180,10 +180,10 @@ fn replay<R: std::io::Read>(mut reader: CaptureReader<R>, updates: &mpsc::Sender
     loop {
         match reader.read_snapshot() {
             Ok(Some(window)) => {
-                let taken = window.captured_at_micros();
+                let taken = window.captured_at_nanos();
                 if let Some(previous) = previous {
-                    let gap = taken.saturating_sub(previous).min(2_000_000);
-                    std::thread::sleep(Duration::from_micros(gap));
+                    let gap = taken.saturating_sub(previous).min(2_000_000_000);
+                    std::thread::sleep(Duration::from_nanos(gap));
                 }
                 previous = Some(taken);
                 if updates

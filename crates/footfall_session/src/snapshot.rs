@@ -230,7 +230,7 @@ pub enum SnapshotKind {
 pub struct SnapshotSummary<'a> {
     metadata: &'a SnapshotMetadata,
     kind: SnapshotKind,
-    captured_at_micros: u64,
+    captured_at_nanos: u64,
     window: EventWindow,
     counts: RowCounts,
 }
@@ -241,14 +241,14 @@ impl<'a> SnapshotSummary<'a> {
     pub const fn new(
         metadata: &'a SnapshotMetadata,
         kind: SnapshotKind,
-        captured_at_micros: u64,
+        captured_at_nanos: u64,
         window: EventWindow,
         counts: RowCounts,
     ) -> Self {
         Self {
             metadata,
             kind,
-            captured_at_micros,
+            captured_at_nanos,
             window,
             counts,
         }
@@ -268,8 +268,8 @@ impl<'a> SnapshotSummary<'a> {
 
     /// Returns the time since runtime creation when the snapshot was taken.
     #[must_use]
-    pub const fn captured_at_micros(&self) -> u64 {
-        self.captured_at_micros
+    pub const fn captured_at_nanos(&self) -> u64 {
+        self.captured_at_nanos
     }
 
     /// Returns the range of event sequence numbers the snapshot covers.
@@ -359,7 +359,7 @@ pub trait Consumer {
 pub struct OwnedSnapshotSummary {
     metadata: SnapshotMetadata,
     kind: SnapshotKind,
-    captured_at_micros: u64,
+    captured_at_nanos: u64,
     window: EventWindow,
     counts: RowCounts,
 }
@@ -370,14 +370,14 @@ impl OwnedSnapshotSummary {
     pub const fn new(
         metadata: SnapshotMetadata,
         kind: SnapshotKind,
-        captured_at_micros: u64,
+        captured_at_nanos: u64,
         window: EventWindow,
         counts: RowCounts,
     ) -> Self {
         Self {
             metadata,
             kind,
-            captured_at_micros,
+            captured_at_nanos,
             window,
             counts,
         }
@@ -397,8 +397,8 @@ impl OwnedSnapshotSummary {
 
     /// Returns the time since runtime creation when the snapshot was taken.
     #[must_use]
-    pub const fn captured_at_micros(&self) -> u64 {
-        self.captured_at_micros
+    pub const fn captured_at_nanos(&self) -> u64 {
+        self.captured_at_nanos
     }
 
     /// Returns the range of event sequence numbers the snapshot covers.
@@ -607,7 +607,7 @@ pub struct OwnedCounterSnapshot {
     /// Aggregated value.
     value: u64,
     /// Last update time relative to runtime creation.
-    updated_at_micros: u64,
+    updated_at_nanos: u64,
 }
 
 impl OwnedCounterSnapshot {
@@ -620,7 +620,7 @@ impl OwnedCounterSnapshot {
         context_id: ContextId,
         kind: CounterKind,
         value: u64,
-        updated_at_micros: u64,
+        updated_at_nanos: u64,
     ) -> Self {
         Self {
             desc_id,
@@ -629,7 +629,7 @@ impl OwnedCounterSnapshot {
             context_id,
             kind,
             value,
-            updated_at_micros,
+            updated_at_nanos,
         }
     }
 
@@ -671,8 +671,8 @@ impl OwnedCounterSnapshot {
 
     /// Returns the last update time relative to runtime creation.
     #[must_use]
-    pub const fn updated_at_micros(&self) -> u64 {
-        self.updated_at_micros
+    pub const fn updated_at_nanos(&self) -> u64 {
+        self.updated_at_nanos
     }
 }
 
@@ -699,7 +699,7 @@ pub struct OwnedHistogramSnapshot {
     /// Power-of-two bucket counts indexed by sample bit length.
     buckets: [u64; HISTOGRAM_BUCKET_COUNT],
     /// Last update time relative to runtime creation.
-    updated_at_micros: u64,
+    updated_at_nanos: u64,
 }
 
 impl OwnedHistogramSnapshot {
@@ -715,7 +715,7 @@ impl OwnedHistogramSnapshot {
         min: u64,
         max: u64,
         buckets: [u64; HISTOGRAM_BUCKET_COUNT],
-        updated_at_micros: u64,
+        updated_at_nanos: u64,
     ) -> Self {
         Self {
             desc_id,
@@ -727,7 +727,7 @@ impl OwnedHistogramSnapshot {
             min,
             max,
             buckets,
-            updated_at_micros,
+            updated_at_nanos,
         }
     }
 
@@ -787,8 +787,8 @@ impl OwnedHistogramSnapshot {
 
     /// Returns the last update time relative to runtime creation.
     #[must_use]
-    pub const fn updated_at_micros(&self) -> u64 {
-        self.updated_at_micros
+    pub const fn updated_at_nanos(&self) -> u64 {
+        self.updated_at_nanos
     }
 }
 
@@ -796,8 +796,8 @@ impl OwnedHistogramSnapshot {
 /// [`OwnedSnapshot::events`](crate::OwnedSnapshot::events) returns it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedTimedObservation {
-    /// Observation time in microseconds since runtime creation.
-    at_micros: u64,
+    /// Observation time in nanoseconds since runtime creation.
+    at_nanos: u64,
     /// Runtime-assigned recording sequence number.
     sequence: u64,
     /// Runtime-assigned id of the thread that recorded the observation.
@@ -810,23 +810,23 @@ impl OwnedTimedObservation {
     /// Creates a new `OwnedTimedObservation`.
     #[must_use]
     pub const fn new(
-        at_micros: u64,
+        at_nanos: u64,
         sequence: u64,
         thread_id: u64,
         observation: OwnedObservation,
     ) -> Self {
         Self {
-            at_micros,
+            at_nanos,
             sequence,
             thread_id,
             observation,
         }
     }
 
-    /// Returns the observation time in microseconds since runtime creation.
+    /// Returns the observation time in nanoseconds since runtime creation.
     #[must_use]
-    pub const fn at_micros(&self) -> u64 {
-        self.at_micros
+    pub const fn at_nanos(&self) -> u64 {
+        self.at_nanos
     }
 
     /// Returns the runtime-assigned recording sequence number: unique within
@@ -1155,7 +1155,7 @@ fn publish_rows<C: Consumer>(
     publish(Payload::SnapshotStart(SnapshotSummary {
         metadata: snapshot.metadata(),
         kind,
-        captured_at_micros: snapshot.captured_at_micros(),
+        captured_at_nanos: snapshot.captured_at_nanos(),
         window: snapshot.window(),
         counts: RowCounts::new(
             rows.threads.len(),
@@ -1237,7 +1237,7 @@ impl Envelope<'_> {
                     OwnedSessionPayload::SnapshotStart(OwnedSnapshotSummary {
                         metadata: summary.metadata.clone(),
                         kind: summary.kind,
-                        captured_at_micros: summary.captured_at_micros,
+                        captured_at_nanos: summary.captured_at_nanos,
                         window: summary.window,
                         counts: summary.counts,
                     })
@@ -1297,7 +1297,7 @@ impl From<&Snapshot> for crate::OwnedSnapshot {
             OwnedSnapshotSummary::new(
                 snapshot.metadata().clone(),
                 SnapshotKind::Full,
-                snapshot.captured_at_micros(),
+                snapshot.captured_at_nanos(),
                 snapshot.window(),
                 counts,
             ),
@@ -1373,7 +1373,7 @@ fn owned_counter_snapshot(counter: &CounterSnapshot) -> OwnedCounterSnapshot {
         context_id: counter.context_id(),
         kind: counter.kind(),
         value: counter.value(),
-        updated_at_micros: counter.updated_at_micros(),
+        updated_at_nanos: counter.updated_at_nanos(),
     }
 }
 
@@ -1388,13 +1388,13 @@ fn owned_histogram_snapshot(histogram: &HistogramSnapshot) -> OwnedHistogramSnap
         min: histogram.min(),
         max: histogram.max(),
         buckets: *histogram.buckets(),
-        updated_at_micros: histogram.updated_at_micros(),
+        updated_at_nanos: histogram.updated_at_nanos(),
     }
 }
 
 fn owned_timed_observation(observation: &TimedObservation) -> Option<OwnedTimedObservation> {
     Some(OwnedTimedObservation {
-        at_micros: observation.at_micros(),
+        at_nanos: observation.at_nanos(),
         sequence: observation.sequence(),
         thread_id: observation.thread_id(),
         observation: owned_observation(observation.observation())?,
@@ -1533,9 +1533,9 @@ mod tests {
         let metadata = SnapshotMetadata::new("demo")
             .with_session_name("capture")
             .with_instance_id(7)
-            .with_wall_clock_anchor_micros(1_700_000_000_000_000);
+            .with_wall_clock_anchor_nanos(1_700_000_000_000_000_000);
         let snapshot = Snapshot::builder(metadata)
-            .captured_at_micros(30)
+            .captured_at_nanos(30)
             .window(EventWindow::new(0, 2, 0))
             .thread(ThreadSnapshot::new(
                 1,

@@ -172,7 +172,7 @@ version, and rejects a different major version or a newer minor version.
 | session name | `option<string>` | |
 | instance id | `u64` | random per runtime; see below |
 | process id | `u32` | the producer's operating-system process id, or `0` |
-| wall-clock anchor | `u64` | microseconds since the Unix epoch at runtime creation |
+| wall-clock anchor | `u64` | nanoseconds since the Unix epoch at runtime creation |
 | producer version | `string` | version of `footfall_runtime` |
 | level | `u8` | `0` off, `1` counters, `2` scoped, `3` trace |
 | counter capacity | `u64` | |
@@ -180,7 +180,7 @@ version, and rejects a different major version or a newer minor version.
 | context capacity | `u64` | |
 | capture flags | `u8` | bit 0: counter samples recorded; bit 1: instrumentation compiled out; other bits zero |
 | kind | `u8` | `0` full, `1` changes; see below |
-| captured at | `u64` | microseconds since runtime creation |
+| captured at | `u64` | nanoseconds since runtime creation |
 | window since | `u64` | first event sequence covered |
 | window next | `u64` | sequence the next read starts from |
 | window missed | `u64` | events in the window evicted before the read |
@@ -241,7 +241,7 @@ A `count` of counter rows:
 | context id | `u64` | |
 | kind | `u8` | `0` counter (cumulative sum), `1` gauge (last value) |
 | value | `u64` | |
-| updated at | `u64` | microseconds since runtime creation |
+| updated at | `u64` | nanoseconds since runtime creation |
 
 Units:
 
@@ -264,7 +264,7 @@ the last update time as `u64`. Bucket `i` counts samples whose bit length is
 
 ### Events
 
-A `count` of event rows. Each row is the timestamp (microseconds since
+A `count` of event rows. Each row is the timestamp (nanoseconds since
 runtime creation) as a `delta`, the sequence number as a `delta`, the `u64`
 thread id, then a `u8` observation tag and its fields:
 
@@ -329,7 +329,7 @@ sequence, so events recorded by one thread keep their program order even when
 they share a timestamp. Keep row order across `Events` chunks rather than
 re-sorting by timestamp and observation kind.
 
-All timestamps are microseconds on a monotonic clock that starts at runtime
+All timestamps are nanoseconds on a monotonic clock that starts at runtime
 creation; adding the wall-clock anchor yields wall-clock time.
 
 ## Payload Limits
