@@ -54,8 +54,11 @@ The examples show that flow directly:
   serve/discover/fetch round trip
 - `cargo run -p basic --bin session_server`, which records a frame every
   100 ms until Ctrl-C
-- `cargo run -p basic --bin session_consumer -- --list`, `-- <session-id>`, or
-  `-- --watch <session-id>` against it
+- `cargo run -p basic --bin session_consumer -- --list`, `-- <session-id>`,
+  `-- --watch <session-id>`, or `-- --record capture.ffcap <session-id>`
+  against it
+- `cargo run -p basic --bin capture_export -- capture.ffcap > trace.json` to
+  turn a recording into one Chrome trace
 
 The session examples include direct Footfall instrumentation plus `tracing`
 spans/events bridged through `footfall_tracing`. For a compact Chrome Trace JSON

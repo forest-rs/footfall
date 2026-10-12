@@ -112,6 +112,34 @@ impl SessionClient {
             .collect())
     }
 
+    /// Discovers the sessions of every local server.
+    ///
+    /// Asks each server [`local_servers`](Self::local_servers) lists for its
+    /// sessions, waiting at most `timeout` for each, and returns every
+    /// session found with a client for its server, plus the servers that did
+    /// not answer and why.
+    pub async fn discover_local(timeout: Duration) -> Result<LocalDiscovery, ClientError> {
+        let mut discovery = LocalDiscovery {
+            sessions: Vec::new(),
+            unreachable: Vec::new(),
+        };
+        for client in Self::local_servers().await? {
+            let client = client.with_timeout(timeout);
+            match client.discover().await {
+                Ok(found) => {
+                    for announcement in found.sessions {
+                        discovery.sessions.push(LocalSession {
+                            client: client.clone(),
+                            announcement,
+                        });
+                    }
+                }
+                Err(error) => discovery.unreachable.push((client.url, error)),
+            }
+        }
+        Ok(discovery)
+    }
+
     /// Sets how long each request may take.
     #[must_use]
     pub const fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -333,6 +361,65 @@ impl Subscription {
                 url: self.url.clone(),
                 after: self.patience,
             })?
+    }
+}
+
+/// The sessions of every local server, from
+/// [`SessionClient::discover_local`].
+#[derive(Debug)]
+pub struct LocalDiscovery {
+    sessions: Vec<LocalSession>,
+    unreachable: Vec<(String, ClientError)>,
+}
+
+impl LocalDiscovery {
+    /// Returns every session found, in server order.
+    #[must_use]
+    pub fn sessions(&self) -> &[LocalSession] {
+        &self.sessions
+    }
+
+    /// Returns the first session with the given id.
+    #[must_use]
+    pub fn session(&self, id: &str) -> Option<&LocalSession> {
+        self.sessions
+            .iter()
+            .find(|session| session.announcement.id() == id)
+    }
+
+    /// Returns the registered servers that did not answer, by URL, with the
+    /// error each gave. A server that crashed leaves a registration behind
+    /// and shows up here.
+    #[must_use]
+    pub fn unreachable(&self) -> &[(String, ClientError)] {
+        &self.unreachable
+    }
+}
+
+/// One session on a local server.
+#[derive(Clone, Debug)]
+pub struct LocalSession {
+    client: SessionClient,
+    announcement: SessionAnnouncement,
+}
+
+impl LocalSession {
+    /// Returns a client for the session's server.
+    #[must_use]
+    pub const fn client(&self) -> &SessionClient {
+        &self.client
+    }
+
+    /// Returns the session's announcement.
+    #[must_use]
+    pub const fn announcement(&self) -> &SessionAnnouncement {
+        &self.announcement
+    }
+
+    /// Returns the session id.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        self.announcement.id()
     }
 }
 

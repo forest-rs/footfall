@@ -51,5 +51,9 @@ path = "src/session_consumer.rs"
 name = "tracing_demo"
 path = "src/tracing_demo.rs"
 
+[[bin]]
+name = "capture_export"
+path = "src/capture_export.rs"
+
 [lints]
 workspace = true
