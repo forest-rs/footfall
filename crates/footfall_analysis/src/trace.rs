@@ -837,10 +837,18 @@ impl Trace {
         open
     }
 
-    pub(crate) fn begun(&self) -> impl Iterator<Item = (&str, ContextId, u64, Duration)> {
-        self.begun
-            .values()
-            .map(|begun| (&*begun.name, begun.context_id, begun.thread_id, begun.begin))
+    pub(crate) fn begun(
+        &self,
+    ) -> impl Iterator<Item = (&str, ContextId, u64, Duration, &[OwnedArgEntry])> {
+        self.begun.values().map(|begun| {
+            (
+                &*begun.name,
+                begun.context_id,
+                begun.thread_id,
+                begun.begin,
+                begun.args.as_slice(),
+            )
+        })
     }
 
     pub(crate) fn unmatched_ends_in(&self, range: TimeRange) -> u64 {
