@@ -15,7 +15,7 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 
 /// A runtime offered to consumers under a session id.
 #[derive(Clone, Debug)]
@@ -85,24 +85,27 @@ impl SessionServer {
     /// request, such as a client that disconnects, do not affect others.
     ///
     /// Call it from within a Tokio runtime.
-    #[expect(
-        clippy::infinite_loop,
-        reason = "serving ends when the caller drops the future or aborts its task"
-    )]
     pub async fn serve(self, sessions: Vec<ServedSession>) {
         let sessions: Arc<[ServedSession]> = sessions.into();
         let path: Arc<str> = self.path.into();
+        // Request tasks live in this set, so dropping or aborting `serve`
+        // also ends every request in flight, subscriptions included.
+        let mut requests = JoinSet::new();
         loop {
-            let incoming = self.endpoint.accept().await;
-            let sessions = Arc::clone(&sessions);
-            let path = Arc::clone(&path);
-            tokio::spawn(async move {
-                if let Ok(request) = read_request(incoming, &path).await {
-                    // An error here means the client went away mid-answer,
-                    // which only concerns that client.
-                    let _ = answer(request, &sessions).await;
+            tokio::select! {
+                incoming = self.endpoint.accept() => {
+                    let sessions = Arc::clone(&sessions);
+                    let path = Arc::clone(&path);
+                    requests.spawn(async move {
+                        if let Ok(request) = read_request(incoming, &path).await {
+                            // An error here means the client went away
+                            // mid-answer, which only concerns that client.
+                            let _ = answer(request, &sessions).await;
+                        }
+                    });
                 }
-            });
+                Some(_) = requests.join_next(), if !requests.is_empty() => {}
+            }
         }
     }
 }

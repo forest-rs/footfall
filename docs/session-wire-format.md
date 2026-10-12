@@ -57,10 +57,14 @@ Subscription request:
 | since | `option<cursor>` | where the first snapshot's events start |
 | interval | `u32` | milliseconds between snapshots; servers wait at least 10 |
 
-The server answers a subscription with a sequence of snapshot responses on
-the same stream, each starting at the previous one's next cursor, until the
-client stops reading or closes the connection. It may end the sequence with
-an error response, for example for an unknown session id.
+The client keeps its side of the stream open. The server answers with a
+snapshot response right away, then waits for the client to write one byte
+(any value) before each later one, and also until `interval` has passed
+since the previous one; it takes each snapshot only then. Each starts at the
+previous one's next cursor, and every one after the first is a changes
+snapshot. The sequence ends when the client closes the stream or the
+connection, or with an error response, for example for an unknown session
+id.
 
 A `cursor` is `u64 instance_id` then `u64 sequence`: the instance id and next
 sequence from a previous snapshot's `SnapshotStart`. The client finishes its

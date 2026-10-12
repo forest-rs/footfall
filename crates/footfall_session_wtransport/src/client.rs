@@ -10,8 +10,8 @@ use crate::wire::{
     CODEC_VERSION, DEFAULT_LOCAL_PORT, DEFAULT_PATH, DISCOVER_MAGIC, RESPONSE_DISCOVERY,
     RESPONSE_ERROR, RESPONSE_SNAPSHOT, SNAPSHOT_MAGIC, SUBSCRIBE_MAGIC, decode_error_code,
     decode_session_announcement_stream, encode_cursor, encode_string, encode_u32,
-    finish_request_stream, read_stream_string, read_u8_stream, read_u16, read_u32, read_u64,
-    validate_wire_count, validate_wire_len,
+    finish_request_stream, read_error, read_stream_string, read_u8_stream, read_u16, read_u32,
+    read_u64, validate_wire_count, validate_wire_len,
 };
 use crate::{MAX_DISCOVERED_SESSIONS, MAX_SESSION_ENVELOPES};
 use footfall_session::codec::{MAX_SESSION_ENVELOPE_BYTES, decode_envelope};
@@ -274,8 +274,10 @@ impl SessionClient {
     }
 
     /// Subscribes to the session `session_id`: the server sends a snapshot
-    /// now and another every `interval`, each with the events recorded since
-    /// the previous one.
+    /// now and then one each time [`Subscription::next`] asks, at most once
+    /// per `interval`, each with the events recorded since the previous one.
+    /// Each snapshot is taken when it is asked for, so a slow consumer
+    /// receives fresh data rather than a backlog.
     ///
     /// `since` is where the first snapshot's events start, as for
     /// [`fetch`](Self::fetch). Read snapshots with [`Subscription::next`];
@@ -296,11 +298,13 @@ impl SessionClient {
             encode_string(&mut request, session_id).map_err(io_error)?;
             encode_cursor(&mut request, since);
             encode_u32(&mut request, interval_millis);
+            // The stream stays open: the client asks for each snapshot
+            // after the first on it.
             send.write_all(&request).await.map_err(stream_error)?;
-            finish_request_stream(&mut send).await.map_err(io_error)?;
             Ok(Subscription {
                 url: self.url.clone(),
                 state: None,
+                send,
                 patience: self.timeout.saturating_add(interval),
                 _endpoint: endpoint,
                 _connection: connection,
@@ -382,6 +386,7 @@ pub struct Subscription {
     /// The producer's state as of the last snapshot, which later snapshots
     /// holding only changes apply to.
     state: Option<OwnedSnapshot>,
+    send: SendStream,
     patience: Duration,
     _endpoint: Endpoint<wtransport::endpoint::endpoint_side::Client>,
     _connection: Connection,
@@ -429,6 +434,11 @@ impl Subscription {
     }
 
     async fn receive(&mut self) -> Result<OwnedSnapshot, ClientError> {
+        if self.state.is_some() {
+            // Ask for the next snapshot; the server takes it only now, so
+            // it is fresh however long this consumer took.
+            self.send.write_all(&[1]).await.map_err(stream_error)?;
+        }
         let read = async {
             match read_u8_stream(&mut self.recv).await.map_err(io_error)? {
                 RESPONSE_SNAPSHOT => read_snapshot(&mut self.recv).await,
@@ -603,6 +613,9 @@ pub enum ClientError {
         /// The underlying error.
         source: io::Error,
     },
+    /// The server closed the connection before answering in full, usually
+    /// because the producer stopped or dropped its server.
+    Closed,
     /// Reading or writing the connection failed.
     Io(io::Error),
 }
@@ -672,6 +685,9 @@ impl fmt::Display for ClientError {
                     "cannot locate the local session certificate: {source}"
                 ),
             },
+            Self::Closed => formatter.write_str(
+                "the server closed the connection; the producer stopped or dropped its server",
+            ),
             Self::Io(source) => write!(formatter, "session connection failed: {source}"),
         }
     }
@@ -718,7 +734,7 @@ async fn read_snapshot(recv: &mut RecvStream) -> Result<OwnedSnapshot, ClientErr
         let mut frame = vec![0_u8; len];
         recv.read_exact(&mut frame)
             .await
-            .map_err(|error| ClientError::Io(io::Error::other(error.to_string())))?;
+            .map_err(|error| io_error(read_error(error)))?;
         if let Some(server) = frame_version(&frame)
             && !CODEC_VERSION.can_decode(server)
         {
@@ -868,7 +884,12 @@ impl ServerCertVerifier for PinnedCertificate {
 /// Classifies a framing error: bad data is a malformed response, anything
 /// else a connection failure.
 fn io_error(error: io::Error) -> ClientError {
-    if error.kind() == io::ErrorKind::InvalidData {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::ConnectionAborted | io::ErrorKind::UnexpectedEof
+    ) {
+        ClientError::Closed
+    } else if error.kind() == io::ErrorKind::InvalidData {
         ClientError::Malformed {
             reason: error.to_string(),
         }
