@@ -62,6 +62,13 @@ async fn served_runtimes_answer_discovery_reads_and_subscriptions() {
     assert_eq!(next.window().missed(), 0);
 
     runtime.counter_add(&UPLOADS, ContextHandle::ROOT, 5);
+    // State a full snapshot repeats and a changes snapshot does not: many
+    // contexts, each with a counter.
+    for handle in 1000..1050 {
+        let handle = ContextHandle::new(handle);
+        runtime.context_registered(handle, &footfall_core::Context::root());
+        runtime.counter_add(&UPLOADS, handle, 1);
+    }
     let mut subscription = client
         .subscribe("main", Some(next.next_cursor()), Duration::from_millis(20))
         .await
@@ -76,6 +83,7 @@ async fn served_runtimes_answer_discovery_reads_and_subscriptions() {
             .map(footfall_session::OwnedCounterSnapshot::value)
     };
     assert_eq!(uploads(&immediate), Some(5));
+    let full_bytes = subscription.last_window_bytes();
     mark(runtime);
     runtime.counter_add(&UPLOADS, ContextHandle::ROOT, 2);
     let later = loop {
@@ -95,6 +103,11 @@ async fn served_runtimes_answer_discovery_reads_and_subscriptions() {
         "the client applies changes to its state"
     );
     assert_eq!(uploads(&later), Some(7), "counters stay current");
+    assert!(
+        subscription.last_window_bytes() < full_bytes,
+        "a changes window ({} B) is smaller than the full first one ({full_bytes} B)",
+        subscription.last_window_bytes()
+    );
     assert_eq!(later.contexts().len(), immediate.contexts().len());
     drop(subscription);
 

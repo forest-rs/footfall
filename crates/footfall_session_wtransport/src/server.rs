@@ -20,6 +20,7 @@ use footfall_session::{
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
 use std::{fmt, io};
+use tokio::sync::watch;
 use wtransport::{Connection, Endpoint, RecvStream, SendStream, ServerConfig};
 
 /// Discoverable metadata for one local Footfall WebTransport session.
@@ -498,9 +499,23 @@ impl SessionRequest {
     /// slow client: it receives a fresh snapshot covering everything since
     /// its last, and events evicted meanwhile are reported in that window.
     pub async fn respond_subscription(
+        self,
+        runtime: &Runtime,
+        chunking: Chunking,
+    ) -> io::Result<ServedRequest> {
+        self.respond_subscription_until(runtime, chunking, None)
+            .await
+    }
+
+    /// Like [`respond_subscription`](Self::respond_subscription), but when
+    /// `stop` turns true, sends a final snapshot covering everything since
+    /// the last one, unasked, and finishes the stream, so a graceful stop
+    /// loses nothing.
+    pub(crate) async fn respond_subscription_until(
         mut self,
         runtime: &Runtime,
         chunking: Chunking,
+        mut stop: Option<watch::Receiver<bool>>,
     ) -> io::Result<ServedRequest> {
         let SessionRequestKind::Subscribe {
             since, interval, ..
@@ -520,12 +535,26 @@ impl SessionRequest {
         let mut snapshot_count = 0_usize;
         let mut taken_at = tokio::time::Instant::now();
         loop {
-            if previous.is_some() {
-                // Wait for the client to ask, then for the interval.
-                if read_u8_stream(&mut self.recv).await.is_err() {
+            let mut stopping = stop.as_ref().is_some_and(|stop| *stop.borrow());
+            if previous.is_some() && !stopping {
+                // Wait for the client to ask, then for the interval, unless
+                // the server is stopping.
+                let asked = match &mut stop {
+                    Some(stop) => tokio::select! {
+                        asked = read_u8_stream(&mut self.recv) => asked.is_ok(),
+                        _ = stop.wait_for(|stopped| *stopped) => {
+                            stopping = true;
+                            true
+                        }
+                    },
+                    None => read_u8_stream(&mut self.recv).await.is_ok(),
+                };
+                if !asked {
                     break;
                 }
-                tokio::time::sleep_until(taken_at + interval).await;
+                if !stopping {
+                    tokio::time::sleep_until(taken_at + interval).await;
+                }
             }
             taken_at = tokio::time::Instant::now();
             let snapshot = match cursor {
@@ -546,6 +575,13 @@ impl SessionRequest {
             }
             previous = Some(snapshot);
             snapshot_count += 1;
+            if stopping {
+                // Finishing waits until the client has acknowledged the
+                // final snapshot, so it can still read it after the server
+                // goes away.
+                finish_response_stream(&mut self.send).await?;
+                break;
+            }
         }
 
         Ok(ServedRequest {

@@ -14,7 +14,9 @@ use footfall_session::{Chunking, SessionErrorCode};
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::fs;
+use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
 
 /// A runtime offered to consumers under a session id.
@@ -87,31 +89,57 @@ impl SessionServer {
     ///
     /// Call it from within a Tokio runtime.
     pub async fn serve(self, sessions: Vec<ServedSession>) {
+        self.serve_until(sessions, None).await;
+    }
+
+    /// Serves until `stop` turns true, then stops accepting requests, lets
+    /// every subscription send a final snapshot, and returns once the
+    /// requests in flight have finished.
+    pub(crate) async fn serve_until(
+        self,
+        sessions: Vec<ServedSession>,
+        mut stop: Option<watch::Receiver<bool>>,
+    ) {
         let sessions: Arc<[ServedSession]> = sessions.into();
         let path: Arc<str> = self.path.into();
-        // Request tasks live in this set, so dropping or aborting `serve`
+        // Request tasks live in this set, so dropping or aborting serving
         // also ends every request in flight, subscriptions included.
         let mut requests = JoinSet::new();
         loop {
+            let stopped = async {
+                match &mut stop {
+                    Some(stop) => {
+                        let _ = stop.wait_for(|stopped| *stopped).await;
+                    }
+                    None => core::future::pending().await,
+                }
+            };
             tokio::select! {
                 incoming = self.endpoint.accept() => {
                     let sessions = Arc::clone(&sessions);
                     let path = Arc::clone(&path);
+                    let stop = stop.clone();
                     requests.spawn(async move {
                         if let Ok(request) = read_request(incoming, &path).await {
                             // An error here means the client went away
                             // mid-answer, which only concerns that client.
-                            let _ = answer(request, &sessions).await;
+                            let _ = answer(request, &sessions, stop).await;
                         }
                     });
                 }
                 Some(_) = requests.join_next(), if !requests.is_empty() => {}
+                () = stopped => break,
             }
         }
+        while requests.join_next().await.is_some() {}
     }
 }
 
-async fn answer(request: SessionRequest, sessions: &[ServedSession]) -> io::Result<ServedRequest> {
+async fn answer(
+    request: SessionRequest,
+    sessions: &[ServedSession],
+    stop: Option<watch::Receiver<bool>>,
+) -> io::Result<ServedRequest> {
     let find = |id: &str| sessions.iter().find(|session| session.id == id);
     match request.kind().clone() {
         SessionRequestKind::Discover => {
@@ -135,7 +163,7 @@ async fn answer(request: SessionRequest, sessions: &[ServedSession]) -> io::Resu
         SessionRequestKind::Subscribe { session_id, .. } => match find(&session_id) {
             Some(session) => {
                 request
-                    .respond_subscription(session.runtime, session.chunking)
+                    .respond_subscription_until(session.runtime, session.chunking, stop)
                     .await
             }
             None => {
@@ -178,6 +206,7 @@ pub struct LocalSessionServer {
     url: String,
     certificate_hash: CertificateHash,
     registration: PathBuf,
+    stop: watch::Sender<bool>,
     task: JoinHandle<()>,
 }
 
@@ -197,10 +226,19 @@ impl LocalSessionServer {
         let directory = local_registry_directory()?;
         fs::create_dir_all(&directory).await?;
         let registration = directory.join(port.to_string());
-        fs::write(&registration, &url).await?;
+        // The registration carries this server's own pin, so consumers can
+        // reach it even if another producer renews or recreates the shared
+        // local identity while it runs.
+        fs::write(
+            &registration,
+            format!("{url}\n{}\n", identity.certificate_hash()),
+        )
+        .await?;
 
-        let task = tokio::spawn(server.serve(sessions));
+        let (stop, stopped) = watch::channel(false);
+        let task = tokio::spawn(server.serve_until(sessions, Some(stopped)));
         Ok(Self {
+            stop,
             url,
             certificate_hash: identity.certificate_hash(),
             registration,
@@ -218,6 +256,18 @@ impl LocalSessionServer {
     #[must_use]
     pub const fn certificate_hash(&self) -> CertificateHash {
         self.certificate_hash
+    }
+
+    /// Stops serving gracefully: stops accepting requests, sends every
+    /// subscriber a final snapshot covering everything since its last one,
+    /// and waits up to `timeout` for requests in flight to finish before
+    /// unregistering.
+    ///
+    /// Dropping the server instead stops at once, so subscribers lose the
+    /// events since their last snapshot and see [`ClientError::Closed`](crate::ClientError::Closed).
+    pub async fn shutdown(mut self, timeout: Duration) {
+        let _ = self.stop.send(true);
+        let _ = tokio::time::timeout(timeout, &mut self.task).await;
     }
 
     /// Returns a client for this server.

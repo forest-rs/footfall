@@ -97,6 +97,14 @@ impl SessionClient {
     /// The certificate is read now, so create a new client after the local
     /// identity is renewed.
     pub async fn local() -> Result<Self, ClientError> {
+        // Prefer the default-port server's own pin from its registration.
+        if let Some(local) = Self::local_servers()
+            .await?
+            .into_iter()
+            .find(|client| client.url == default_local_url())
+        {
+            return Ok(local);
+        }
         let certificate_hash = SessionIdentity::load_localhost_certificate_hash()
             .await
             .map_err(|source| ClientError::LocalIdentity {
@@ -134,25 +142,38 @@ impl SessionClient {
                 let _ = fs::remove_file(entry.path()).await;
                 continue;
             }
-            let url = fs::read_to_string(entry.path())
+            let registration = fs::read_to_string(entry.path())
                 .await
                 .map_err(ClientError::Io)?;
-            servers.push((port != DEFAULT_LOCAL_PORT, port, url.trim().to_owned()));
+            let mut lines = registration.lines();
+            let url = lines.next().unwrap_or_default().trim().to_owned();
+            // Each server registers its own pin; fall back to the shared
+            // local identity for a registration without one.
+            let pin = lines.next().and_then(|line| line.trim().parse().ok());
+            servers.push((port != DEFAULT_LOCAL_PORT, port, url, pin));
         }
-        if servers.is_empty() {
-            return Ok(Vec::new());
+        servers.sort_by_key(|server| (server.0, server.1));
+        let mut shared_pin = None;
+        let mut clients = Vec::with_capacity(servers.len());
+        for (_, _, url, pin) in servers {
+            let pin = match pin {
+                Some(pin) => pin,
+                None => match shared_pin {
+                    Some(pin) => pin,
+                    None => {
+                        let pin = SessionIdentity::load_localhost_certificate_hash()
+                            .await
+                            .map_err(|source| ClientError::LocalIdentity {
+                                path: SessionIdentity::localhost_certificate_path().ok(),
+                                source,
+                            })?;
+                        *shared_pin.insert(pin)
+                    }
+                },
+            };
+            clients.push(Self::new(url, pin));
         }
-        servers.sort();
-        let certificate_hash = SessionIdentity::load_localhost_certificate_hash()
-            .await
-            .map_err(|source| ClientError::LocalIdentity {
-                path: SessionIdentity::localhost_certificate_path().ok(),
-                source,
-            })?;
-        Ok(servers
-            .into_iter()
-            .map(|(_, _, url)| Self::new(url, certificate_hash))
-            .collect())
+        Ok(clients)
     }
 
     /// Discovers the sessions of every local server.
@@ -187,6 +208,7 @@ impl SessionClient {
                     for announcement in found.sessions {
                         discovery.sessions.push(LocalSession {
                             client: client.clone(),
+                            protocol_version: found.protocol_version,
                             announcement,
                         });
                     }
@@ -288,7 +310,7 @@ impl SessionClient {
             finish_request_stream(&mut send).await.map_err(io_error)?;
 
             match read_u8_stream(&mut recv).await.map_err(io_error)? {
-                RESPONSE_SNAPSHOT => read_snapshot(&mut recv).await,
+                RESPONSE_SNAPSHOT => read_snapshot(&mut recv).await.map(|(snapshot, _)| snapshot),
                 RESPONSE_ERROR => Err(read_server_error(&mut recv).await),
                 tag => Err(ClientError::Malformed {
                     reason: format!("unexpected snapshot response tag {tag}"),
@@ -330,6 +352,7 @@ impl SessionClient {
                 url: self.url.clone(),
                 state: None,
                 send,
+                last_window_bytes: 0,
                 patience: self.timeout.saturating_add(interval),
                 _endpoint: endpoint,
                 _connection: connection,
@@ -412,6 +435,7 @@ pub struct Subscription {
     /// holding only changes apply to.
     state: Option<OwnedSnapshot>,
     send: SendStream,
+    last_window_bytes: usize,
     patience: Duration,
     _endpoint: Endpoint<wtransport::endpoint::endpoint_side::Client>,
     _connection: Connection,
@@ -458,15 +482,29 @@ impl Subscription {
         }
     }
 
+    /// Returns how many bytes the last snapshot took on the wire, framing
+    /// included. After the first, snapshots carry only what changed, so this
+    /// shows what following a session costs.
+    #[must_use]
+    pub const fn last_window_bytes(&self) -> usize {
+        self.last_window_bytes
+    }
+
     async fn receive(&mut self) -> Result<OwnedSnapshot, ClientError> {
         if self.state.is_some() {
             // Ask for the next snapshot; the server takes it only now, so
-            // it is fresh however long this consumer took.
-            self.send.write_all(&[1]).await.map_err(stream_error)?;
+            // it is fresh however long this consumer took. A stopping server
+            // sends a final snapshot unasked and stops reading, so a failed
+            // request is not an error until the read fails too.
+            let _ = self.send.write_all(&[1]).await;
         }
         let read = async {
             match read_u8_stream(&mut self.recv).await.map_err(io_error)? {
-                RESPONSE_SNAPSHOT => read_snapshot(&mut self.recv).await,
+                RESPONSE_SNAPSHOT => {
+                    let (snapshot, bytes) = read_snapshot(&mut self.recv).await?;
+                    self.last_window_bytes = bytes;
+                    Ok(snapshot)
+                }
                 RESPONSE_ERROR => Err(read_server_error(&mut self.recv).await),
                 tag => Err(ClientError::Malformed {
                     reason: format!("unexpected subscription response tag {tag}"),
@@ -588,6 +626,7 @@ impl std::error::Error for FindSessionError {}
 #[derive(Clone, Debug)]
 pub struct LocalSession {
     client: SessionClient,
+    protocol_version: ProtocolVersion,
     announcement: SessionAnnouncement,
 }
 
@@ -596,6 +635,12 @@ impl LocalSession {
     #[must_use]
     pub const fn client(&self) -> &SessionClient {
         &self.client
+    }
+
+    /// Returns the protocol version the session's server speaks.
+    #[must_use]
+    pub const fn protocol_version(&self) -> ProtocolVersion {
+        self.protocol_version
     }
 
     /// Returns the session's announcement.
@@ -815,8 +860,10 @@ async fn open_stream(connection: &Connection) -> Result<(SendStream, RecvStream)
         .map_err(|error| ClientError::Io(io::Error::other(error.to_string())))
 }
 
-async fn read_snapshot(recv: &mut RecvStream) -> Result<OwnedSnapshot, ClientError> {
+/// Reads one snapshot response, returning it with its size on the wire.
+async fn read_snapshot(recv: &mut RecvStream) -> Result<(OwnedSnapshot, usize), ClientError> {
     let count = read_u64(recv).await.map_err(io_error)?;
+    let mut bytes = 9_usize;
     validate_wire_count(count, MAX_SESSION_ENVELOPES, "session envelopes").map_err(io_error)?;
     let mut envelopes = Vec::new();
     for _ in 0..count {
@@ -831,6 +878,7 @@ async fn read_snapshot(recv: &mut RecvStream) -> Result<OwnedSnapshot, ClientErr
         recv.read_exact(&mut frame)
             .await
             .map_err(|error| io_error(read_error(error)))?;
+        bytes = bytes.saturating_add(4 + len);
         if let Some(server) = frame_version(&frame)
             && !CODEC_VERSION.can_decode(server)
         {
@@ -841,7 +889,7 @@ async fn read_snapshot(recv: &mut RecvStream) -> Result<OwnedSnapshot, ClientErr
         }
         envelopes.push(decode_envelope(&frame).map_err(io_error)?);
     }
-    Ok(OwnedSnapshot::from_envelopes(envelopes)?)
+    Ok((OwnedSnapshot::from_envelopes(envelopes)?, bytes))
 }
 
 /// Reads the protocol version at the start of an encoded envelope.
@@ -995,5 +1043,10 @@ fn io_error(error: io::Error) -> ClientError {
 }
 
 fn stream_error(error: StreamWriteError) -> ClientError {
-    ClientError::Io(io::Error::other(error.to_string()))
+    match error {
+        StreamWriteError::NotConnected
+        | StreamWriteError::Closed
+        | StreamWriteError::Stopped(_) => ClientError::Closed,
+        other => ClientError::Io(io::Error::other(other.to_string())),
+    }
 }

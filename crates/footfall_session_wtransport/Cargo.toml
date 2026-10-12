@@ -16,7 +16,7 @@ description = "WebTransport session adapter for the Footfall observability famil
 footfall_core.workspace = true
 footfall_runtime.workspace = true
 footfall_session = { features = ["std"], workspace = true }
-tokio = { features = ["fs", "macros", "rt", "time"], version = "1.51.1" }
+tokio = { features = ["fs", "macros", "rt", "sync", "time"], version = "1.51.1" }
 wtransport = "0.7.0"
 x509-parser = "0.17.0"
 

@@ -59,6 +59,13 @@ pub struct ProtocolVersion {
     minor: u16,
 }
 
+impl core::fmt::Display for ProtocolVersion {
+    /// Writes the version as `major.minor`.
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "{}.{}", self.major, self.minor)
+    }
+}
+
 impl ProtocolVersion {
     /// Creates a new protocol version.
     #[must_use]

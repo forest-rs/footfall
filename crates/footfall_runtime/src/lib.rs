@@ -376,7 +376,9 @@ impl Runtime {
                 counter_capacity: self.counter_capacity,
                 event_capacity: self.event_capacity,
                 context_capacity: self.context_capacity,
-                counter_samples: self.counter_samples,
+                // Samples are events taken at frame markers, so a level that
+                // does not capture markers records none.
+                counter_samples: self.counter_samples && self.level().captures_markers(),
                 compiled_out: cfg!(footfall_compile_out),
             },
         }
@@ -1220,7 +1222,8 @@ impl EventWindow {
     /// Returns the first sequence number the window covers.
     ///
     /// This is the cursor's sequence for a read with a cursor from the same
-    /// runtime instance, and `0` for a full snapshot or a foreign cursor.
+    /// runtime instance, `0` for a full snapshot or a foreign cursor, and
+    /// [`next`](Self::next) for a cursor ahead of every recorded event.
     #[must_use]
     pub const fn since(self) -> u64 {
         self.since
@@ -1569,9 +1572,10 @@ impl CaptureSettings {
         self
     }
 
-    /// Returns `true` when frame ends record counter samples; see
-    /// [`RuntimeBuilder::counter_samples`]. Without them, no samples means
-    /// they were not recorded, not that no counter changed.
+    /// Returns `true` when frame ends record counter samples: they are
+    /// enabled (see [`RuntimeBuilder::counter_samples`]) and the level
+    /// captures markers. When `false`, no samples means they were not
+    /// recorded, not that no counter changed.
     #[must_use]
     pub const fn counter_samples(self) -> bool {
         self.counter_samples

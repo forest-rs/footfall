@@ -199,6 +199,12 @@ impl SessionIdentity {
     /// Loads the stable local certificate hash used for localhost session connections.
     pub async fn load_localhost_certificate_hash() -> io::Result<CertificateHash> {
         let paths = local_identity_paths()?;
+        if !fs::try_exists(&paths.cert).await? {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "no local identity has been created",
+            ));
+        }
         let certificate = wtransport::tls::Certificate::load_pemfile(&paths.cert)
             .await
             .map_err(|error| io::Error::other(error.to_string()))?;
