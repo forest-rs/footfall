@@ -30,7 +30,7 @@ use crate::{
     OwnedContextEntry, OwnedContextSnapshot, OwnedCounterSnapshot, OwnedHistogramSnapshot,
     OwnedLabelValue, OwnedObservation, OwnedSessionEnvelope, OwnedSessionPayload,
     OwnedSnapshotSummary, OwnedTimedObservation, PROTOCOL_VERSION, Payload, ProtocolVersion,
-    RowCounts, SnapshotMetadata, ThreadSnapshot,
+    RowCounts, SnapshotKind, SnapshotMetadata, ThreadSnapshot,
 };
 
 /// Maximum UTF-8 string payload accepted by the codec.
@@ -54,10 +54,11 @@ mod tests;
 pub(crate) const TAG_SNAPSHOT_START: u8 = 0;
 pub(crate) const TAG_THREADS: u8 = 1;
 pub(crate) const TAG_CONTEXTS: u8 = 2;
-pub(crate) const TAG_COUNTERS: u8 = 3;
-pub(crate) const TAG_HISTOGRAMS: u8 = 4;
-pub(crate) const TAG_EVENTS: u8 = 5;
-pub(crate) const TAG_SNAPSHOT_END: u8 = 6;
+pub(crate) const TAG_RETIRED_CONTEXTS: u8 = 3;
+pub(crate) const TAG_COUNTERS: u8 = 4;
+pub(crate) const TAG_HISTOGRAMS: u8 = 5;
+pub(crate) const TAG_EVENTS: u8 = 6;
+pub(crate) const TAG_SNAPSHOT_END: u8 = 7;
 
 /// Encodes one envelope, as published by [`crate::publish_snapshot`].
 pub fn encode_envelope(envelope: Envelope<'_>) -> io::Result<Vec<u8>> {
@@ -69,6 +70,7 @@ pub fn encode_envelope(envelope: Envelope<'_>) -> io::Result<Vec<u8>> {
             encode_snapshot_summary(
                 &mut bytes,
                 summary.metadata(),
+                summary.kind(),
                 summary.captured_at_micros(),
                 summary.window(),
                 summary.counts(),
@@ -81,6 +83,10 @@ pub fn encode_envelope(envelope: Envelope<'_>) -> io::Result<Vec<u8>> {
         Payload::Contexts(contexts) => {
             encode_u8(&mut bytes, TAG_CONTEXTS);
             encode_borrowed_contexts(&mut bytes, contexts)?;
+        }
+        Payload::RetiredContexts(ids) => {
+            encode_u8(&mut bytes, TAG_RETIRED_CONTEXTS);
+            encode_context_ids(&mut bytes, ids)?;
         }
         Payload::Counters(counters) => {
             encode_u8(&mut bytes, TAG_COUNTERS);
@@ -112,6 +118,7 @@ pub fn encode_owned_envelope(envelope: &OwnedSessionEnvelope) -> io::Result<Vec<
             encode_snapshot_summary(
                 &mut bytes,
                 summary.metadata(),
+                summary.kind(),
                 summary.captured_at_micros(),
                 summary.window(),
                 summary.counts(),
@@ -124,6 +131,10 @@ pub fn encode_owned_envelope(envelope: &OwnedSessionEnvelope) -> io::Result<Vec<
         OwnedSessionPayload::Contexts(contexts) => {
             encode_u8(&mut bytes, TAG_CONTEXTS);
             encode_contexts(&mut bytes, contexts)?;
+        }
+        OwnedSessionPayload::RetiredContexts(ids) => {
+            encode_u8(&mut bytes, TAG_RETIRED_CONTEXTS);
+            encode_context_ids(&mut bytes, ids)?;
         }
         OwnedSessionPayload::Counters(counters) => {
             encode_u8(&mut bytes, TAG_COUNTERS);
@@ -160,6 +171,9 @@ pub fn decode_envelope(bytes: &[u8]) -> io::Result<OwnedSessionEnvelope> {
         }
         TAG_THREADS => OwnedSessionPayload::Threads(decode_threads(&mut cursor)?),
         TAG_CONTEXTS => OwnedSessionPayload::Contexts(decode_contexts(&mut cursor)?),
+        TAG_RETIRED_CONTEXTS => {
+            OwnedSessionPayload::RetiredContexts(decode_context_ids(&mut cursor)?)
+        }
         TAG_COUNTERS => OwnedSessionPayload::Counters(decode_counters(&mut cursor)?),
         TAG_HISTOGRAMS => OwnedSessionPayload::Histograms(decode_histograms(&mut cursor)?),
         TAG_EVENTS => OwnedSessionPayload::Events(decode_events(&mut cursor)?),
@@ -204,17 +218,26 @@ pub(crate) fn decode_header(cursor: &mut Cursor<'_>) -> io::Result<EnvelopeHeade
 pub(crate) fn encode_snapshot_summary(
     bytes: &mut Vec<u8>,
     metadata: &SnapshotMetadata,
+    kind: SnapshotKind,
     captured_at_micros: u64,
     window: EventWindow,
     counts: RowCounts,
 ) -> io::Result<()> {
     encode_snapshot_metadata(bytes, metadata)?;
+    encode_u8(
+        bytes,
+        match kind {
+            SnapshotKind::Full => 0,
+            SnapshotKind::Changes => 1,
+        },
+    );
     encode_u64(bytes, captured_at_micros);
     encode_u64(bytes, window.since());
     encode_u64(bytes, window.next());
     encode_u64(bytes, window.missed());
     encode_usize(bytes, counts.threads())?;
     encode_usize(bytes, counts.contexts())?;
+    encode_usize(bytes, counts.retired_contexts())?;
     encode_usize(bytes, counts.counters())?;
     encode_usize(bytes, counts.histograms())?;
     encode_usize(bytes, counts.events())?;
@@ -223,6 +246,16 @@ pub(crate) fn encode_snapshot_summary(
 
 pub(crate) fn decode_snapshot_summary(cursor: &mut Cursor<'_>) -> io::Result<OwnedSnapshotSummary> {
     let metadata = decode_snapshot_metadata(cursor)?;
+    let kind = match decode_u8(cursor)? {
+        0 => SnapshotKind::Full,
+        1 => SnapshotKind::Changes,
+        tag => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown snapshot kind tag: {tag}"),
+            ));
+        }
+    };
     let captured_at_micros = decode_u64(cursor)?;
     let window = EventWindow::new(
         decode_u64(cursor)?,
@@ -235,13 +268,32 @@ pub(crate) fn decode_snapshot_summary(cursor: &mut Cursor<'_>) -> io::Result<Own
         decode_usize(cursor)?,
         decode_usize(cursor)?,
         decode_usize(cursor)?,
+        decode_usize(cursor)?,
     );
     Ok(OwnedSnapshotSummary::new(
         metadata,
+        kind,
         captured_at_micros,
         window,
         counts,
     ))
+}
+
+fn encode_context_ids(bytes: &mut Vec<u8>, ids: &[ContextId]) -> io::Result<()> {
+    encode_len(bytes, ids.len())?;
+    for id in ids {
+        encode_u64(bytes, id.get());
+    }
+    Ok(())
+}
+
+fn decode_context_ids(cursor: &mut Cursor<'_>) -> io::Result<Vec<ContextId>> {
+    let len = decode_bounded_len(cursor, MAX_ROWS_PER_ENVELOPE, "retired context ids")?;
+    let mut ids = Vec::with_capacity(len);
+    for _ in 0..len {
+        ids.push(ContextId::new(decode_u64(cursor)?));
+    }
+    Ok(ids)
 }
 
 pub(crate) fn encode_snapshot_metadata(

@@ -21,6 +21,8 @@ fn runtime() -> &'static Runtime {
     ))
 }
 
+static UPLOADS: footfall_core::CounterDesc = footfall_core::CounterDesc::bytes("uploads");
+
 fn mark(runtime: &Runtime) {
     runtime.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, ContextHandle::ROOT);
 }
@@ -59,23 +61,41 @@ async fn served_runtimes_answer_discovery_reads_and_subscriptions() {
     assert_eq!(next.events().len(), 1, "only the event since the cursor");
     assert_eq!(next.window().missed(), 0);
 
+    runtime.counter_add(&UPLOADS, ContextHandle::ROOT, 5);
     let mut subscription = client
         .subscribe("main", Some(next.next_cursor()), Duration::from_millis(20))
         .await
         .expect("subscription should open");
     let immediate = subscription.next().await.expect("a first snapshot");
     assert!(immediate.events().is_empty(), "nothing new yet");
+    let uploads = |snapshot: &footfall_session::OwnedSnapshot| {
+        snapshot
+            .counters()
+            .iter()
+            .find(|counter| counter.name() == "uploads")
+            .map(footfall_session::OwnedCounterSnapshot::value)
+    };
+    assert_eq!(uploads(&immediate), Some(5));
     mark(runtime);
-    let mut seen = 0;
-    while seen == 0 {
-        seen = subscription
-            .next()
-            .await
-            .expect("later snapshots arrive")
-            .events()
-            .len();
-    }
-    assert_eq!(seen, 1, "each snapshot holds only new events");
+    runtime.counter_add(&UPLOADS, ContextHandle::ROOT, 2);
+    let later = loop {
+        let snapshot = subscription.next().await.expect("later snapshots arrive");
+        if !snapshot.events().is_empty() {
+            break snapshot;
+        }
+    };
+    assert_eq!(
+        later.events().len(),
+        1,
+        "each snapshot holds only new events"
+    );
+    assert_eq!(
+        later.kind(),
+        footfall_session::SnapshotKind::Full,
+        "the client applies changes to its state"
+    );
+    assert_eq!(uploads(&later), Some(7), "counters stay current");
+    assert_eq!(later.contexts().len(), immediate.contexts().len());
     drop(subscription);
 
     let error = client

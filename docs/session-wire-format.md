@@ -131,10 +131,11 @@ The current protocol version is `1.0`. Payload tags, in publication order:
 | `0` | `SnapshotStart` | once, first |
 | `1` | `Threads` | at most once |
 | `2` | `Contexts` | zero or more chunks |
-| `3` | `Counters` | zero or more chunks |
-| `4` | `Histograms` | zero or more chunks |
-| `5` | `Events` | zero or more chunks |
-| `6` | `SnapshotEnd` | once, last |
+| `3` | `RetiredContexts` | zero or more chunks, only in a changes snapshot |
+| `4` | `Counters` | zero or more chunks |
+| `5` | `Histograms` | zero or more chunks |
+| `6` | `Events` | zero or more chunks |
+| `7` | `SnapshotEnd` | once, last |
 
 Chunk indexes count from `0` at `SnapshotStart` and increase by one per
 envelope.
@@ -157,12 +158,14 @@ version, and rejects a different major version or a newer minor version.
 | counter capacity | `u64` | |
 | event capacity | `u64` | |
 | context capacity | `u64` | |
+| kind | `u8` | `0` full, `1` changes; see below |
 | captured at | `u64` | microseconds since runtime creation |
 | window since | `u64` | first event sequence covered |
 | window next | `u64` | sequence the next read starts from |
 | window missed | `u64` | events in the window evicted before the read |
 | thread rows | `u32` | rows in `Threads` |
 | context rows | `u32` | rows across `Contexts` chunks |
+| retired context ids | `u32` | ids across `RetiredContexts` chunks |
 | counter rows | `u32` | rows across `Counters` chunks |
 | histogram rows | `u32` | rows across `Histograms` chunks |
 | event rows | `u32` | rows across `Events` chunks |
@@ -186,6 +189,23 @@ A label value is a `u8` tag and its payload:
 | `1` | signed | `i64` |
 | `2` | bool | `u8`, `0` false or `1` true |
 | `3` | string | `string` |
+
+### RetiredContexts
+
+A `count` of `u64` context ids.
+
+### Full and Changes Snapshots
+
+A full snapshot carries every context, thread, counter, and histogram the
+producer holds. A subscription sends a full snapshot first and then, for
+each later window, a changes snapshot: only the contexts, threads, counters,
+and histograms that are new or changed since the previous snapshot on that
+subscription, plus the ids of contexts retired since, whose counters and
+histograms are gone too. Events are always the window's events. A consumer
+applies changes snapshots in order to the state built from the full one;
+`OwnedSnapshot::apply` does this, and the Rust `Subscription` hands out the
+resulting full snapshots. Snapshot responses to fetch requests, and capture
+files, are always full.
 
 ### Counters
 

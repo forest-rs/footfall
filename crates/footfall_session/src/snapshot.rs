@@ -4,6 +4,7 @@
 //! Runtime snapshot publication envelopes.
 
 use alloc::{string::String, vec::Vec};
+use std::collections::{HashMap, HashSet};
 
 use footfall_core::{
     ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, LabelValue, MarkerKind, MarkerPhase,
@@ -115,6 +116,7 @@ impl EnvelopeHeader {
 pub struct RowCounts {
     threads: usize,
     contexts: usize,
+    retired_contexts: usize,
     counters: usize,
     histograms: usize,
     events: usize,
@@ -126,6 +128,7 @@ impl RowCounts {
     pub const fn new(
         threads: usize,
         contexts: usize,
+        retired_contexts: usize,
         counters: usize,
         histograms: usize,
         events: usize,
@@ -133,6 +136,7 @@ impl RowCounts {
         Self {
             threads,
             contexts,
+            retired_contexts,
             counters,
             histograms,
             events,
@@ -145,6 +149,7 @@ impl RowCounts {
         Self::new(
             snapshot.threads().len(),
             snapshot.contexts().len(),
+            0,
             snapshot.counters().len(),
             snapshot.histograms().len(),
             snapshot.events().len(),
@@ -161,6 +166,13 @@ impl RowCounts {
     #[must_use]
     pub const fn contexts(&self) -> usize {
         self.contexts
+    }
+
+    /// Returns the number of retired context ids, which only a
+    /// [`SnapshotKind::Changes`] snapshot carries.
+    #[must_use]
+    pub const fn retired_contexts(&self) -> usize {
+        self.retired_contexts
     }
 
     /// Returns the number of counter rows.
@@ -182,10 +194,27 @@ impl RowCounts {
     }
 }
 
+/// Whether a published snapshot holds the producer's whole state or only what
+/// changed since the previous snapshot of a subscription.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotKind {
+    /// Every context, thread, counter, and histogram the producer holds.
+    Full,
+    /// Only the contexts, threads, counters, and histograms that are new or
+    /// changed since the previous snapshot on the same subscription, and the
+    /// ids of contexts the producer has retired since, whose counters and
+    /// histograms are gone too. Events are always the window's events.
+    ///
+    /// Only subscriptions send these, after a full first snapshot; apply
+    /// them in order with [`OwnedSnapshot::apply`](crate::OwnedSnapshot::apply).
+    Changes,
+}
+
 /// Borrowed description of one published snapshot, sent before its rows.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SnapshotSummary<'a> {
     metadata: &'a SnapshotMetadata,
+    kind: SnapshotKind,
     captured_at_micros: u64,
     window: EventWindow,
     counts: RowCounts,
@@ -196,12 +225,14 @@ impl<'a> SnapshotSummary<'a> {
     #[must_use]
     pub const fn new(
         metadata: &'a SnapshotMetadata,
+        kind: SnapshotKind,
         captured_at_micros: u64,
         window: EventWindow,
         counts: RowCounts,
     ) -> Self {
         Self {
             metadata,
+            kind,
             captured_at_micros,
             window,
             counts,
@@ -212,6 +243,12 @@ impl<'a> SnapshotSummary<'a> {
     #[must_use]
     pub const fn metadata(&self) -> &'a SnapshotMetadata {
         self.metadata
+    }
+
+    /// Returns whether the snapshot is full or holds only changes.
+    #[must_use]
+    pub const fn kind(&self) -> SnapshotKind {
+        self.kind
     }
 
     /// Returns the time since runtime creation when the snapshot was taken.
@@ -272,6 +309,9 @@ pub enum Payload<'a> {
     Threads(&'a [ThreadSnapshot]),
     /// One chunk of canonical context rows.
     Contexts(&'a [ContextSnapshot]),
+    /// One chunk of ids of contexts retired since the previous snapshot of a
+    /// subscription; see [`SnapshotKind::Changes`].
+    RetiredContexts(&'a [ContextId]),
     /// One chunk of aggregated counter rows.
     Counters(&'a [CounterSnapshot]),
     /// One chunk of aggregated histogram rows.
@@ -296,6 +336,7 @@ pub trait Consumer {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedSnapshotSummary {
     metadata: SnapshotMetadata,
+    kind: SnapshotKind,
     captured_at_micros: u64,
     window: EventWindow,
     counts: RowCounts,
@@ -306,12 +347,14 @@ impl OwnedSnapshotSummary {
     #[must_use]
     pub const fn new(
         metadata: SnapshotMetadata,
+        kind: SnapshotKind,
         captured_at_micros: u64,
         window: EventWindow,
         counts: RowCounts,
     ) -> Self {
         Self {
             metadata,
+            kind,
             captured_at_micros,
             window,
             counts,
@@ -322,6 +365,12 @@ impl OwnedSnapshotSummary {
     #[must_use]
     pub const fn metadata(&self) -> &SnapshotMetadata {
         &self.metadata
+    }
+
+    /// Returns whether the snapshot is full or holds only changes.
+    #[must_use]
+    pub const fn kind(&self) -> SnapshotKind {
+        self.kind
     }
 
     /// Returns the time since runtime creation when the snapshot was taken.
@@ -855,6 +904,9 @@ pub enum OwnedSessionPayload {
     Threads(Vec<ThreadSnapshot>),
     /// One chunk of canonical context rows.
     Contexts(Vec<OwnedContextSnapshot>),
+    /// One chunk of ids of contexts retired since the previous snapshot of a
+    /// subscription; see [`SnapshotKind::Changes`].
+    RetiredContexts(Vec<ContextId>),
     /// One chunk of aggregated counter rows.
     Counters(Vec<OwnedCounterSnapshot>),
     /// One chunk of aggregated histogram rows.
@@ -872,74 +924,181 @@ pub fn publish_snapshot<C: Consumer>(
     chunking: Chunking,
     consumer: &mut C,
 ) -> Result<(), C::Error> {
-    let mut chunk_index = 0_u64;
-    consumer.consume(Envelope {
-        header: envelope_header(chunk_index),
-        payload: Payload::SnapshotStart(SnapshotSummary {
-            metadata: snapshot.metadata(),
-            captured_at_micros: snapshot.captured_at_micros(),
-            window: snapshot.window(),
-            counts: RowCounts::of(snapshot),
-        }),
-    })?;
-    chunk_index = chunk_index.saturating_add(1);
+    publish_rows(
+        snapshot,
+        SnapshotKind::Full,
+        Rows {
+            threads: snapshot.threads(),
+            contexts: snapshot.contexts(),
+            retired_contexts: &[],
+            counters: snapshot.counters(),
+            histograms: snapshot.histograms(),
+        },
+        chunking,
+        consumer,
+    )
+}
 
-    if !snapshot.threads().is_empty() {
-        consumer.consume(Envelope {
-            header: envelope_header(chunk_index),
-            payload: Payload::Threads(snapshot.threads()),
-        })?;
-        chunk_index = chunk_index.saturating_add(1);
-    }
-
-    for contexts in snapshot
+/// Publishes what changed from `previous` to `current`, two snapshots of the
+/// same runtime instance taken in that order, as a
+/// [`SnapshotKind::Changes`] snapshot.
+///
+/// It holds the contexts, threads, counters, and histograms that are new or
+/// changed in `current`, the ids of contexts `previous` held and `current`
+/// does not, and all of `current`'s events. A subscription uses it for every
+/// snapshot after the first, so unchanged state is not sent again.
+pub fn publish_changes<C: Consumer>(
+    previous: &Snapshot,
+    current: &Snapshot,
+    chunking: Chunking,
+    consumer: &mut C,
+) -> Result<(), C::Error> {
+    let previous_contexts: HashSet<ContextId> = previous
         .contexts()
+        .iter()
+        .map(ContextSnapshot::id)
+        .collect();
+    let current_contexts: HashSet<ContextId> =
+        current.contexts().iter().map(ContextSnapshot::id).collect();
+    let contexts: Vec<_> = current
+        .contexts()
+        .iter()
+        .filter(|context| !previous_contexts.contains(&context.id()))
+        .cloned()
+        .collect();
+    let retired_contexts: Vec<_> = previous
+        .contexts()
+        .iter()
+        .map(ContextSnapshot::id)
+        .filter(|id| !current_contexts.contains(id))
+        .collect();
+    let threads: Vec<_> = current
+        .threads()
+        .iter()
+        .filter(|thread| previous.thread(thread.id()) != Some(*thread))
+        .cloned()
+        .collect();
+    let previous_counters: HashMap<_, &CounterSnapshot> = previous
+        .counters()
+        .iter()
+        .map(|counter| {
+            (
+                (counter.desc_id(), counter.context_id(), counter.kind()),
+                counter,
+            )
+        })
+        .collect();
+    let counters: Vec<_> = current
+        .counters()
+        .iter()
+        .filter(|counter| {
+            previous_counters.get(&(counter.desc_id(), counter.context_id(), counter.kind()))
+                != Some(counter)
+        })
+        .cloned()
+        .collect();
+    let previous_histograms: HashMap<_, &HistogramSnapshot> = previous
+        .histograms()
+        .iter()
+        .map(|histogram| ((histogram.desc_id(), histogram.context_id()), histogram))
+        .collect();
+    let histograms: Vec<_> = current
+        .histograms()
+        .iter()
+        .filter(|histogram| {
+            previous_histograms.get(&(histogram.desc_id(), histogram.context_id()))
+                != Some(histogram)
+        })
+        .cloned()
+        .collect();
+    publish_rows(
+        current,
+        SnapshotKind::Changes,
+        Rows {
+            threads: &threads,
+            contexts: &contexts,
+            retired_contexts: &retired_contexts,
+            counters: &counters,
+            histograms: &histograms,
+        },
+        chunking,
+        consumer,
+    )
+}
+
+/// The state rows one publication carries.
+struct Rows<'a> {
+    threads: &'a [ThreadSnapshot],
+    contexts: &'a [ContextSnapshot],
+    retired_contexts: &'a [ContextId],
+    counters: &'a [CounterSnapshot],
+    histograms: &'a [HistogramSnapshot],
+}
+
+fn publish_rows<C: Consumer>(
+    snapshot: &Snapshot,
+    kind: SnapshotKind,
+    rows: Rows<'_>,
+    chunking: Chunking,
+    consumer: &mut C,
+) -> Result<(), C::Error> {
+    let mut chunk_index = 0_u64;
+    let mut publish = |payload: Payload<'_>| {
+        let envelope = Envelope {
+            header: envelope_header(chunk_index),
+            payload,
+        };
+        chunk_index = chunk_index.saturating_add(1);
+        consumer.consume(envelope)
+    };
+    publish(Payload::SnapshotStart(SnapshotSummary {
+        metadata: snapshot.metadata(),
+        kind,
+        captured_at_micros: snapshot.captured_at_micros(),
+        window: snapshot.window(),
+        counts: RowCounts::new(
+            rows.threads.len(),
+            rows.contexts.len(),
+            rows.retired_contexts.len(),
+            rows.counters.len(),
+            rows.histograms.len(),
+            snapshot.events().len(),
+        ),
+    }))?;
+    if !rows.threads.is_empty() {
+        publish(Payload::Threads(rows.threads))?;
+    }
+    for chunk in rows
+        .contexts
         .chunks(normalized_chunk_size(chunking.max_contexts))
     {
-        consumer.consume(Envelope {
-            header: envelope_header(chunk_index),
-            payload: Payload::Contexts(contexts),
-        })?;
-        chunk_index = chunk_index.saturating_add(1);
+        publish(Payload::Contexts(chunk))?;
     }
-
-    for counters in snapshot
-        .counters()
+    for chunk in rows
+        .retired_contexts
+        .chunks(normalized_chunk_size(chunking.max_contexts))
+    {
+        publish(Payload::RetiredContexts(chunk))?;
+    }
+    for chunk in rows
+        .counters
         .chunks(normalized_chunk_size(chunking.max_counters))
     {
-        consumer.consume(Envelope {
-            header: envelope_header(chunk_index),
-            payload: Payload::Counters(counters),
-        })?;
-        chunk_index = chunk_index.saturating_add(1);
+        publish(Payload::Counters(chunk))?;
     }
-
-    for histograms in snapshot
-        .histograms()
+    for chunk in rows
+        .histograms
         .chunks(normalized_chunk_size(chunking.max_histograms))
     {
-        consumer.consume(Envelope {
-            header: envelope_header(chunk_index),
-            payload: Payload::Histograms(histograms),
-        })?;
-        chunk_index = chunk_index.saturating_add(1);
+        publish(Payload::Histograms(chunk))?;
     }
-
-    for events in snapshot
+    for chunk in snapshot
         .events()
         .chunks(normalized_chunk_size(chunking.max_events))
     {
-        consumer.consume(Envelope {
-            header: envelope_header(chunk_index),
-            payload: Payload::Events(events),
-        })?;
-        chunk_index = chunk_index.saturating_add(1);
+        publish(Payload::Events(chunk))?;
     }
-
-    consumer.consume(Envelope {
-        header: envelope_header(chunk_index),
-        payload: Payload::SnapshotEnd(snapshot.drops()),
-    })
+    publish(Payload::SnapshotEnd(snapshot.drops()))
 }
 
 /// Collects one runtime snapshot into owned transport-friendly envelopes.
@@ -976,12 +1135,14 @@ impl Envelope<'_> {
                 Payload::SnapshotStart(summary) => {
                     OwnedSessionPayload::SnapshotStart(OwnedSnapshotSummary {
                         metadata: summary.metadata.clone(),
+                        kind: summary.kind,
                         captured_at_micros: summary.captured_at_micros,
                         window: summary.window,
                         counts: summary.counts,
                     })
                 }
                 Payload::Threads(threads) => OwnedSessionPayload::Threads(threads.to_vec()),
+                Payload::RetiredContexts(ids) => OwnedSessionPayload::RetiredContexts(ids.to_vec()),
                 Payload::Contexts(contexts) => OwnedSessionPayload::Contexts(
                     contexts.iter().map(owned_context_snapshot).collect(),
                 ),
@@ -1026,6 +1187,7 @@ impl From<&Snapshot> for crate::OwnedSnapshot {
         let counts = RowCounts::new(
             snapshot.threads().len(),
             snapshot.contexts().len(),
+            0,
             snapshot.counters().len(),
             snapshot.histograms().len(),
             events.len(),
@@ -1033,6 +1195,7 @@ impl From<&Snapshot> for crate::OwnedSnapshot {
         Self::from_parts(
             OwnedSnapshotSummary::new(
                 snapshot.metadata().clone(),
+                SnapshotKind::Full,
                 snapshot.captured_at_micros(),
                 snapshot.window(),
                 counts,
@@ -1356,6 +1519,74 @@ mod tests {
         );
     }
 
+    #[test]
+    fn changes_carry_only_what_changed_and_apply_to_the_full_state() {
+        use crate::{OwnedSnapshot, SnapshotKind};
+
+        let metadata = SnapshotMetadata::new("demo").with_instance_id(7);
+        let counter = |name, context, value, at| {
+            CounterSnapshot::new(
+                CounterDescId::new(1),
+                name,
+                Unit::Count,
+                ContextId::new(context),
+                CounterKind::Counter,
+                value,
+                at,
+            )
+        };
+        let context = |id: u64| {
+            ContextSnapshot::new(
+                ContextId::new(id),
+                Context::root().with(&FRAME, u32::try_from(id).expect("small id")),
+            )
+        };
+        let previous = Snapshot::builder(metadata.clone())
+            .window(EventWindow::new(0, 2, 0))
+            .context(ContextSnapshot::new(ContextId::new(0), Context::root()))
+            .context(context(1))
+            .context(context(2))
+            .counter(counter("a", 1, 1, 10))
+            .counter(counter("b", 2, 5, 10))
+            .build();
+        let current = Snapshot::builder(metadata)
+            .window(EventWindow::new(2, 3, 0))
+            .context(ContextSnapshot::new(ContextId::new(0), Context::root()))
+            .context(context(1))
+            .context(context(3))
+            .counter(counter("a", 1, 2, 20))
+            .counter(counter("c", 3, 1, 20))
+            .event(TimedObservation::new(
+                21,
+                2,
+                1,
+                Observation::ScopeEnd {
+                    token: footfall_core::ScopeToken::new(1),
+                },
+            ))
+            .build();
+
+        let mut collector = super::CollectingConsumer::default();
+        super::publish_changes(&previous, &current, Chunking::default(), &mut collector)
+            .expect("collecting is infallible");
+        let changes =
+            OwnedSnapshot::from_envelopes(collector.envelopes).expect("a valid publication");
+        assert_eq!(changes.kind(), SnapshotKind::Changes);
+        let ids: Vec<_> = changes
+            .contexts()
+            .iter()
+            .map(|row| row.id().get())
+            .collect();
+        assert_eq!(ids, [3], "only the new context");
+        assert_eq!(changes.retired_contexts(), [ContextId::new(2)]);
+        let names: Vec<_> = changes.counters().iter().map(|row| row.name()).collect();
+        assert_eq!(names, ["a", "c"], "only changed and new counters");
+
+        let mut state = OwnedSnapshot::from(&previous);
+        state.apply(changes).expect("same instance, later window");
+        assert_eq!(state, OwnedSnapshot::from(&current));
+    }
+
     #[derive(Default)]
     struct RecordingConsumer {
         protocol_version: Option<crate::ProtocolVersion>,
@@ -1375,6 +1606,7 @@ mod tests {
                     assert_eq!(summary.window.next(), 2);
                     self.payloads.push("start");
                 }
+                Payload::RetiredContexts(_) => self.payloads.push("retired"),
                 Payload::Threads(rows) => {
                     self.payloads.push(match rows.len() {
                         2 => "threads:2",

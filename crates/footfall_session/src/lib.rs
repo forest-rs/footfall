@@ -41,7 +41,8 @@ pub use snapshot::{
     Chunking, Consumer, Envelope, EnvelopeHeader, OwnedArgEntry, OwnedContextEntry,
     OwnedContextSnapshot, OwnedCounterSnapshot, OwnedHistogramSnapshot, OwnedLabelValue,
     OwnedObservation, OwnedSessionEnvelope, OwnedSessionPayload, OwnedSnapshotSummary,
-    OwnedTimedObservation, Payload, RowCounts, SnapshotSummary, collect_snapshot, publish_snapshot,
+    OwnedTimedObservation, Payload, RowCounts, SnapshotKind, SnapshotSummary, collect_snapshot,
+    publish_changes, publish_snapshot,
 };
 
 /// Current protocol version for Footfall session messages.
