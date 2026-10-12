@@ -5,8 +5,22 @@
 
 use super::*;
 use footfall_session::{AssembleError, OwnedSnapshot, SessionErrorCode};
-use std::{future::Future, time::Duration};
-use wtransport::error::{ConnectingError, ConnectionError};
+use std::{
+    future::Future,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use wtransport::{
+    error::ConnectingError,
+    tls::{
+        client::ServerHashVerification,
+        rustls::{
+            self,
+            client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+            pki_types::{CertificateDer, ServerName, UnixTime},
+        },
+    },
+};
 
 /// Returns the default localhost WebTransport server URL for Footfall sessions.
 #[must_use]
@@ -257,15 +271,7 @@ impl SessionClient {
     ) -> Result<Subscription, ClientError> {
         let interval_millis = u32::try_from(interval.as_millis()).unwrap_or(u32::MAX);
         let attempt = async {
-            let config = ClientConfig::builder()
-                .with_bind_default()
-                .with_server_certificate_hashes([self.certificate_hash.to_digest()])
-                .build();
-            let endpoint = Endpoint::client(config).map_err(ClientError::Io)?;
-            let connection = endpoint
-                .connect(&self.url)
-                .await
-                .map_err(|error| connecting_error(&self.url, error))?;
+            let (endpoint, connection) = self.connect().await?;
             let (mut send, recv) = open_stream(&connection).await?;
             let mut request = Vec::with_capacity(SUBSCRIBE_MAGIC.len() + session_id.len() + 25);
             request.extend_from_slice(SUBSCRIBE_MAGIC);
@@ -290,6 +296,48 @@ impl SessionClient {
             })?
     }
 
+    /// Opens a connection to the server, pinned to the certificate hash.
+    async fn connect(
+        &self,
+    ) -> Result<
+        (
+            Endpoint<wtransport::endpoint::endpoint_side::Client>,
+            Connection,
+        ),
+        ClientError,
+    > {
+        let rejection = Arc::new(Mutex::new(None));
+        let verifier = PinnedCertificate {
+            pin: self.certificate_hash,
+            inner: ServerHashVerification::new([self.certificate_hash.to_digest()]),
+            rejection: Arc::clone(&rejection),
+        };
+        let tls = wtransport::tls::client::build_default_tls_config(
+            Arc::new(rustls::RootCertStore::empty()),
+            Some(Arc::new(verifier)),
+        );
+        let config = ClientConfig::builder()
+            .with_bind_default()
+            .with_custom_tls(tls)
+            .build();
+        let endpoint = Endpoint::client(config).map_err(ClientError::Io)?;
+        match endpoint.connect(&self.url).await {
+            Ok(connection) => Ok((endpoint, connection)),
+            Err(error) => {
+                let rejected = *rejection
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                Err(match rejected {
+                    Some(problem) => ClientError::CertificateRejected {
+                        url: self.url.clone(),
+                        problem,
+                    },
+                    None => connecting_error(&self.url, error),
+                })
+            }
+        }
+    }
+
     /// Connects and runs one request within the timeout.
     async fn request<T, F, Fut>(&self, run: F) -> Result<T, ClientError>
     where
@@ -297,15 +345,7 @@ impl SessionClient {
         Fut: Future<Output = Result<T, ClientError>>,
     {
         let attempt = async {
-            let config = ClientConfig::builder()
-                .with_bind_default()
-                .with_server_certificate_hashes([self.certificate_hash.to_digest()])
-                .build();
-            let endpoint = Endpoint::client(config).map_err(ClientError::Io)?;
-            let connection = endpoint
-                .connect(&self.url)
-                .await
-                .map_err(|error| connecting_error(&self.url, error))?;
+            let (_endpoint, connection) = self.connect().await?;
             run(connection).await
         };
         tokio::time::timeout(self.timeout, attempt)
@@ -479,12 +519,12 @@ pub enum ClientError {
         /// The timeout that elapsed.
         after: Duration,
     },
-    /// The server's certificate does not match the pinned hash.
+    /// The client rejected the server's certificate.
     CertificateRejected {
         /// The URL.
         url: String,
-        /// The transport's description of the rejection.
-        reason: String,
+        /// Why the certificate was rejected.
+        problem: CertificateProblem,
     },
     /// The server refused the WebTransport session, usually because the
     /// URL's path is not the server's session path.
@@ -546,10 +586,24 @@ impl fmt::Display for ClientError {
                 formatter,
                 "no complete response from {url} within {after:?}; check that a producer is serving sessions there"
             ),
-            Self::CertificateRejected { url, reason } => write!(
-                formatter,
-                "the certificate of {url} does not match the pinned hash ({reason}); re-read the server's certificate hash"
-            ),
+            Self::CertificateRejected { url, problem } => match problem {
+                CertificateProblem::HashMismatch => write!(
+                    formatter,
+                    "the certificate of {url} does not match the pinned hash: the server has another identity, or renewed its certificate; re-read the server's certificate hash"
+                ),
+                CertificateProblem::Expired => write!(
+                    formatter,
+                    "the certificate of {url} has expired; restart the producer to renew its identity"
+                ),
+                CertificateProblem::NotYetValid => write!(
+                    formatter,
+                    "the certificate of {url} is not valid yet; check the clocks of both machines"
+                ),
+                CertificateProblem::Unsupported => write!(
+                    formatter,
+                    "the certificate of {url} cannot be pinned: pinned certificates must be ECDSA P-256 and valid for at most 14 days"
+                ),
+            },
             Self::SessionRejected { url } => write!(
                 formatter,
                 "{url} refused the session; check that the URL path is the server's session path"
@@ -666,19 +720,105 @@ fn connecting_error(url: &str, error: ConnectingError) -> ClientError {
             reason: String::from("the host does not resolve"),
         },
         ConnectingError::SessionRejected => ClientError::SessionRejected { url },
-        // The transport reports certificate failures only as text.
-        ConnectingError::ConnectionError(ConnectionError::QuicProto(error))
-            if error.to_string().contains("certificate") =>
-        {
-            ClientError::CertificateRejected {
-                url,
-                reason: error.to_string(),
-            }
-        }
         other => ClientError::Unreachable {
             url,
             reason: other.to_string(),
         },
+    }
+}
+
+/// Why a client rejected a server's certificate; see
+/// [`ClientError::CertificateRejected`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum CertificateProblem {
+    /// The certificate's hash is not the pinned hash.
+    HashMismatch,
+    /// The certificate has expired.
+    Expired,
+    /// The certificate is not valid yet.
+    NotYetValid,
+    /// The certificate cannot be pinned: WebTransport hash pinning accepts
+    /// only ECDSA P-256 certificates valid for at most 14 days.
+    Unsupported,
+}
+
+/// Verifies a server certificate against one pinned hash and records why it
+/// rejected one, which the transport otherwise reports only as text.
+#[derive(Debug)]
+struct PinnedCertificate {
+    pin: CertificateHash,
+    inner: ServerHashVerification,
+    rejection: Arc<Mutex<Option<CertificateProblem>>>,
+}
+
+impl PinnedCertificate {
+    fn reject(&self, problem: CertificateProblem, error: rustls::Error) -> rustls::Error {
+        *self
+            .rejection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(problem);
+        error
+    }
+}
+
+impl ServerCertVerifier for PinnedCertificate {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        // Check the pin first: the inner verifier reports a mismatch with
+        // the same error as several other problems.
+        let matches = wtransport::tls::Certificate::from_der(end_entity.to_vec())
+            .is_ok_and(|certificate| CertificateHash::from_digest(&certificate.hash()) == self.pin);
+        if !matches {
+            return Err(self.reject(
+                CertificateProblem::HashMismatch,
+                rustls::CertificateError::UnknownIssuer.into(),
+            ));
+        }
+        self.inner
+            .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
+            .map_err(|error| {
+                let problem = match &error {
+                    rustls::Error::InvalidCertificate(rustls::CertificateError::Expired) => {
+                        CertificateProblem::Expired
+                    }
+                    rustls::Error::InvalidCertificate(rustls::CertificateError::NotValidYet) => {
+                        CertificateProblem::NotYetValid
+                    }
+                    _ => CertificateProblem::Unsupported,
+                };
+                self.reject(problem, error)
+            })
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        certificate: &CertificateDer<'_>,
+        signature: &rustls::DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.inner
+            .verify_tls12_signature(message, certificate, signature)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        certificate: &CertificateDer<'_>,
+        signature: &rustls::DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.inner
+            .verify_tls13_signature(message, certificate, signature)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.inner.supported_verify_schemes()
     }
 }
 

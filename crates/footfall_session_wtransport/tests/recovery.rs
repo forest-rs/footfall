@@ -6,8 +6,8 @@
 
 use footfall_session::SessionErrorCode;
 use footfall_session_wtransport::{
-    CertificateHash, ClientError, SessionClient, SessionIdentity, SessionServer,
-    SessionServerConfig,
+    CertificateHash, CertificateProblem, ClientError, SessionClient, SessionIdentity,
+    SessionServer, SessionServerConfig,
 };
 use std::{net::SocketAddr, time::Duration};
 use wtransport::{ClientConfig, Endpoint, Identity, ServerConfig};
@@ -32,10 +32,60 @@ async fn a_wrong_certificate_pin_is_rejected() {
         .await
         .expect_err("the pin does not match");
     assert!(
-        matches!(error, ClientError::CertificateRejected { .. }),
+        matches!(
+            error,
+            ClientError::CertificateRejected {
+                problem: CertificateProblem::HashMismatch,
+                ..
+            }
+        ),
         "{error:?}"
     );
     accept.abort();
+}
+
+#[tokio::test]
+async fn an_expired_certificate_is_named_as_expired() {
+    use wtransport::tls::self_signed::time::{Duration as Span, OffsetDateTime};
+
+    let now = OffsetDateTime::now_utc();
+    let expired = Identity::self_signed_builder()
+        .subject_alt_names(["localhost", "127.0.0.1"])
+        .validity_period(now - Span::days(3), now - Span::days(1))
+        .build()
+        .expect("an expired identity builds");
+    let hash =
+        CertificateHash::from_bytes(*expired.certificate_chain().as_slice()[0].hash().as_ref());
+    let endpoint = Endpoint::server(
+        ServerConfig::builder()
+            .with_bind_address(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .with_identity(expired)
+            .build(),
+    )
+    .expect("server should bind");
+    let port = endpoint.local_addr().expect("bound address").port();
+    let server = tokio::spawn(async move { endpoint.accept().await.await });
+
+    let url = format!("https://127.0.0.1:{port}/footfall/session");
+    let error = SessionClient::new(url, hash)
+        .discover()
+        .await
+        .expect_err("the certificate has expired");
+    assert!(
+        matches!(
+            error,
+            ClientError::CertificateRejected {
+                problem: CertificateProblem::Expired,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert!(
+        error.to_string().contains("restart the producer"),
+        "{error}"
+    );
+    server.abort();
 }
 
 #[tokio::test]
