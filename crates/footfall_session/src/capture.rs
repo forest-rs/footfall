@@ -27,7 +27,7 @@
 //! [wire-format document]: https://github.com/forest-rs/footfall/blob/main/docs/session-wire-format.md
 
 use alloc::{format, vec, vec::Vec};
-use std::io::{self, Read, Write};
+use std::io::{self, BufReader, Read, Write};
 
 use footfall_runtime::Snapshot;
 
@@ -124,14 +124,19 @@ fn write_frame(writer: &mut impl Write, frame: &[u8]) -> io::Result<()> {
 /// snapshot, as one being written might.
 #[derive(Debug)]
 pub struct CaptureReader<R: Read> {
-    inner: R,
+    inner: BufReader<R>,
     protocol_version: ProtocolVersion,
     failed: bool,
+    /// Snapshots read so far, and the byte offset reached, for errors.
+    snapshots: u64,
+    offset: u64,
 }
 
 impl<R: Read> CaptureReader<R> {
-    /// Opens a capture, reading and checking its header.
-    pub fn new(mut inner: R) -> io::Result<Self> {
+    /// Opens a capture, reading and checking its header. Reads are
+    /// buffered, so `inner` can be a plain file.
+    pub fn new(inner: R) -> io::Result<Self> {
+        let mut inner = BufReader::new(inner);
         let mut magic = [0_u8; 8];
         inner.read_exact(&mut magic)?;
         if &magic != CAPTURE_MAGIC {
@@ -162,6 +167,8 @@ impl<R: Read> CaptureReader<R> {
             inner,
             protocol_version,
             failed: false,
+            snapshots: 0,
+            offset: 12,
         })
     }
 
@@ -176,32 +183,65 @@ impl<R: Read> CaptureReader<R> {
         let mut envelopes = Vec::new();
         loop {
             let mut len = [0_u8; 4];
-            match self.inner.read(&mut len[..1])? {
-                0 if envelopes.is_empty() => return Ok(None),
-                0 => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "capture ends partway through a snapshot",
-                    ));
+            if self.inner.read(&mut len[..1])? == 0 {
+                if envelopes.is_empty() {
+                    return Ok(None);
                 }
-                _ => self.inner.read_exact(&mut len[1..])?,
+                return Err(self.truncated());
             }
+            self.read_exact(&mut len[1..])?;
             let len = usize::try_from(u32::from_le_bytes(len)).unwrap_or(usize::MAX);
             if len > MAX_SESSION_ENVELOPE_BYTES {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("capture envelope of {len} bytes exceeds the limit"),
+                    format!(
+                        "snapshot {} at byte {}: an envelope of {len} bytes exceeds the limit",
+                        self.snapshots, self.offset
+                    ),
                 ));
             }
             let mut frame = vec![0_u8; len];
-            self.inner.read_exact(&mut frame)?;
-            let envelope = decode_envelope(&frame)?;
+            self.read_exact(&mut frame)?;
+            self.offset += 4 + u64::try_from(len).unwrap_or(u64::MAX);
+            let envelope = decode_envelope(&frame).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "snapshot {} at byte {}: {error}",
+                        self.snapshots, self.offset
+                    ),
+                )
+            })?;
             let ends = matches!(envelope.payload(), OwnedSessionPayload::SnapshotEnd(_));
             envelopes.push(envelope);
             if ends {
-                return assemble(envelopes).map(Some);
+                let snapshot = assemble(envelopes)?;
+                self.snapshots += 1;
+                return Ok(Some(snapshot));
             }
         }
+    }
+
+    /// Reads exactly `buffer.len()` bytes, reporting a short read as a
+    /// truncated capture.
+    fn read_exact(&mut self, buffer: &mut [u8]) -> io::Result<()> {
+        self.inner.read_exact(buffer).map_err(|error| {
+            if error.kind() == io::ErrorKind::UnexpectedEof {
+                self.truncated()
+            } else {
+                error
+            }
+        })
+    }
+
+    fn truncated(&self) -> io::Error {
+        io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!(
+                "capture ends partway through snapshot {} after byte {}; the {} snapshots before it are complete",
+                self.snapshots, self.offset, self.snapshots
+            ),
+        )
     }
 }
 
@@ -229,7 +269,7 @@ impl<R: Read> Iterator for CaptureReader<R> {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
+    use alloc::{string::ToString, vec::Vec};
     use std::io::ErrorKind;
 
     use footfall_core::{Backend as _, ContextHandle, MarkerKind, MarkerPhase};
@@ -287,6 +327,10 @@ mod tests {
             .expect("an item")
             .expect_err("the snapshot is cut short");
         assert_eq!(error.kind(), ErrorKind::UnexpectedEof);
+        assert!(
+            error.to_string().contains("partway through snapshot 0"),
+            "{error}"
+        );
         assert!(reader.next().is_none(), "reading stops after an error");
     }
 }
