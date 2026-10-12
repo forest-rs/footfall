@@ -2,8 +2,9 @@
 
 Serves Footfall sessions over local WebTransport and fetches them from
 consumers. The producer side manages a self-signed localhost identity and
-answers discovery and snapshot requests; the consumer side discovers sessions
-and fetches snapshots as owned session envelopes. The byte-level encoding is
+answers discovery and snapshot requests; the consumer side, `SessionClient`,
+discovers sessions and fetches snapshots, reassembled and checked, with a
+timeout and a typed error for each way a request can fail. The byte-level encoding is
 documented in the
 [wire format](https://github.com/forest-rs/footfall/blob/main/docs/session-wire-format.md).
 

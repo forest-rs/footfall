@@ -14,6 +14,20 @@ pub(crate) const RESPONSE_DISCOVERY: u8 = 0;
 pub(crate) const RESPONSE_SNAPSHOT: u8 = 1;
 pub(crate) const RESPONSE_ERROR: u8 = 2;
 
+pub(crate) async fn write_u16(send: &mut SendStream, value: u16) -> io::Result<()> {
+    send.write_all(&value.to_le_bytes())
+        .await
+        .map_err(|error| io::Error::other(error.to_string()))
+}
+
+pub(crate) async fn read_u16(recv: &mut RecvStream) -> io::Result<u16> {
+    let mut bytes = [0_u8; 2];
+    recv.read_exact(&mut bytes)
+        .await
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    Ok(u16::from_le_bytes(bytes))
+}
+
 pub(crate) async fn write_u32(send: &mut SendStream, value: u32) -> io::Result<()> {
     send.write_all(&value.to_le_bytes())
         .await
@@ -126,6 +140,29 @@ pub(crate) async fn decode_session_announcement_stream(
         process_name,
         session_name,
     })
+}
+
+/// Wire tag for an error code. Codes this side does not know are sent as
+/// `Failed`, which every peer understands.
+pub(crate) const fn encode_error_code(code: SessionErrorCode) -> u8 {
+    match code {
+        SessionErrorCode::InvalidRequest => 0,
+        SessionErrorCode::NotFound => 1,
+        SessionErrorCode::Unsupported => 2,
+        SessionErrorCode::Incompatible => 4,
+        _ => 3,
+    }
+}
+
+/// Error code for a wire tag; tags from a newer peer read as `Failed`.
+pub(crate) const fn decode_error_code(tag: u8) -> SessionErrorCode {
+    match tag {
+        0 => SessionErrorCode::InvalidRequest,
+        1 => SessionErrorCode::NotFound,
+        2 => SessionErrorCode::Unsupported,
+        4 => SessionErrorCode::Incompatible,
+        _ => SessionErrorCode::Failed,
+    }
 }
 
 pub(crate) fn map_finish_error(result: Result<(), StreamWriteError>) -> io::Result<()> {

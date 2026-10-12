@@ -247,6 +247,9 @@ impl SessionServer {
         let authority = session_request.authority().to_owned();
         let path = session_request.path().to_owned();
         if path != self.path {
+            // Answer 404 so the client learns the path is wrong rather than
+            // seeing the connection drop.
+            session_request.not_found().await;
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("unexpected session path: {path}"),
@@ -257,7 +260,7 @@ impl SessionServer {
             .accept()
             .await
             .map_err(|error| io::Error::other(error.to_string()))?;
-        let (send, mut recv) = connection
+        let (mut send, mut recv) = connection
             .accept_bi()
             .await
             .map_err(|error| io::Error::other(error.to_string()))?;
@@ -285,10 +288,14 @@ impl SessionServer {
             };
             SessionRequestKind::Snapshot { session_id, since }
         } else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid Footfall session request preface",
-            ));
+            let message = format!(
+                "unknown request {:?}; this server speaks session protocol {}.{}",
+                String::from_utf8_lossy(&request),
+                CODEC_VERSION.major(),
+                CODEC_VERSION.minor()
+            );
+            write_error(&mut send, SessionErrorCode::Unsupported, &message).await?;
+            return Err(io::Error::new(io::ErrorKind::InvalidData, message));
         };
 
         Ok(SessionRequest {
@@ -346,7 +353,12 @@ impl SessionRequest {
         sessions: &[SessionAnnouncement],
     ) -> io::Result<ServedRequest> {
         if self.kind != SessionRequestKind::Discover {
-            return self.respond_error("expected discovery request").await;
+            return self
+                .respond_error(
+                    SessionErrorCode::InvalidRequest,
+                    "expected a discovery request",
+                )
+                .await;
         }
         if u64::try_from(sessions.len()).unwrap_or(u64::MAX) > MAX_DISCOVERED_SESSIONS {
             return Err(io::Error::new(
@@ -356,6 +368,8 @@ impl SessionRequest {
         }
 
         write_u8_stream(&mut self.send, RESPONSE_DISCOVERY).await?;
+        write_u16(&mut self.send, CODEC_VERSION.major()).await?;
+        write_u16(&mut self.send, CODEC_VERSION.minor()).await?;
         write_u64(
             &mut self.send,
             u64::try_from(sessions.len())
@@ -383,7 +397,12 @@ impl SessionRequest {
         chunking: Chunking,
     ) -> io::Result<ServedRequest> {
         if !matches!(self.kind, SessionRequestKind::Snapshot { .. }) {
-            return self.respond_error("expected snapshot request").await;
+            return self
+                .respond_error(
+                    SessionErrorCode::InvalidRequest,
+                    "expected a snapshot request",
+                )
+                .await;
         }
 
         let mut consumer = EncodingConsumer::default();
@@ -419,17 +438,35 @@ impl SessionRequest {
         })
     }
 
-    /// Responds with an application-level error.
-    pub async fn respond_error(mut self, message: &str) -> io::Result<ServedRequest> {
-        write_u8_stream(&mut self.send, RESPONSE_ERROR).await?;
-        write_stream_string(&mut self.send, message).await?;
-        finish_response_stream(&mut self.send).await?;
+    /// Responds with an error, which the client receives as
+    /// `ClientError::Server` with this code and message.
+    ///
+    /// Use [`SessionErrorCode::NotFound`] for an unknown session id and
+    /// [`SessionErrorCode::Unsupported`] for a request kind the server does
+    /// not handle.
+    pub async fn respond_error(
+        mut self,
+        code: SessionErrorCode,
+        message: &str,
+    ) -> io::Result<ServedRequest> {
+        write_error(&mut self.send, code, message).await?;
         Ok(ServedRequest {
             authority: self.authority,
             path: self.path,
             kind: ServedRequestKind::Error,
         })
     }
+}
+
+async fn write_error(
+    send: &mut SendStream,
+    code: SessionErrorCode,
+    message: &str,
+) -> io::Result<()> {
+    write_u8_stream(send, RESPONSE_ERROR).await?;
+    write_u8_stream(send, encode_error_code(code)).await?;
+    write_stream_string(send, message).await?;
+    finish_response_stream(send).await
 }
 
 #[derive(Default)]

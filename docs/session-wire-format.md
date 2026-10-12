@@ -16,6 +16,8 @@ The default local endpoint is:
   expired or close to expiry, so clients should re-read the pinned hash on
   each connection attempt
 - Streams: one bidirectional stream per discovery or snapshot request
+- A session request on any path other than the server's session path is
+  refused with HTTP status 404
 
 ## Primitive Encodings
 
@@ -46,6 +48,10 @@ A `cursor` is `u64 instance_id` then `u64 sequence`: the instance id and next
 sequence from a previous snapshot's `SnapshotStart`. The client finishes its
 send side after the request.
 
+A server that receives any other magic answers with an error response whose
+code is `unsupported`, so a client speaking a newer request framing learns
+that rather than seeing the stream close.
+
 ## Responses
 
 The first response byte is a response tag:
@@ -56,8 +62,10 @@ The first response byte is a response tag:
 
 Discovery response payload:
 
-1. `u64` session count
-2. that many session announcements
+1. `u16` protocol major and `u16` protocol minor: the version the server
+   speaks, which a client checks before reading further
+2. `u64` session count
+3. that many session announcements
 
 Each session announcement is:
 
@@ -73,7 +81,18 @@ Snapshot response payload:
 
 Error response payload:
 
-1. error message `string`
+1. `u8` error code
+2. error message `string`
+
+| Code | Name | Meaning |
+|---|---|---|
+| `0` | `invalid_request` | the request was malformed |
+| `1` | `not_found` | no session has the requested id |
+| `2` | `unsupported` | the server does not handle this request |
+| `3` | `failed` | the request failed after it was accepted |
+| `4` | `incompatible` | the peers' protocol versions cannot interoperate |
+
+Clients treat an unknown code as `failed`.
 
 ## Envelopes
 

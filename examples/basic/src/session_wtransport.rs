@@ -7,9 +7,10 @@ mod session_demo;
 mod session_summary;
 
 use footfall_session::Chunking;
+use footfall_session::SessionErrorCode;
 use footfall_session_wtransport::{
-    ServedRequestKind, SessionAnnouncement, SessionIdentity, SessionRequestKind, SessionServer,
-    SessionServerConfig, default_local_url, discover_local_sessions, fetch_local_session,
+    ServedRequestKind, SessionAnnouncement, SessionClient, SessionIdentity, SessionRequestKind,
+    SessionServer, SessionServerConfig, default_local_url,
 };
 use session_demo::DemoCapture;
 use session_summary::{print_summary, summarize};
@@ -60,13 +61,16 @@ async fn main() {
                 }
                 SessionRequestKind::Snapshot { session_id, .. } => {
                     request
-                        .respond_error(&format!("unknown session `{session_id}`"))
+                        .respond_error(
+                            SessionErrorCode::NotFound,
+                            &format!("unknown session `{session_id}`"),
+                        )
                         .await
                         .expect("error response should succeed");
                 }
                 _ => {
                     request
-                        .respond_error("unsupported request")
+                        .respond_error(SessionErrorCode::Unsupported, "unsupported request")
                         .await
                         .expect("error response should succeed");
                 }
@@ -74,20 +78,24 @@ async fn main() {
         }
     });
 
-    let sessions = discover_local_sessions()
+    let client = SessionClient::local()
+        .await
+        .expect("the local identity was created above");
+    let discovery = client
+        .discover()
         .await
         .expect("session discovery should succeed");
-    let discovered = sessions
-        .into_iter()
-        .find(|session| session.id() == announcement.id())
+    let discovered = discovery
+        .session(announcement.id())
         .expect("published session should be discoverable");
-    let envelopes = fetch_local_session(discovered.id(), None)
+    let snapshot = client
+        .fetch(discovered.id(), None)
         .await
         .expect("session client should fetch one snapshot");
     server_task
         .await
         .expect("session server task should not panic");
-    let summary = summarize(&envelopes);
+    let summary = summarize(&snapshot);
 
     print_summary(&summary);
 }
