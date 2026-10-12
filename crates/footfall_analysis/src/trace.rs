@@ -62,6 +62,8 @@ pub struct Trace {
     unmatched_ends: Vec<Duration>,
     marks: [Vec<Frame>; 3],
     open_marks: [Vec<OpenMark>; 3],
+    /// Completed marks with a program number, by kind and number.
+    numbered: HashMap<(usize, u64), FrameId>,
     series: BTreeMap<(CounterDescId, ContextId), CounterSeries>,
     /// Whether every event since the runtime began has been seen without a
     /// gap, so a counter's first sample is its whole change.
@@ -95,6 +97,7 @@ struct Begun {
 #[derive(Clone, Copy, Debug)]
 struct OpenMark {
     id: FrameId,
+    number: Option<u64>,
     context_id: ContextId,
     thread_id: u64,
     begin: Duration,
@@ -458,6 +461,7 @@ impl Trace {
             OwnedObservation::FrameMarker {
                 kind,
                 phase,
+                number,
                 context_id,
             } => {
                 *collecting = None;
@@ -467,14 +471,25 @@ impl Trace {
                 match phase {
                     MarkerPhase::Begin => self.open_marks[index].push(OpenMark {
                         id: FrameId::new(event.sequence()),
+                        number: *number,
                         context_id: *context_id,
                         thread_id,
                         begin: at,
                     }),
                     MarkerPhase::End => {
-                        if let Some(open) = self.open_marks[index].pop() {
+                        // A numbered end closes the begin with its number,
+                        // wherever it is; any other end, the latest begin.
+                        let open_marks = &mut self.open_marks[index];
+                        let position = match number {
+                            Some(number) => open_marks
+                                .iter()
+                                .rposition(|open| open.number == Some(*number)),
+                            None => open_marks.len().checked_sub(1),
+                        };
+                        if let Some(open) = position.map(|position| open_marks.remove(position)) {
                             let frame = Frame {
                                 id: open.id,
+                                number: open.number,
                                 kind: *kind,
                                 context_id: open.context_id,
                                 thread_id: open.thread_id,
@@ -487,6 +502,9 @@ impl Trace {
                                 (held.begin, held.id) <= (frame.begin, frame.id)
                             });
                             marks.insert(position, frame);
+                            if let Some(number) = open.number {
+                                self.numbered.insert((index, number), open.id);
+                            }
                             pushed.frames.push(open.id);
                             if *kind == MarkerKind::Frame {
                                 *collecting = Some((open.id, thread_id, at));
@@ -694,6 +712,9 @@ impl Trace {
         for marks in &mut self.marks {
             marks.retain(|frame| frame.end >= before);
         }
+        let marks = &self.marks;
+        self.numbered
+            .retain(|(index, _), id| marks[*index].iter().any(|frame| frame.id == *id));
         for series in self.series.values_mut() {
             series.samples.retain(|sample| sample.at >= before);
         }
@@ -879,6 +900,26 @@ impl Trace {
     #[must_use]
     pub fn frame(&self, id: FrameId) -> Option<&Frame> {
         self.marks.iter().flatten().find(|frame| frame.id == id)
+    }
+
+    /// Returns the frame the program numbered `number`.
+    #[must_use]
+    pub fn frame_numbered(&self, number: u64) -> Option<&Frame> {
+        self.numbered_mark(MarkerKind::Frame, number)
+    }
+
+    /// Returns the frame, pass, or transaction of `kind` the program
+    /// numbered `number`.
+    #[must_use]
+    pub fn numbered_mark(&self, kind: MarkerKind, number: u64) -> Option<&Frame> {
+        let index = mark_index(kind)?;
+        let id = *self.numbered.get(&(index, number))?;
+        let marks = &self.marks[index];
+        marks
+            .binary_search_by_key(&id, |frame| frame.id)
+            .ok()
+            .map(|position| &marks[position])
+            .or_else(|| marks.iter().find(|frame| frame.id == id))
     }
 
     /// Returns the frame that was in progress at `at`.

@@ -281,7 +281,7 @@ thread id, then a `u8` observation tag and its fields:
 | `2` | resource create | kind id `u64`, kind name `name`, resource id `u64`, context id `u64`, size `u64` |
 | `3` | resource update | kind id `u64`, kind name `name`, resource id `u64`, context id `u64`, size `u64` |
 | `4` | resource drop | kind id `u64`, kind name `name`, resource id `u64`, context id `u64` |
-| `5` | marker | kind `u8` (`0` frame, `1` transaction, `2` pass), phase `u8` (`0` begin, `1` end), context id `u64` |
+| `5` | marker | kind `u8` (`0` frame, `1` transaction, `2` pass), phase `u8` (`0` begin, `1` end), number `u64` (the program's number plus one, or `0` for none), context id `u64` |
 | `6` | flow | flow id `u64`, phase `u8` (`0` begin, `1` step, `2` end), context id `u64` |
 | `7` | message | descriptor id `u64`, name `name`, context id `u64`, text `string`, args |
 | `8` | counter sample | descriptor id `u64`, name `name`, unit `u8`, context id `u64`, kind `u8`, value `u64` |

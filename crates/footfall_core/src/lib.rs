@@ -124,10 +124,10 @@ pub use context::{CONTEXT_INLINE_CAPACITY, Context, ContextCapacityError, Contex
 pub use descriptor::{CounterDesc, EventDesc, ResourceKindDesc, ScopeDesc, SourceLocation};
 pub use emit::{
     Backend, FlowPhase, MarkerKind, MarkerPhase, NoopBackend, ScopeGuard, ScopeToken, counter_add,
-    flow_begin, flow_end, flow_step, frame_begin, frame_end, frame_marker, gauge_set,
-    histogram_record, message, message_with, pass_begin, pass_end, resource_create, resource_drop,
-    resource_update, scope, scope_begin, scope_begin_with, scope_end, scope_with,
-    transaction_begin, transaction_end,
+    flow_begin, flow_end, flow_step, frame_begin, frame_begin_numbered, frame_end,
+    frame_end_numbered, frame_marker, gauge_set, histogram_record, message, message_with,
+    numbered_marker, pass_begin, pass_end, resource_create, resource_drop, resource_update, scope,
+    scope_begin, scope_begin_with, scope_end, scope_with, transaction_begin, transaction_end,
 };
 #[cfg(feature = "std")]
 pub use emit::{InstallBackendError, install_backend};

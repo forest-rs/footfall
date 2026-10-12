@@ -803,11 +803,13 @@ pub(crate) fn encode_borrowed_observation(
         footfall_runtime::Observation::FrameMarker {
             kind,
             phase,
+            number,
             context_id,
         } => {
             encode_u8(bytes, 5);
             encode_u8(bytes, encode_marker_kind(*kind)?);
             encode_u8(bytes, encode_marker_phase(*phase));
+            encode_marker_number(bytes, *number)?;
             encode_u64(bytes, context_id.get());
         }
         footfall_runtime::Observation::Flow {
@@ -1025,11 +1027,13 @@ pub(crate) fn encode_observation(
         OwnedObservation::FrameMarker {
             kind,
             phase,
+            number,
             context_id,
         } => {
             encode_u8(bytes, 5);
             encode_u8(bytes, encode_marker_kind(*kind)?);
             encode_u8(bytes, encode_marker_phase(*phase));
+            encode_marker_number(bytes, *number)?;
             encode_u64(bytes, context_id.get());
         }
         OwnedObservation::Flow {
@@ -1121,6 +1125,7 @@ pub(crate) fn decode_observation(
         5 => Ok(OwnedObservation::FrameMarker {
             kind: decode_marker_kind(decode_u8(cursor)?)?,
             phase: decode_marker_phase(decode_u8(cursor)?)?,
+            number: decode_marker_number(cursor)?,
             context_id: ContextId::new(decode_u64(cursor)?),
         }),
         6 => Ok(OwnedObservation::Flow {
@@ -1213,6 +1218,26 @@ pub(crate) fn decode_unit(tag: u8) -> io::Result<Unit> {
             format!("unknown unit tag: {tag}"),
         )),
     }
+}
+
+/// Writes a marker's number as a `u64` one greater than the number, or `0`
+/// for an unnumbered marker.
+fn encode_marker_number(bytes: &mut Vec<u8>, number: Option<u64>) -> io::Result<()> {
+    let encoded = match number {
+        None => 0,
+        Some(number) => number.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a marker number must be less than u64::MAX",
+            )
+        })?,
+    };
+    encode_u64(bytes, encoded);
+    Ok(())
+}
+
+fn decode_marker_number(cursor: &mut Cursor<'_>) -> io::Result<Option<u64>> {
+    Ok(decode_u64(cursor)?.checked_sub(1))
 }
 
 pub(crate) fn encode_marker_kind(kind: MarkerKind) -> io::Result<u8> {

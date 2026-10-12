@@ -39,12 +39,13 @@ impl fmt::Display for FrameId {
 /// One frame, pass, or transaction: from a begin marker to the end marker
 /// that closed it.
 ///
-/// Each end marker closes the most recent open begin marker of the same
-/// kind. Frames also carry the counters they changed, from the samples the
+/// An end marker closes the open begin marker of the same kind and number,
+/// or without a number, the most recent open begin of the same kind. Frames also carry the counters they changed, from the samples the
 /// runtime records at each frame end.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame {
     pub(crate) id: FrameId,
+    pub(crate) number: Option<u64>,
     pub(crate) kind: MarkerKind,
     pub(crate) context_id: ContextId,
     pub(crate) thread_id: u64,
@@ -58,6 +59,13 @@ impl Frame {
     #[must_use]
     pub const fn id(&self) -> FrameId {
         self.id
+    }
+
+    /// Returns the program's own number for the frame, such as a frame
+    /// scheduler's frame index, when its markers carried one.
+    #[must_use]
+    pub const fn number(&self) -> Option<u64> {
+        self.number
     }
 
     /// Returns whether this is a frame, a pass, or a transaction.

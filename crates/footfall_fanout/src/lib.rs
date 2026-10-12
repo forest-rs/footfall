@@ -178,6 +178,17 @@ impl Backend for Fanout {
         self.secondary.frame_marker(kind, phase, context);
     }
 
+    fn numbered_marker(
+        &self,
+        kind: MarkerKind,
+        phase: MarkerPhase,
+        number: u64,
+        context: ContextHandle,
+    ) {
+        self.primary.numbered_marker(kind, phase, number, context);
+        self.secondary.numbered_marker(kind, phase, number, context);
+    }
+
     fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: ContextHandle) {
         self.primary.flow(flow_id, phase, context);
         self.secondary.flow(flow_id, phase, context);

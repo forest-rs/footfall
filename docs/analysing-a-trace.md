@@ -38,7 +38,8 @@ placed in the span it happened in.
 Every span has a `SpanId`, the sequence number of the event that began it.
 It names the same span in every snapshot and capture file of that runtime
 instance, so a finding can cite it and anyone can look it up again with
-`Trace::span`. Frames have `FrameId`s the same way. Ids mean nothing in
+`Trace::span`. Frames have `FrameId`s the same way, and a frame the program
+numbered itself is also found by that number with `Trace::frame_numbered`. Ids mean nothing in
 another instance: `Trace::push` refuses a snapshot from one, and a tool
 following a restarting producer starts a new trace.
 

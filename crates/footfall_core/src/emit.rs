@@ -292,6 +292,23 @@ pub trait Backend: Send + Sync {
         let _ = (kind, phase, context);
     }
 
+    /// Observes a frame, transaction, or pass boundary that the program
+    /// numbers itself, such as a frame scheduler's frame index.
+    ///
+    /// The number lets observations made later, such as when the frame was
+    /// shown, find the frame they belong to. The default forwards to
+    /// [`Backend::frame_marker`] without the number.
+    fn numbered_marker(
+        &self,
+        kind: MarkerKind,
+        phase: MarkerPhase,
+        number: u64,
+        context: ContextHandle,
+    ) {
+        let _ = number;
+        self.frame_marker(kind, phase, context);
+    }
+
     /// Observes one phase of a causal flow.
     fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: ContextHandle) {
         let _ = (flow_id, phase, context);
@@ -462,6 +479,31 @@ pub fn resource_drop(
 #[cfg_attr(not(footfall_compile_out), inline)]
 pub fn frame_marker(kind: MarkerKind, phase: MarkerPhase, context: ContextHandle) {
     dispatch!(when matches!(phase, MarkerPhase::End) || max_level().captures_markers() => frame_marker(kind, phase, context));
+}
+
+/// Emits a frame, transaction, or pass boundary marker carrying the
+/// program's own number for it, such as a frame scheduler's frame index.
+///
+/// A begin and an end with the same kind and number delimit one unit of
+/// work, even when other units of the same kind begin or end between them.
+#[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
+pub fn numbered_marker(kind: MarkerKind, phase: MarkerPhase, number: u64, context: ContextHandle) {
+    dispatch!(when matches!(phase, MarkerPhase::End) || max_level().captures_markers() => numbered_marker(kind, phase, number, context));
+}
+
+/// Emits a frame begin marker for the frame the program numbers `number`.
+#[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
+pub fn frame_begin_numbered(number: u64, context: ContextHandle) {
+    numbered_marker(MarkerKind::Frame, MarkerPhase::Begin, number, context);
+}
+
+/// Emits a frame end marker for the frame the program numbers `number`.
+#[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
+pub fn frame_end_numbered(number: u64, context: ContextHandle) {
+    numbered_marker(MarkerKind::Frame, MarkerPhase::End, number, context);
 }
 
 /// Emits a frame begin marker.
