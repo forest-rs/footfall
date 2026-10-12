@@ -42,7 +42,7 @@ let snapshot = runtime.snapshot();
 for counter in snapshot.counters() {
     println!("{} = {} {}", counter.name(), counter.value(), counter.unit().as_str());
 }
-let chrome_trace_json = footfall_export::to_chrome_trace_json(&snapshot);
+let chrome_trace_json = footfall_export::to_chrome_trace_json(&snapshot.into());
 # let _ = chrome_trace_json;
 ```
 

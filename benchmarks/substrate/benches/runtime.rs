@@ -213,7 +213,7 @@ fn capture(c: &mut Criterion) {
     runtime.set_level(InstrumentationLevel::Trace);
     let cursor = runtime.cursor();
     let frames = seed_snapshot(sample_context());
-    let snapshot = runtime.snapshot_since(cursor);
+    let owned = runtime.snapshot_since(cursor).into();
 
     let mut group = c.benchmark_group("runtime/capture");
     group.throughput(Throughput::Elements(u64::from(SEEDED_FRAMES)));
@@ -221,7 +221,7 @@ fn capture(c: &mut Criterion) {
         b.iter(|| black_box(runtime.snapshot_since(black_box(cursor))));
     });
     group.bench_function(format!("chrome trace export {SEEDED_FRAMES} frames"), |b| {
-        b.iter(|| black_box(to_chrome_trace_json(black_box(&snapshot))));
+        b.iter(|| black_box(to_chrome_trace_json(black_box(&owned))));
     });
     group.finish();
     drop(frames);

@@ -35,5 +35,8 @@ fn main() {
     }
 
     let snapshot = runtime.snapshot();
-    println!("{}", footfall_export::to_chrome_trace_json(&snapshot));
+    println!(
+        "{}",
+        footfall_export::to_chrome_trace_json(&snapshot.into())
+    );
 }

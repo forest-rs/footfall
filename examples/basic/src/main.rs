@@ -124,5 +124,5 @@ fn main() {
     frame_end(frame_context);
 
     let snapshot = runtime.snapshot();
-    println!("{}", to_chrome_trace_json(&snapshot));
+    println!("{}", to_chrome_trace_json(&snapshot.into()));
 }
