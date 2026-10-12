@@ -257,7 +257,8 @@ fn fail(message: &str) -> ! {
 mod tests {
     use super::{App, Update, ui};
     use footfall::runtime::Runtime;
-    use footfall::session::OwnedSnapshot;
+    use footfall::session::codec::encode_owned_envelope;
+    use footfall::session::{Chunking, OwnedSnapshot};
     use footfall_examples::demo::Renderer;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -268,22 +269,29 @@ mod tests {
     fn renders_a_demo_session() {
         let runtime = Runtime::builder()
             .process_name("demo_app")
+            .session_name("main")
             .install_global()
             .expect("the test installs the only backend");
-        let mut app = App::new(String::from("test"), 16_667);
+        let mut app = App::new(
+            String::from("https://127.0.0.1:43091/footfall/session · main"),
+            16_667,
+        );
         let mut renderer = Renderer::new(2);
         let mut cursor = runtime.cursor();
         for _ in 0..4 {
-            renderer.run(240, Some(60), &AtomicBool::new(false));
-            let window = runtime.snapshot_since(cursor);
+            renderer.run(60, Some(60), &AtomicBool::new(false));
+            let window = OwnedSnapshot::from(runtime.snapshot_since(cursor));
             cursor = window.next_cursor();
-            app.update(Update::Window(
-                Box::new(OwnedSnapshot::from(window)),
-                Some(4096),
-            ));
+            // What this window takes on the wire, framing aside.
+            let bytes = window
+                .to_envelopes(Chunking::default())
+                .iter()
+                .map(|envelope| encode_owned_envelope(envelope).map_or(0, |frame| frame.len()))
+                .sum();
+            app.update(Update::Window(Box::new(window), Some(bytes)));
         }
 
-        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("a test terminal");
+        let mut terminal = Terminal::new(TestBackend::new(100, 36)).expect("a test terminal");
         terminal
             .draw(|frame| ui::draw(frame, &app))
             .expect("the view draws");

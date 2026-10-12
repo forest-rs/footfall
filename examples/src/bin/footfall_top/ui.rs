@@ -33,7 +33,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
     draw_scopes(frame, scopes, app);
     draw_counters(frame, counters, app);
     let [messages, capture] =
-        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(bottom);
+        Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)]).areas(bottom);
     draw_messages(frame, messages, app);
     draw_capture(frame, capture, app);
     draw_footer(frame, footer, app);
@@ -138,26 +138,24 @@ fn draw_chart(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn draw_scopes(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let sort = if app.sort_by_own { "self" } else { "total" };
-    let header = Row::new(["scope", "count", "total", "self", "mean", "max"]).style(DIM);
+    let header = Row::new(["scope", "count", "total", "self", "max"]).style(DIM);
     let rows = app.scope_rows().into_iter().map(|(name, totals)| {
         Row::new([
             Cell::from(name.to_owned()).fg(ACCENT),
             Cell::from(format::count(totals.count)),
             Cell::from(format::micros(totals.total)),
             Cell::from(format::micros(totals.own)),
-            Cell::from(format::micros(totals.total / totals.count.max(1))),
             Cell::from(format::micros(totals.max)),
         ])
     });
     let table = Table::new(
         rows,
         [
-            Constraint::Fill(1),
-            Constraint::Length(7),
-            Constraint::Length(9),
-            Constraint::Length(9),
-            Constraint::Length(9),
-            Constraint::Length(9),
+            Constraint::Min(14),
+            Constraint::Length(6),
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Length(8),
         ],
     )
     .header(header)
@@ -166,7 +164,7 @@ fn draw_scopes(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn draw_counters(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let header = Row::new(["counter", "last frame", "per frame", "now"]).style(DIM);
+    let header = Row::new(["counter", "last", "per frame", "now"]).style(DIM);
     let rows = app.counters.iter().map(|row| {
         let (last, per_frame) = if row.gauge {
             (format::value(row.unit, row.last), String::from("gauge"))
@@ -186,10 +184,10 @@ fn draw_counters(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let table = Table::new(
         rows,
         [
-            Constraint::Min(18),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(10),
+            Constraint::Min(14),
+            Constraint::Length(9),
+            Constraint::Length(9),
+            Constraint::Length(9),
         ],
     )
     .header(header)
@@ -226,7 +224,7 @@ fn draw_capture(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
     let row = |label: &str, value: String| {
         Line::from(vec![
-            Span::styled(format!("{label:<14}"), DIM),
+            Span::styled(format!("{label:<9}"), DIM),
             Span::from(value),
         ])
     };
@@ -235,23 +233,23 @@ fn draw_capture(frame: &mut Frame<'_>, area: Rect, app: &App) {
         row(
             "events",
             format!(
-                "{} in the last window · {}/s",
+                "{} last window · {}/s",
                 format::count(app.last_events as u64),
                 format::count(app.events_per_second)
             ),
         ),
         row(
-            "on the wire",
+            "wire",
             app.last_bytes.map_or_else(
                 || String::from("— (replaying a file)"),
                 |bytes| format!("{} per window", format::bytes(bytes as u64)),
             ),
         ),
         row(
-            "producer",
-            app.about.as_ref().map_or_else(String::new, |about| {
-                format!("instance {:016x}", about.instance)
-            }),
+            "instance",
+            app.about
+                .as_ref()
+                .map_or_else(String::new, |about| format!("{:016x}", about.instance)),
         ),
         row(
             "missed",

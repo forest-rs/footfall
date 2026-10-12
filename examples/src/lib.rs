@@ -9,3 +9,15 @@ pub mod demo;
 pub mod format;
 pub mod report;
 pub mod style;
+
+// The guides' code blocks compile and run as doctests of this crate, which
+// has every Footfall feature, so they cannot drift from the API.
+#[cfg(doctest)]
+#[doc = include_str!("../../README.md")]
+struct ReadmeDoctests;
+#[cfg(doctest)]
+#[doc = include_str!("../../docs/instrumenting-an-app.md")]
+struct InstrumentingAnAppDoctests;
+#[cfg(doctest)]
+#[doc = include_str!("../../docs/session-consumer-contract.md")]
+struct SessionConsumerContractDoctests;

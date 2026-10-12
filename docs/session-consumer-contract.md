@@ -173,18 +173,24 @@ The server URL itself is the attach point. Discovery is no longer file-backed.
 
 A producer makes itself attachable with `LocalSessionServer::start`, which
 serves its runtimes on the default local port, or on an ephemeral port when
-another producer holds the default, and registers its URL in a local
-registry. Every local producer shares one self-signed identity, managed in
-Footfall's state directory, so consumers need no hash or URL prompt:
+another producer holds the default, and registers its URL and the hash of its
+certificate in a per-user registry. Producers share a self-signed localhost
+identity kept in Footfall's state directory, but each registers its own hash,
+so producers that started together, or one that renewed the identity, stay
+reachable. Consumers need no hash or URL prompt:
 
 1. launch one or more producers
-2. `SessionClient::local_servers()` returns a client for each, default port
-   first; `SessionClient::local()` connects to the default port alone
-3. discover each server's sessions
-4. fetch or subscribe
+2. `SessionClient::discover_local()` asks every registered producer for its
+   sessions at once, and reports those that did not answer
+3. fetch or subscribe through each session's client
 
-A registration can outlive a producer that crashed; its client times out,
-and consumers skip it.
+`SessionClient::local_servers()` returns a client per registered producer,
+and `SessionClient::local()` one for the default port, for consumers that
+discover servers one at a time. A registration can outlive a producer that
+crashed; its client times out, and discovery reports it as unreachable.
+
+Set `FOOTFALL_STATE_DIR` to the same directory for producers and consumers
+to keep a set of them apart from everything else on the machine.
 
 ## Following a Session
 
@@ -227,37 +233,25 @@ into one snapshot, counting events neither window held as missed, and
 trace for Perfetto. `footfall::session::codec` encodes and decodes single
 envelopes for consumers that carry them some other way.
 
-## What a UI Actually Needs
+## Building a Tool
 
-A useful first UI does not need every Footfall detail.
+`footfall::analysis` does the interpretation most tools need: it pairs scopes
+into spans with self time and nesting, groups them by name or by a context
+label, pairs frame markers into frames, and turns counter samples into
+per-frame changes, across a subscription's windows. A tool built on it needs
+little more than layout.
 
-It needs:
+Two examples show the range:
 
-- session list
-- process/session naming
-- contexts by id
-- counters by descriptor and context
-- resource lifecycle events
-- missed-event and drop totals
+- [`attach`](../examples/src/bin/attach.rs) follows a session and prints each
+  window's frames in about a hundred lines;
+- [`footfall_top`](../examples/src/bin/footfall_top/main.rs) is a live
+  terminal view: frame times against a budget, where the time goes, counters
+  per frame, messages, and losses, live or from a capture file.
 
-That is enough to build:
-
-- cache summaries
-- resource summaries
-- basic timeline inspection
-- semantic grouping by context owner
-
-## Recommended Separation
-
-Keep the UI outside this repo if it helps focus:
-
-- Footfall repo owns producers, collection, transport, and examples
-- UI repo owns views, interaction, layout, and consumer-side caching
-
-The interface between them should stay:
-
-- versioned session envelopes
-- discovery plus snapshot requests over the local session server
+A tool in another language reads the [wire format](session-wire-format.md)
+directly. Keep tools outside the instrumented process and talk to it through
+the session protocol, so they can change without touching producers.
 
 ## Compatibility Rule
 
