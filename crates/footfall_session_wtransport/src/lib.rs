@@ -74,7 +74,7 @@ const DEFAULT_PATH: &str = "/footfall/session";
 const DEFAULT_LOCAL_PORT: u16 = 43_091;
 const DISCOVER_MAGIC: &[u8; 8] = b"FFALLD01";
 const SNAPSHOT_MAGIC: &[u8; 8] = b"FFALLS01";
-const CODEC_VERSION: ProtocolVersion = ProtocolVersion::new(2, 0);
+const CODEC_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 const RESPONSE_DISCOVERY: u8 = 0;
 const RESPONSE_SNAPSHOT: u8 = 1;
 const RESPONSE_ERROR: u8 = 2;
@@ -2144,7 +2144,7 @@ mod tests {
         let encoded = encode_envelope(&counters).expect("encoding should succeed");
         assert_eq!(
             to_hex(&encoded),
-            "020000000400000000000000020000000000000002010000000300000000000000030000\
+            "010000000400000000000000020000000000000002010000000300000000000000030000\
              006f70730101000000000000000007000000000000000e00000000000000"
         );
 
@@ -2168,7 +2168,7 @@ mod tests {
         let encoded = encode_envelope(&events).expect("encoding should succeed");
         assert_eq!(
             to_hex(&encoded),
-            "020000000400000000000000030000000000000003010000000f0000000000000002000000\
+            "010000000400000000000000030000000000000003010000000f0000000000000002000000\
              00000000000500000000000000060000007265636f7264010000000000000009000000000000\
              0001050000006974656d73000300000000000000"
         );
@@ -2189,7 +2189,7 @@ mod tests {
                 ],
             )]),
         );
-        let expected = "02000000040000000000000001000000000000000101000000010000000000000002000000\
+        let expected = "01000000040000000000000001000000000000000101000000010000000000000002000000\
                         050000006672616d6500070000000000000006000000726561736f6e030a000000696e76\
                         616c6964617465";
         let encoded = encode_envelope(&contexts).expect("encoding should succeed");
