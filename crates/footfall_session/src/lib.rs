@@ -16,13 +16,15 @@ extern crate std;
 #[cfg(feature = "std")]
 mod assembled;
 #[cfg(feature = "std")]
+pub mod capture;
+#[cfg(feature = "std")]
 pub mod codec;
 mod live;
 #[cfg(feature = "std")]
 mod snapshot;
 
 #[cfg(feature = "std")]
-pub use assembled::{AssembleError, OwnedSnapshot};
+pub use assembled::{AppendError, AssembleError, OwnedSnapshot};
 /// Runtime types that session envelopes carry as they are, re-exported so
 /// consumers can name them without depending on `footfall_runtime`.
 #[cfg(feature = "std")]

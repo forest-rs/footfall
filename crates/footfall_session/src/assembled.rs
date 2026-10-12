@@ -10,8 +10,9 @@ use footfall_core::ContextId;
 use footfall_runtime::{Drops, EventCursor, EventWindow, SnapshotMetadata, ThreadSnapshot};
 
 use crate::{
-    OwnedContextSnapshot, OwnedCounterSnapshot, OwnedHistogramSnapshot, OwnedSessionEnvelope,
-    OwnedSessionPayload, OwnedSnapshotSummary, OwnedTimedObservation,
+    Chunking, EnvelopeHeader, OwnedContextSnapshot, OwnedCounterSnapshot, OwnedHistogramSnapshot,
+    OwnedSessionEnvelope, OwnedSessionPayload, OwnedSnapshotSummary, OwnedTimedObservation,
+    PROTOCOL_VERSION,
 };
 
 /// One published snapshot, reassembled from its envelopes and checked
@@ -209,6 +210,106 @@ impl OwnedSnapshot {
         self.drops
     }
 
+    /// Extends this snapshot with a later one from the same runtime
+    /// instance, as if both had been read at once.
+    ///
+    /// This joins the windows of a subscription, or of snapshots read back
+    /// from a capture file, into one view: events from `later` that this
+    /// snapshot does not already hold are appended, contexts and threads are
+    /// combined with `later`'s winning, and counters, histograms, metadata,
+    /// and drop totals become `later`'s, which are cumulative. Events between
+    /// the two windows that neither holds count as missed.
+    ///
+    /// Fails, leaving this snapshot unchanged, when `later` is from another
+    /// instance or ends before this snapshot does.
+    pub fn append(&mut self, later: Self) -> Result<(), AppendError> {
+        let instance = self.metadata().instance_id();
+        let later_instance = later.metadata().instance_id();
+        if later_instance != instance {
+            return Err(AppendError::OtherInstance {
+                expected: instance,
+                found: later_instance,
+            });
+        }
+        let window = self.window();
+        let later_window = later.window();
+        if later_window.next() < window.next() {
+            return Err(AppendError::Earlier {
+                next: window.next(),
+                later_next: later_window.next(),
+            });
+        }
+
+        let gap = later_window.since().saturating_sub(window.next());
+        let missed = window
+            .missed()
+            .saturating_add(gap)
+            .saturating_add(later_window.missed());
+        let merged_window = EventWindow::new(window.since(), later_window.next(), missed);
+
+        self.events.extend(
+            later
+                .events
+                .into_iter()
+                .filter(|event| event.sequence() >= window.next()),
+        );
+        merge_by_key(&mut self.contexts, later.contexts, |row| row.id());
+        merge_by_key(&mut self.threads, later.threads, ThreadSnapshot::id);
+        self.counters = later.counters;
+        self.histograms = later.histograms;
+        self.drops = later.drops;
+        let counts = crate::RowCounts::new(
+            self.threads.len(),
+            self.contexts.len(),
+            self.counters.len(),
+            self.histograms.len(),
+            self.events.len(),
+        );
+        self.summary = OwnedSnapshotSummary::new(
+            later.summary.metadata().clone(),
+            later.summary.captured_at_micros(),
+            merged_window,
+            counts,
+        );
+        Ok(())
+    }
+
+    /// Splits this snapshot into envelopes, as a producer would publish it.
+    #[must_use]
+    pub fn to_envelopes(&self, chunking: Chunking) -> Vec<OwnedSessionEnvelope> {
+        let mut payloads = Vec::new();
+        payloads.push(OwnedSessionPayload::SnapshotStart(self.summary.clone()));
+        if !self.threads.is_empty() {
+            payloads.push(OwnedSessionPayload::Threads(self.threads.clone()));
+        }
+        for rows in self.contexts.chunks(chunk_size(chunking.max_contexts())) {
+            payloads.push(OwnedSessionPayload::Contexts(rows.to_vec()));
+        }
+        for rows in self.counters.chunks(chunk_size(chunking.max_counters())) {
+            payloads.push(OwnedSessionPayload::Counters(rows.to_vec()));
+        }
+        for rows in self
+            .histograms
+            .chunks(chunk_size(chunking.max_histograms()))
+        {
+            payloads.push(OwnedSessionPayload::Histograms(rows.to_vec()));
+        }
+        for rows in self.events.chunks(chunk_size(chunking.max_events())) {
+            payloads.push(OwnedSessionPayload::Events(rows.to_vec()));
+        }
+        payloads.push(OwnedSessionPayload::SnapshotEnd(self.drops));
+        payloads
+            .into_iter()
+            .zip(0_u64..)
+            .map(|(payload, chunk_index)| {
+                OwnedSessionEnvelope::new(
+                    EnvelopeHeader::new(PROTOCOL_VERSION, chunk_index),
+                    payload,
+                )
+            })
+            .collect()
+    }
+
     /// Resolves one context by id.
     #[must_use]
     pub fn context(&self, context_id: ContextId) -> Option<&OwnedContextSnapshot> {
@@ -313,6 +414,59 @@ impl fmt::Display for AssembleError {
 }
 
 impl core::error::Error for AssembleError {}
+
+/// Why [`OwnedSnapshot::append`] refused a snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum AppendError {
+    /// The later snapshot is from another runtime instance, whose ids and
+    /// sequence numbers mean something else.
+    OtherInstance {
+        /// This snapshot's instance id.
+        expected: u64,
+        /// The later snapshot's instance id.
+        found: u64,
+    },
+    /// The later snapshot's window ends before this one's.
+    Earlier {
+        /// Where this snapshot's window ends.
+        next: u64,
+        /// Where the later snapshot's window ends.
+        later_next: u64,
+    },
+}
+
+impl fmt::Display for AppendError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OtherInstance { expected, found } => write!(
+                formatter,
+                "snapshot is from runtime instance {found:016x}, not {expected:016x}"
+            ),
+            Self::Earlier { next, later_next } => write!(
+                formatter,
+                "snapshot's events end at {later_next}, before this one's at {next}"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for AppendError {}
+
+/// Replaces rows of `rows` with `later`'s rows of the same key and adds the
+/// rest, keeping `rows` sorted by key.
+fn merge_by_key<T, K: Ord + Copy>(rows: &mut Vec<T>, later: Vec<T>, key: impl Fn(&T) -> K) {
+    for row in later {
+        match rows.binary_search_by_key(&key(&row), &key) {
+            Ok(index) => rows[index] = row,
+            Err(index) => rows.insert(index, row),
+        }
+    }
+}
+
+const fn chunk_size(max_rows: usize) -> usize {
+    if max_rows == 0 { usize::MAX } else { max_rows }
+}
 
 fn check_chunk_index(envelope: &OwnedSessionEnvelope, expected: u64) -> Result<(), AssembleError> {
     let found = envelope.header().chunk_index();
@@ -497,5 +651,80 @@ mod tests {
             OwnedSnapshot::from_envelopes(reindexed(extra)),
             Err(AssembleError::AfterEnd { chunk_index: 7 })
         );
+    }
+}
+
+#[cfg(test)]
+mod append_tests {
+    use alloc::vec::Vec;
+
+    use footfall_core::{Backend as _, ContextHandle, MarkerKind, MarkerPhase};
+    use footfall_runtime::Runtime;
+
+    use super::{AppendError, OwnedSnapshot};
+    use crate::Chunking;
+
+    fn mark(runtime: &Runtime) {
+        runtime.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, ContextHandle::ROOT);
+    }
+
+    #[test]
+    fn consecutive_windows_append_into_one_view() {
+        let runtime = Runtime::builder().event_capacity(2).build();
+        mark(&runtime);
+        let first = runtime.snapshot();
+        mark(&runtime);
+        let second = runtime.snapshot_since(first.next_cursor());
+        // Three more evict one event the next read never sees.
+        mark(&runtime);
+        mark(&runtime);
+        mark(&runtime);
+        let third = runtime.snapshot_since(second.next_cursor());
+
+        let mut joined = OwnedSnapshot::from(&first);
+        joined
+            .append(OwnedSnapshot::from(&second))
+            .expect("same instance");
+        joined
+            .append(OwnedSnapshot::from(&third))
+            .expect("same instance");
+        let sequences: Vec<_> = joined
+            .events()
+            .iter()
+            .map(|event| event.sequence())
+            .collect();
+        assert_eq!(sequences, [0, 1, 3, 4]);
+        assert_eq!(joined.window().since(), 0);
+        assert_eq!(joined.window().next(), 5);
+        assert_eq!(joined.window().missed(), 1);
+        assert_eq!(joined.next_cursor(), third.next_cursor());
+
+        // The joined snapshot still forms a valid publication.
+        let republished = OwnedSnapshot::from_envelopes(joined.to_envelopes(Chunking::default()))
+            .expect("valid publication");
+        assert_eq!(republished, joined);
+    }
+
+    #[test]
+    fn snapshots_from_other_instances_or_earlier_windows_are_refused() {
+        let runtime = Runtime::default();
+        mark(&runtime);
+        let mut later = OwnedSnapshot::from(runtime.snapshot());
+        let earlier = OwnedSnapshot::from(&Runtime::default().snapshot());
+        assert!(matches!(
+            later.clone().append(earlier),
+            Err(AppendError::OtherInstance { .. })
+        ));
+
+        let before = OwnedSnapshot::from(runtime.snapshot());
+        mark(&runtime);
+        later = OwnedSnapshot::from(runtime.snapshot());
+        assert!(matches!(
+            later.append(before),
+            Err(AppendError::Earlier {
+                next: 2,
+                later_next: 1
+            })
+        ));
     }
 }
