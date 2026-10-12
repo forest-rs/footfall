@@ -492,6 +492,19 @@ pub enum OwnedLabelValue {
     String(String),
 }
 
+impl core::fmt::Display for OwnedLabelValue {
+    /// Writes the value as a context label shows it: numbers and booleans
+    /// as is, strings quoted.
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Unsigned(value) => write!(formatter, "{value}"),
+            Self::Signed(value) => write!(formatter, "{value}"),
+            Self::Bool(value) => write!(formatter, "{value}"),
+            Self::String(value) => write!(formatter, "{value:?}"),
+        }
+    }
+}
+
 /// Owned per-instance argument suitable for transport.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedArgEntry {

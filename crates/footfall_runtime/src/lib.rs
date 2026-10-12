@@ -22,6 +22,9 @@ use std::{
 
 const DEFAULT_SHARD_COUNT: usize = 16;
 
+/// The runtime installed with [`Runtime::install_global`].
+static GLOBAL_RUNTIME: std::sync::OnceLock<&'static Runtime> = std::sync::OnceLock::new();
+
 /// Maximum retained message text length in bytes.
 ///
 /// Longer texts are truncated on a UTF-8 boundary before retention so one
@@ -244,9 +247,17 @@ impl Runtime {
     pub fn install_global(self) -> Result<&'static Self, InstallBackendError> {
         let runtime: &'static Self = Box::leak(Box::new(self));
         install_backend(runtime)?;
+        let _ = GLOBAL_RUNTIME.set(runtime);
         runtime.drives_max_level.store(true, Ordering::Relaxed);
         set_max_level(runtime.level());
         Ok(runtime)
+    }
+
+    /// Returns the runtime installed with [`install_global`](Self::install_global),
+    /// if any, for code that needs to read it but did not install it.
+    #[must_use]
+    pub fn global() -> Option<&'static Self> {
+        GLOBAL_RUNTIME.get().copied()
     }
 
     /// Returns the random id that distinguishes this runtime from every
@@ -372,6 +383,10 @@ impl Runtime {
     }
 
     fn now_micros(&self) -> u64 {
+        // A thread's first emission registers the thread, which takes a lock
+        // and copies its name; do it before reading the clock, so the first
+        // scope a thread records is not inflated by that setup.
+        let _ = current_thread_id();
         duration_to_micros(self.created_at.elapsed())
     }
 
@@ -716,6 +731,18 @@ impl Runtime {
     /// record it. When the capacity is reached, keys of retired contexts
     /// make room first.
     fn admit_key(&self, key: AdmittedKey) -> bool {
+        // A handle the runtime does not know is reported under the root
+        // context, so it takes the root context's key, not one of its own.
+        let key = if self
+            .contexts
+            .lock()
+            .expect("runtime context mutex should not be poisoned")
+            .knows(key.context_id())
+        {
+            key
+        } else {
+            key.at_root()
+        };
         {
             let mut admitted = self
                 .admitted_keys
@@ -1287,8 +1314,13 @@ impl Drops {
     }
 
     /// Returns the number of context registrations refused because the
-    /// context table was full of live contexts. Raise
+    /// context table was full. Raise
     /// [`context_capacity`](RuntimeBuilder::context_capacity).
+    ///
+    /// The table holds released contexts too, until every event recorded
+    /// before their release has been evicted, so it can be full with few
+    /// live contexts; [`ContextSnapshot::is_released`] shows which rows are
+    /// released. A smaller event buffer retires them sooner.
     #[must_use]
     pub const fn refused_contexts(&self) -> u64 {
         self.refused_contexts
@@ -2259,6 +2291,11 @@ impl ContextTable {
         }
     }
 
+    /// Returns `true` for the root context and every context in the table.
+    fn knows(&self, context_id: ContextId) -> bool {
+        context_id.get() == 0 || self.entries.contains_key(&context_id.get())
+    }
+
     fn is_full(&self) -> bool {
         self.entries.len() >= self.capacity
     }
@@ -2409,6 +2446,20 @@ impl AdmittedKey {
         match self {
             Self::Counter(key) => key.context_id,
             Self::Histogram(key) => key.context_id,
+        }
+    }
+
+    const fn at_root(self) -> Self {
+        let root = ContextId::new(0);
+        match self {
+            Self::Counter(key) => Self::Counter(CounterKey {
+                context_id: root,
+                ..key
+            }),
+            Self::Histogram(key) => Self::Histogram(HistogramKey {
+                context_id: root,
+                ..key
+            }),
         }
     }
 }
@@ -3082,6 +3133,22 @@ mod tests {
                 .context(owner.id())
                 .is_some_and(super::ContextSnapshot::is_released)
         );
+    }
+
+    #[test]
+    fn unknown_handles_share_the_root_counter_key() {
+        let runtime = test_runtime(1, 4);
+        static OPS: CounterDesc = CounterDesc::count("ops");
+        // Handles the runtime never registered all report under the root
+        // context, so they take its one key rather than one each.
+        for handle in 100..110 {
+            runtime.counter_add_at(&OPS, ContextHandle::new(handle), 1, 1);
+        }
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.drops.counter_updates(), 0);
+        assert_eq!(snapshot.counters.len(), 1);
+        assert_eq!(snapshot.counters[0].context_id, ContextId::new(0));
+        assert_eq!(snapshot.counters[0].value, 10);
     }
 
     #[test]

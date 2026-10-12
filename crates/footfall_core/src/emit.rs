@@ -311,9 +311,20 @@ impl Backend for NoopBackend {}
 
 /// Returned when a backend is already installed.
 #[cfg(feature = "std")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct InstallBackendError;
+
+#[cfg(feature = "std")]
+impl core::fmt::Debug for InstallBackendError {
+    // `expect` prints the Debug form, so it carries the message too.
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_tuple("InstallBackendError")
+            .field(&format_args!("{self}"))
+            .finish()
+    }
+}
 
 #[cfg(feature = "std")]
 impl core::fmt::Display for InstallBackendError {
@@ -385,8 +396,8 @@ pub fn scope_end(token: ScopeToken) {
 /// Begins a scope and returns a guard that ends it on drop.
 ///
 /// Bind the guard to a named variable, such as `_scope`: `let _ = scope(..)`
-/// drops it at once and records an empty scope.
-#[must_use = "the scope lasts as long as this guard: bind it with `let _scope = ...`; `let _ = ...` ends the scope at once"]
+/// drops it at once and records an empty scope. [`scope!`](crate::scope!)
+/// binds it for you.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
 pub fn scope(desc: &'static ScopeDesc, context: ContextHandle) -> ScopeGuard {
@@ -396,7 +407,6 @@ pub fn scope(desc: &'static ScopeDesc, context: ContextHandle) -> ScopeGuard {
 /// Begins a guarded scope carrying per-instance arguments.
 ///
 /// Bind the guard to a named variable; see [`scope`].
-#[must_use = "the scope lasts as long as this guard: bind it with `let _scope = ...`; `let _ = ...` ends the scope at once"]
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
 pub fn scope_with(desc: &'static ScopeDesc, context: ContextHandle, args: &Args) -> ScopeGuard {

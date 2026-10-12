@@ -132,6 +132,7 @@ static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 #[must_use = "dropping a RegisteredContext immediately releases its handle"]
 pub struct RegisteredContext {
     handle: ContextHandle,
+    context: Context,
 }
 
 impl RegisteredContext {
@@ -139,7 +140,15 @@ impl RegisteredContext {
     pub fn new(context: &Context) -> Self {
         Self {
             handle: register_context(context),
+            context: *context,
         }
+    }
+
+    /// Returns the registered context, for building a child context that
+    /// extends its labels.
+    #[must_use]
+    pub const fn context(&self) -> &Context {
+        &self.context
     }
 
     /// Returns the handle to emit with.

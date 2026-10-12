@@ -41,8 +41,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use footfall_core::{ContextId, CounterDescId, MarkerKind, MarkerPhase, ScopeToken, Unit};
 use footfall_runtime::CounterKind;
-use footfall_session::OwnedObservation;
-pub use footfall_session::{OwnedArgEntry, OwnedLabelValue, OwnedSnapshot};
+pub use footfall_session::{OwnedArgEntry, OwnedLabelValue, OwnedObservation, OwnedSnapshot};
 
 /// One scope that began and ended within a snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -499,6 +498,22 @@ impl Frame {
     #[must_use]
     pub fn counters(&self) -> &[FrameCounter] {
         &self.counters
+    }
+
+    /// Returns how much the counter named `name` grew during the frame,
+    /// summed over every context it was recorded under, or `None` when the
+    /// frame did not update it or a change is unknown; see
+    /// [`FrameCounter::change`].
+    #[must_use]
+    pub fn total_change(&self, name: &str) -> Option<u64> {
+        let mut changes = self
+            .counters
+            .iter()
+            .filter(|counter| counter.name == name)
+            .map(FrameCounter::change)
+            .peekable();
+        changes.peek()?;
+        changes.try_fold(0_u64, |total, change| Some(total.saturating_add(change?)))
     }
 
     /// Returns the counter or gauge named `name` under the context
