@@ -214,6 +214,23 @@ draw counts need no context per frame. Samples also plot as a time series
 for each counter in the Chrome export. Turn them off with
 `RuntimeBuilder::counter_samples(false)`.
 
+When the program has its own frame numbers, such as a frame scheduler's
+frame index, mark frames with `frame_begin_numbered` and
+`frame_end_numbered`. A numbered end closes the begin with the same number,
+so frames that overlap, with one being encoded while the previous one is
+still in flight, pair correctly, and analysis finds a frame by its number
+with `Trace::frame_numbered`.
+
+```rust
+use footfall::ContextHandle;
+
+for frame_index in 0..3_u64 {
+    footfall::frame_begin_numbered(frame_index, ContextHandle::ROOT);
+    // ... build and submit the frame ...
+    footfall::frame_end_numbered(frame_index, ContextHandle::ROOT);
+}
+```
+
 ## What Lives Where
 
 Call sites should stay in subsystem code:

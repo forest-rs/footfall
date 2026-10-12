@@ -93,6 +93,13 @@
 //! groups by. The runtime records every counter's value at each frame end, so
 //! analysis can report how much each counter changed per frame.
 //!
+//! When the program numbers its frames itself, such as a frame scheduler's
+//! frame index, [`frame_begin_numbered`]/[`frame_end_numbered`] (or
+//! [`numbered_marker`] for passes and transactions) carry the number. A
+//! numbered end closes the begin with its number even when several frames
+//! are in flight, and observations made later about the frame can find it
+//! by that number.
+//!
 //! # Levels
 //!
 //! An [`InstrumentationLevel`] chooses how much is collected: `Off`,

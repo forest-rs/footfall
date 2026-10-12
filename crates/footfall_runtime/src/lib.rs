@@ -708,6 +708,33 @@ impl Runtime {
         });
     }
 
+    /// Records a frame, transaction, or pass marker, and at a frame end, the
+    /// counters the frame updated.
+    fn marker(
+        &self,
+        kind: MarkerKind,
+        phase: MarkerPhase,
+        number: Option<u64>,
+        context: ContextHandle,
+    ) {
+        if !self.level().captures_markers() {
+            return;
+        }
+        let at_nanos = self.now_nanos();
+        self.push_event_at(
+            Observation::FrameMarker {
+                kind,
+                phase,
+                number,
+                context_id: context.id(),
+            },
+            at_nanos,
+        );
+        if self.counter_samples && kind == MarkerKind::Frame && phase == MarkerPhase::End {
+            self.sample_counters(at_nanos);
+        }
+    }
+
     /// Records a sample of every counter and gauge updated since the previous
     /// frame end, with its value merged across threads.
     fn sample_counters(&self, at_nanos: u64) {
@@ -2177,6 +2204,8 @@ pub enum Observation {
         kind: MarkerKind,
         /// Marker phase.
         phase: MarkerPhase,
+        /// The program's own number for the unit of work, when it gave one.
+        number: Option<u64>,
         /// Canonical semantic context id.
         context_id: ContextId,
     },
@@ -2717,22 +2746,17 @@ impl Backend for Runtime {
     }
 
     fn frame_marker(&self, kind: MarkerKind, phase: MarkerPhase, context: ContextHandle) {
-        if !self.level().captures_markers() {
-            return;
-        }
-        let at_nanos = self.now_nanos();
-        let context_id = context.id();
-        self.push_event_at(
-            Observation::FrameMarker {
-                kind,
-                phase,
-                context_id,
-            },
-            at_nanos,
-        );
-        if self.counter_samples && kind == MarkerKind::Frame && phase == MarkerPhase::End {
-            self.sample_counters(at_nanos);
-        }
+        self.marker(kind, phase, None, context);
+    }
+
+    fn numbered_marker(
+        &self,
+        kind: MarkerKind,
+        phase: MarkerPhase,
+        number: u64,
+        context: ContextHandle,
+    ) {
+        self.marker(kind, phase, Some(number), context);
     }
 
     fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: ContextHandle) {
@@ -3081,6 +3105,7 @@ mod tests {
                             Observation::FrameMarker {
                                 kind: MarkerKind::Frame,
                                 phase: MarkerPhase::Begin,
+                                number: None,
                                 context_id,
                             },
                             event,
@@ -3138,6 +3163,7 @@ mod tests {
         let marker = |context_id| Observation::FrameMarker {
             kind: MarkerKind::Frame,
             phase: MarkerPhase::Begin,
+            number: None,
             context_id,
         };
         let live = register(&runtime, &Context::root().with(&PASS, 1_u32));
@@ -3179,6 +3205,7 @@ mod tests {
         let marker = |context_id| Observation::FrameMarker {
             kind: MarkerKind::Frame,
             phase: MarkerPhase::Begin,
+            number: None,
             context_id,
         };
         let owner = register(&runtime, &Context::root().with(&PASS, 1_u32));
@@ -3301,6 +3328,7 @@ mod tests {
                         Observation::FrameMarker {
                             kind: MarkerKind::Frame,
                             phase: MarkerPhase::Begin,
+                            number: None,
                             context_id,
                         },
                         1,
@@ -3353,6 +3381,7 @@ mod tests {
             Observation::FrameMarker {
                 kind: MarkerKind::Frame,
                 phase: MarkerPhase::Begin,
+                number: None,
                 context_id,
             },
             15,
@@ -3537,6 +3566,7 @@ mod tests {
         let marker = |phase| Observation::FrameMarker {
             kind: MarkerKind::Frame,
             phase,
+            number: None,
             context_id: ContextId::new(0),
         };
         runtime.push_event_at(marker(MarkerPhase::Begin), 1);
@@ -3557,6 +3587,7 @@ mod tests {
         let marker = Observation::FrameMarker {
             kind: MarkerKind::Frame,
             phase: MarkerPhase::Begin,
+            number: None,
             context_id: ContextId::new(0),
         };
         runtime.push_event_at(marker.clone(), 1);
@@ -3576,6 +3607,7 @@ mod tests {
         let marker = Observation::FrameMarker {
             kind: MarkerKind::Frame,
             phase: MarkerPhase::Begin,
+            number: None,
             context_id: ContextId::new(0),
         };
         let start = runtime.cursor();
@@ -3662,6 +3694,37 @@ mod tests {
     }
 
     #[test]
+    fn numbered_markers_keep_their_number_and_sample_counters() {
+        static UPLOADS: CounterDesc = CounterDesc::bytes("uploads");
+        let runtime = Runtime::default();
+        runtime.numbered_marker(
+            MarkerKind::Frame,
+            MarkerPhase::Begin,
+            41,
+            ContextHandle::ROOT,
+        );
+        runtime.counter_add(&UPLOADS, ContextHandle::ROOT, 10);
+        runtime.numbered_marker(MarkerKind::Frame, MarkerPhase::End, 41, ContextHandle::ROOT);
+        let snapshot = runtime.snapshot();
+        let numbers: Vec<_> = snapshot
+            .events
+            .iter()
+            .filter_map(|event| match event.observation {
+                Observation::FrameMarker { number, .. } => Some(number),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(numbers, [Some(41), Some(41)]);
+        assert!(
+            snapshot
+                .events
+                .iter()
+                .any(|event| matches!(event.observation, Observation::CounterSample { .. })),
+            "a numbered frame end samples counters like any frame end"
+        );
+    }
+
+    #[test]
     fn runtimes_get_distinct_instance_ids() {
         let first = Runtime::default();
         let second = Runtime::default();
@@ -3682,6 +3745,7 @@ mod tests {
                         Observation::FrameMarker {
                             kind: MarkerKind::Frame,
                             phase: MarkerPhase::Begin,
+                            number: None,
                             context_id: ContextId::new(0),
                         },
                         1,

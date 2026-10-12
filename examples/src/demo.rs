@@ -12,13 +12,14 @@
 //!
 //! The instrumentation follows the guide: descriptors are `static`, each
 //! long-lived owner (the window, each pass, the glyph cache, each worker)
-//! registers its context once, frames are marked with `frame_begin` and
-//! `frame_end`, and the work runs under the owner's handle.
+//! registers its context once, frames are marked with `frame_begin_numbered`
+//! and `frame_end_numbered`, and the work runs under the owner's handle.
 
 use footfall::{
     CounterDesc, EventDesc, FlowId, LabelKey, RegisteredContext, ResourceId, ResourceKindDesc,
-    ScopeDesc, args, context, counter_add, flow_begin, flow_end, flow_step, frame_begin, frame_end,
-    gauge_set, histogram_record, message_with, resource_create, resource_drop, resource_update,
+    ScopeDesc, args, context, counter_add, flow_begin, flow_end, flow_step, frame_begin_numbered,
+    frame_end_numbered, gauge_set, histogram_record, message_with, resource_create, resource_drop,
+    resource_update,
 };
 use footfall_memory::{CacheMetrics, CacheStats};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -139,7 +140,9 @@ impl Renderer {
     pub fn frame(&mut self) {
         self.frame += 1;
         let window = self.window.handle();
-        frame_begin(window);
+        // The renderer's own frame number, so later observations of this
+        // frame, such as when it was shown, can find it.
+        frame_begin_numbered(self.frame, window);
         {
             footfall::scope!(&FRAME, window);
             {
@@ -155,7 +158,7 @@ impl Renderer {
                 sleep(self.rng.micros(400, 900));
             }
         }
-        frame_end(window);
+        frame_end_numbered(self.frame, window);
     }
 
     /// Lays out the window. Every few hundred frames a font change

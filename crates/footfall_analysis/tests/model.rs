@@ -143,12 +143,17 @@ impl Recording {
     }
 
     fn marker(&mut self, at: u64, phase: MarkerPhase) -> u64 {
+        self.numbered_marker(at, phase, None)
+    }
+
+    fn numbered_marker(&mut self, at: u64, phase: MarkerPhase, number: Option<u64>) -> u64 {
         self.record(
             at,
             MAIN,
             Observation::FrameMarker {
                 kind: MarkerKind::Frame,
                 phase,
+                number,
                 context_id: ContextId::new(0),
             },
         )
@@ -253,6 +258,27 @@ fn spans_nest_and_keep_their_identity() {
     assert_eq!(frame.id(), FrameId::new(frame_begin));
     assert_eq!(frame.duration(), us(100));
     assert!(trace.frame_at(us(150)).is_none());
+}
+
+#[test]
+fn numbered_frames_pair_by_number_and_can_be_found_by_it() {
+    let mut recording = Recording::new(7);
+    // Two frames in flight at once, ending in the order they began: an
+    // unnumbered end would close the later begin.
+    let first = recording.numbered_marker(0, MarkerPhase::Begin, Some(1234));
+    let second = recording.numbered_marker(10, MarkerPhase::Begin, Some(1235));
+    recording.numbered_marker(20, MarkerPhase::End, Some(1234));
+    recording.numbered_marker(30, MarkerPhase::End, Some(1235));
+    let trace = Trace::from_snapshot(&recording.snapshot(40));
+
+    let frame = trace.frame_numbered(1234).expect("frame 1234 completed");
+    assert_eq!(frame.id(), FrameId::new(first));
+    assert_eq!(frame.number(), Some(1234));
+    assert_eq!(frame.range(), range(0, 20));
+    let later = trace.frame_numbered(1235).expect("frame 1235 completed");
+    assert_eq!(later.id(), FrameId::new(second));
+    assert_eq!(later.range(), range(10, 30));
+    assert!(trace.frame_numbered(1236).is_none());
 }
 
 #[test]

@@ -45,6 +45,7 @@ fn demo_snapshot() -> Snapshot {
             Observation::FrameMarker {
                 kind: MarkerKind::Frame,
                 phase: MarkerPhase::Begin,
+                number: None,
                 context_id: ContextId::new(1),
             },
         ))

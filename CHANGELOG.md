@@ -15,6 +15,8 @@ The first release.
 - Scopes, counters, gauges, histograms, frame, pass, and transaction
   markers, causal flows, messages, and resource lifecycles, each named by a
   `static` descriptor and attributed to a registered semantic context.
+- Markers can carry the program's own frame number, so overlapping frames
+  pair correctly and later observations can find a frame by number.
 - `scope!` for a scope that lasts to the end of the block; `context!` and
   `args!` for labels and per-instance arguments.
 - Instrumentation levels, and `--cfg footfall_compile_out` to compile every

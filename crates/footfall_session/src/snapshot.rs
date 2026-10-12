@@ -1013,6 +1013,8 @@ pub enum OwnedObservation {
         kind: MarkerKind,
         /// Marker phase.
         phase: MarkerPhase,
+        /// The program's own number for the unit of work, when it gave one.
+        number: Option<u64>,
         /// Canonical semantic context id.
         context_id: ContextId,
     },
@@ -1558,10 +1560,12 @@ fn owned_observation(observation: &Observation) -> Option<OwnedObservation> {
         Observation::FrameMarker {
             kind,
             phase,
+            number,
             context_id,
         } => OwnedObservation::FrameMarker {
             kind: *kind,
             phase: *phase,
+            number: *number,
             context_id: *context_id,
         },
         Observation::Flow {

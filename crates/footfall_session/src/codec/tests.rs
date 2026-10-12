@@ -375,6 +375,45 @@ fn codec_round_trips_owned_session_envelopes() {
     ));
 }
 
+/// Markers carry the program's number as a `u64` one greater than it, or
+/// `0` without one.
+#[test]
+fn markers_match_their_golden_fixture() {
+    let marker = |at, sequence, phase, number| {
+        OwnedTimedObservation::new(
+            at,
+            sequence,
+            1,
+            OwnedObservation::FrameMarker {
+                kind: MarkerKind::Frame,
+                phase,
+                number,
+                context_id: ContextId::new(0),
+            },
+        )
+    };
+    let envelope = OwnedSessionEnvelope::new(
+        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+        OwnedSessionPayload::Events(vec![
+            marker(0, 0, MarkerPhase::Begin, None),
+            marker(5, 1, MarkerPhase::End, Some(41)),
+        ]),
+    );
+    let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
+    // Header, events tag and count; then per row: time and sequence
+    // deltas, thread, tag `05`, kind, phase, number, context.
+    assert_eq!(
+        to_hex(&encoded),
+        "01000000000602\
+         0000010500000000\
+         0a02010500012a00"
+    );
+    assert_eq!(
+        decode_envelope(&encoded).expect("decoding should succeed"),
+        envelope
+    );
+}
+
 #[test]
 fn cursor_detects_trailing_bytes() {
     let envelope = OwnedSessionEnvelope::new(
@@ -386,6 +425,7 @@ fn cursor_detects_trailing_bytes() {
             OwnedObservation::FrameMarker {
                 kind: MarkerKind::Frame,
                 phase: MarkerPhase::Begin,
+                number: None,
                 context_id: ContextId::new(0),
             },
         )]),

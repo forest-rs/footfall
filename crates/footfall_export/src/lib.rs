@@ -637,6 +637,7 @@ fn build_timed_observation(
         OwnedObservation::FrameMarker {
             kind,
             phase,
+            number,
             context_id,
         } => {
             let context = snapshot
@@ -656,6 +657,10 @@ fn build_timed_observation(
             json.push(',');
             write_json_field_u64(&mut json, "tid", event.thread_id())?;
             json.push_str(",\"args\":{");
+            if let Some(number) = number {
+                write_json_field_u64(&mut json, "number", *number)?;
+                json.push(',');
+            }
             write_json_field_u64(&mut json, "context_id", context_id.get())?;
             json.push_str(",\"context\":");
             write_context(&mut json, context)?;
@@ -1007,6 +1012,7 @@ mod tests {
                 Observation::FrameMarker {
                     kind: MarkerKind::Frame,
                     phase: MarkerPhase::Begin,
+                    number: Some(1234),
                     context_id: ContextId::new(1),
                 },
             ))
@@ -1033,6 +1039,7 @@ mod tests {
         assert!(json.contains("\"process_labels\""));
         assert!(json.contains("frame=7 / pass=1"));
         assert!(json.contains("\"tid\":3"));
+        assert!(json.contains("\"args\":{\"number\":1234,"), "{json}");
         assert!(json.contains("\"name\":\"render\""));
         assert!(json.contains("\"instance_id\":\"0000000000000abc\""));
         assert!(json.contains("\"window_next\":9,\"window_missed\":1"));
