@@ -12,7 +12,7 @@ members = [
     "crates/footfall_session_wtransport",
     "crates/footfall_tracing",
     "crates/footfall_tracy",
-    "examples/basic",
+    "examples",
 ]
 resolver = "2"
 

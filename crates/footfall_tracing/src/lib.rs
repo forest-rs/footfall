@@ -26,6 +26,23 @@
 //! Give spans the fields you group by, or wrap the call in a footfall scope
 //! under the context you want.
 //!
+//! The layer forwards every span and event it sees, including those of
+//! dependencies. Filter it to the targets you care about with the usual
+//! `tracing_subscriber` filters. This matters most in a process that also
+//! serves its capture with `footfall_session_wtransport`: the QUIC stack
+//! traces every packet it sends, so an unfiltered layer records the work of
+//! serving the capture into the capture itself.
+//!
+//! ```no_run
+//! use tracing_subscriber::{Layer as _, filter::{LevelFilter, Targets}, layer::SubscriberExt as _};
+//!
+//! let own_spans = Targets::new().with_target("my_app", LevelFilter::TRACE);
+//! let subscriber = tracing_subscriber::registry()
+//!     .with(footfall_tracing::FootfallLayer::new().with_filter(own_spans));
+//! tracing::subscriber::set_global_default(subscriber)
+//!     .expect("subscriber should install once");
+//! ```
+//!
 //! Descriptors are interned per callsite. `tracing` callsite metadata is
 //! `&'static`, so descriptor names and source locations come straight from
 //! the callsite. Each layer leaks one descriptor per callsite it sees, so

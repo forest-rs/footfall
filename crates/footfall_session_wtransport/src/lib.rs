@@ -57,6 +57,11 @@
 //! them to serve something other than a runtime, or to control every
 //! connection.
 //!
+//! Serving runs on QUIC, whose implementation traces every packet with
+//! `tracing`. A process that forwards `tracing` into Footfall with
+//! `footfall_tracing` should filter that layer to its own targets, or the
+//! capture fills with the work of serving it.
+//!
 //! The byte-level encoding is documented in the [wire format].
 //!
 //! [wire format]: https://github.com/forest-rs/footfall/blob/main/docs/session-wire-format.md

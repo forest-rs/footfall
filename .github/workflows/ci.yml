@@ -34,19 +34,19 @@ env:
     --exclude footfall_session_wtransport
     --exclude footfall_tracing
     --exclude footfall_tracy
-    --exclude basic
+    --exclude footfall_examples
   # List of packages that don't support wasip1
   RUST_NO_WASIP1_PKGS: >-
     --exclude footfall_benchmarks
     --exclude footfall_session_wtransport
     --exclude footfall_tracy
-    --exclude basic
+    --exclude footfall_examples
   # List of packages that don't support wasm32
   RUST_NO_WASM_PKGS: >-
     --exclude footfall_benchmarks
     --exclude footfall_session_wtransport
     --exclude footfall_tracy
-    --exclude basic
+    --exclude footfall_examples
   # List of features that depend on the standard library and will be excluded from no_std checks.
   FEATURES_DEPENDING_ON_STD: "std,default,runtime,export,session,analysis,wtransport,tracing,tracy"
 

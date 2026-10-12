@@ -2,3 +2,7 @@
 .tickets
 
 AGENTS.md
+
+# Output of the examples
+/footfall-*.json
+*.ffcap

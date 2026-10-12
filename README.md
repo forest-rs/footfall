@@ -23,7 +23,7 @@ The crates:
   live or from capture files
 
 The workspace also holds `footfall_benchmarks`, the Criterion benchmarks for
-emission overhead, and `examples/basic`, which keeps example dev-dependencies
+emission overhead, and `examples`, which keeps example dependencies
 out of the published crates.
 
 ## External Use
@@ -50,20 +50,11 @@ The local attach workflow is:
 3. a consumer finds every local producer with `SessionClient::local_servers`,
    then discovers, fetches, or subscribes to their sessions
 
-The examples show that flow directly:
+The [examples](examples/README.md) show that flow directly:
 
-- `cargo run -p basic --bin session_wtransport` for a one-process
-  serve/discover/fetch round trip
-- `cargo run -p basic --bin session_server`, which records a frame every
-  100 ms until Ctrl-C
-- `cargo run -p basic --bin session_consumer -- --list`, `-- <session-id>`,
-  `-- --watch <session-id>`, or `-- --record capture.ffcap <session-id>`
-  against it
-- `cargo run -p basic --bin capture_export -- capture.ffcap > trace.json` to
-  turn a recording into one Chrome trace
-
-The session examples include direct Footfall instrumentation plus `tracing`
-spans/events bridged through `footfall_tracing`. For a compact Chrome Trace JSON
-view of just the tracing bridge:
-
-- `cargo run -p basic --bin tracing_demo > /tmp/footfall-tracing.json`
+- `cargo run -p footfall_examples --bin demo_app` serves a fake renderer until
+  Ctrl-C
+- `cargo run -p footfall_examples --bin footfall_top` watches it live
+- `cargo run -p footfall_examples --bin footfall_capture -- record demo.ffcap`
+  records it, and `-- export demo.ffcap` turns the recording into a Chrome
+  trace
