@@ -30,8 +30,8 @@ use crate::{
     CaptureSettings, Drops, Envelope, EnvelopeHeader, EventWindow, OwnedArgEntry,
     OwnedContextEntry, OwnedContextSnapshot, OwnedCounterSnapshot, OwnedHistogramSnapshot,
     OwnedLabelValue, OwnedObservation, OwnedSessionEnvelope, OwnedSessionPayload,
-    OwnedSnapshotSummary, OwnedTimedObservation, PROTOCOL_VERSION, Payload, ProtocolVersion,
-    RowCounts, SnapshotKind, SnapshotMetadata, ThreadSnapshot,
+    OwnedSnapshotSummary, OwnedSourceLocation, OwnedTimedObservation, PROTOCOL_VERSION, Payload,
+    ProtocolVersion, RowCounts, SnapshotKind, SnapshotMetadata, ThreadSnapshot,
 };
 
 /// Maximum UTF-8 string payload accepted by the codec.
@@ -743,12 +743,18 @@ pub(crate) fn encode_borrowed_observation(
         footfall_runtime::Observation::ScopeBegin {
             desc_id,
             name,
+            location,
             context_id,
             token,
             args,
         } => {
             encode_u8(bytes, 0);
-            names.encode(bytes, desc_id.get(), name)?;
+            names.encode_located(
+                bytes,
+                desc_id.get(),
+                name,
+                location.map(|location| (location.function(), location.file(), location.line())),
+            )?;
             encode_u64(bytes, context_id.get());
             encode_u64(bytes, token.get());
             encode_borrowed_args(bytes, *args)?;
@@ -957,12 +963,20 @@ pub(crate) fn encode_observation(
         OwnedObservation::ScopeBegin {
             desc_id,
             name,
+            location,
             context_id,
             token,
             args,
         } => {
             encode_u8(bytes, 0);
-            names.encode(bytes, desc_id.get(), name)?;
+            names.encode_located(
+                bytes,
+                desc_id.get(),
+                name,
+                location
+                    .as_ref()
+                    .map(|location| (location.function(), location.file(), location.line())),
+            )?;
             encode_u64(bytes, context_id.get());
             encode_u64(bytes, token.get());
             encode_args(bytes, args)?;
@@ -1069,13 +1083,18 @@ pub(crate) fn decode_observation(
     names: &mut NameReader,
 ) -> io::Result<OwnedObservation> {
     match decode_u8(cursor)? {
-        0 => Ok(OwnedObservation::ScopeBegin {
-            desc_id: ScopeDescId::new(names.id(cursor)?),
-            name: names.name(cursor)?,
-            context_id: ContextId::new(decode_u64(cursor)?),
-            token: ScopeToken::new(decode_u64(cursor)?),
-            args: decode_args(cursor)?,
-        }),
+        0 => {
+            let desc_id = ScopeDescId::new(names.id(cursor)?);
+            let (name, location) = names.located_name(cursor)?;
+            Ok(OwnedObservation::ScopeBegin {
+                desc_id,
+                name,
+                location,
+                context_id: ContextId::new(decode_u64(cursor)?),
+                token: ScopeToken::new(decode_u64(cursor)?),
+                args: decode_args(cursor)?,
+            })
+        }
         1 => Ok(OwnedObservation::ScopeEnd {
             token: ScopeToken::new(decode_u64(cursor)?),
         }),
@@ -1458,7 +1477,8 @@ pub(crate) fn decode_delta(cursor: &mut Cursor<'_>, previous: u64) -> io::Result
 ///
 /// A row that names a descriptor writes its id, then its name only the first
 /// time that id appears in the payload; ids are unique across descriptor
-/// kinds, so one set covers scopes, events, counters, and resource kinds.
+/// kinds, so one set covers scopes, events, counters, and resource kinds. A
+/// scope's source location travels with its name, once per payload too.
 #[derive(Debug, Default)]
 pub(crate) struct NameWriter(HashSet<u64>);
 
@@ -1470,14 +1490,41 @@ impl NameWriter {
         }
         Ok(())
     }
+
+    /// Writes a scope descriptor's id, then its name and its function,
+    /// file, and line only the first time the id appears in the payload.
+    pub(crate) fn encode_located(
+        &mut self,
+        bytes: &mut Vec<u8>,
+        id: u64,
+        name: &str,
+        location: Option<(&str, &str, u32)>,
+    ) -> io::Result<()> {
+        encode_u64(bytes, id);
+        if self.0.insert(id) {
+            encode_string(bytes, name)?;
+            match location {
+                None => encode_u8(bytes, 0),
+                Some((function, file, line)) => {
+                    encode_u8(bytes, 1);
+                    encode_string(bytes, function)?;
+                    encode_string(bytes, file)?;
+                    encode_u32(bytes, line);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Descriptor names already read in the payload being decoded; see
 /// [`NameWriter`]. Read the id with [`id`](Self::id), then its name with
-/// [`name`](Self::name).
+/// [`name`](Self::name), or a scope's name and location with
+/// [`located_name`](Self::located_name).
 #[derive(Debug, Default)]
 pub(crate) struct NameReader {
     names: HashMap<u64, String>,
+    locations: HashMap<u64, OwnedSourceLocation>,
     last_id: u64,
 }
 
@@ -1494,6 +1541,28 @@ impl NameReader {
         let name = decode_string(cursor)?;
         self.names.insert(self.last_id, name.clone());
         Ok(name)
+    }
+
+    /// Reads a scope descriptor's name and location, or reuses those read
+    /// with its first row. Copies of one location share its text.
+    pub(crate) fn located_name(
+        &mut self,
+        cursor: &mut Cursor<'_>,
+    ) -> io::Result<(String, Option<OwnedSourceLocation>)> {
+        if let Some(name) = self.names.get(&self.last_id) {
+            return Ok((name.clone(), self.locations.get(&self.last_id).cloned()));
+        }
+        let name = self.name(cursor)?;
+        if !decode_bool(cursor, "source location tag")? {
+            return Ok((name, None));
+        }
+        let location = OwnedSourceLocation::new(
+            decode_string(cursor)?,
+            decode_string(cursor)?,
+            decode_u32(cursor)?,
+        );
+        self.locations.insert(self.last_id, location.clone());
+        Ok((name, Some(location)))
     }
 }
 

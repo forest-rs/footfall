@@ -177,7 +177,7 @@ impl TracyBackend {
     ) -> ScopeToken {
         let token = self.next_scope_token();
         let span = if let Some(location) = desc.location() {
-            let location = self.cached_span_location(desc, location);
+            let location = self.cached_span_location(desc, *location);
             self.client.clone().span(location, self.callstack_depth)
         } else {
             // Without a source location there is no meaningful line; Tracy

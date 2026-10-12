@@ -19,7 +19,7 @@
 //!   worst spans, each with a [`SpanId`] that names it in every snapshot and
 //!   capture of the instance, and [`Trace::parent`], [`Trace::children`],
 //!   [`Trace::frame_at`], and [`Trace::flows_through`] lead from one to the
-//!   work around it.
+//!   work around it, and [`Span::location`] to its code.
 //! - **What changed?** A [`Comparison`] of two [`Population`]s, such as slow
 //!   frames against the rest, or one run against another, splits each
 //!   group's change into more spans and slower spans.
@@ -83,4 +83,6 @@ pub use span::{OpenSpan, Span, SpanId, Track, Zone};
 pub use time::{Selection, TimeRange};
 pub use trace::{Continuity, PushError, Pushed, Trace};
 
-pub use footfall_session::{OwnedArgEntry, OwnedLabelValue, OwnedObservation, OwnedSnapshot};
+pub use footfall_session::{
+    OwnedArgEntry, OwnedLabelValue, OwnedObservation, OwnedSnapshot, OwnedSourceLocation,
+};

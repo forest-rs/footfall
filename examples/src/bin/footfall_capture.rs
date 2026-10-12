@@ -85,9 +85,9 @@ enum Command {
         #[arg(long, default_value_t = 10)]
         top: usize,
     },
-    /// Show one span and the work around it: arguments, context, what it
-    /// ran inside, what ran inside it, its messages, and the flows through
-    /// it.
+    /// Show one span and the work around it: where its scope is declared,
+    /// arguments, context, what it ran inside, what ran inside it, its
+    /// messages, and the flows through it.
     Span {
         /// The capture file to read.
         file: PathBuf,
@@ -416,6 +416,14 @@ fn span(path: &Path, id: SpanId) -> Result<()> {
         format::duration(span.end()),
         format::duration(span.self_time()),
     );
+    if let Some(location) = span.location() {
+        println!(
+            "  declared {} at {}:{}",
+            location.function(),
+            location.file(),
+            location.line()
+        );
+    }
     println!("  context  {}", trace.describe_context(span.context_id()));
     for arg in span.args() {
         println!("  arg      {}={}", arg.key(), arg.value());

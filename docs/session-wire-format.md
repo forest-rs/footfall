@@ -41,6 +41,12 @@ The default local endpoint is:
   descriptor id appears in the payload. Later rows of the same payload with
   that id omit it, and a decoder reuses the name it read first. Each payload
   starts afresh, so no state crosses envelopes.
+- `location` is where a scope descriptor is declared. Like a `name`, which it
+  follows, it is written only the first time its descriptor id appears in
+  the payload, and a decoder reuses it for later rows with that id. It is a
+  `u8` presence tag, `0` when the descriptor records no location, or `1`
+  followed by the function `string`, the file `string`, and the 1-based line
+  as a `u32`.
 - `option<T>` is a `u8` presence tag, `0` for absent or `1` for present,
   followed by a `T` when present.
 - `count` is a `u64` element count followed by that many elements.
@@ -270,7 +276,7 @@ thread id, then a `u8` observation tag and its fields:
 
 | Tag | Observation | Fields |
 |---|---|---|
-| `0` | scope begin | descriptor id `u64`, name `name`, context id `u64`, token `u64`, args |
+| `0` | scope begin | descriptor id `u64`, name `name`, location `location`, context id `u64`, token `u64`, args |
 | `1` | scope end | token `u64` |
 | `2` | resource create | kind id `u64`, kind name `name`, resource id `u64`, context id `u64`, size `u64` |
 | `3` | resource update | kind id `u64`, kind name `name`, resource id `u64`, context id `u64`, size `u64` |
@@ -316,7 +322,8 @@ resolve arrive attributed to `0` and are counted as unattributed.
 Descriptor ids are dense integers from `1`, shared across descriptor kinds and
 assigned in first-seen order, fixed for the life of the instance. They are
 never memory addresses. Each payload that refers to a descriptor carries its
-name once, next to the first row with its id.
+name once, next to the first row with its id, and for a scope descriptor its
+location too.
 
 Thread ids are small integers assigned in first-emission order within one
 process lifetime; they are not operating-system thread ids.

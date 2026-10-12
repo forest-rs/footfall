@@ -3,7 +3,8 @@
 
 //! Traces of real runtime snapshots: the questions a frame-loop
 //! investigation asks, windows read one after another as a subscription
-//! delivers them, and events the runtime evicted.
+//! delivers them, events the runtime evicted, and the way from a span to
+//! its code.
 
 use core::time::Duration;
 use footfall_analysis::{Continuity, GroupBy, OwnedSnapshot, Selection, Trace};
@@ -17,6 +18,7 @@ static FRAME: ScopeDesc = ScopeDesc::new("frame");
 static LAYOUT: ScopeDesc = ScopeDesc::new("layout");
 static RENDER: ScopeDesc = ScopeDesc::new("render");
 static WORK: ScopeDesc = ScopeDesc::new("work");
+static LOCATED: ScopeDesc = footfall_core::scope_desc!("located", "runtime::located");
 static UPLOAD_BYTES: CounterDesc = CounterDesc::bytes("upload_bytes");
 static PASS: LabelKey = LabelKey::new("pass");
 
@@ -207,4 +209,48 @@ fn evicted_events_leave_a_gap_and_an_interrupted_span() {
     let work = trace.span(after.spans()[0]).expect("the scope completed");
     assert!(work.interrupted(), "events went missing while it ran");
     assert!(!trace.spans().basis().is_complete());
+}
+
+#[test]
+fn a_span_leads_to_its_code_in_process_and_from_a_capture() {
+    let runtime = Runtime::default();
+    scope(&runtime, &LOCATED, ContextHandle::ROOT, || {});
+    scope(&runtime, &WORK, ContextHandle::ROOT, || {});
+    scope(&runtime, &LOCATED, ContextHandle::ROOT, || {});
+    let snapshot = runtime.snapshot();
+
+    let mut file =
+        footfall_session::capture::CaptureWriter::new(Vec::new()).expect("a capture starts");
+    file.write_snapshot(&snapshot)
+        .expect("the snapshot is written");
+    let bytes = file.finish().expect("the capture ends");
+    let read = footfall_session::capture::CaptureReader::new(bytes.as_slice())
+        .expect("the capture opens")
+        .read_snapshot()
+        .expect("the snapshot reads")
+        .expect("one snapshot");
+
+    let declared = LOCATED.location().expect("scope_desc! records a location");
+    for trace in [
+        Trace::from_snapshot(&OwnedSnapshot::from(snapshot)),
+        Trace::from_snapshot(&read),
+    ] {
+        let spans = trace.spans().iter();
+        let located: Vec<_> = spans
+            .iter()
+            .filter(|selected| selected.span().name() == "located")
+            .map(|selected| selected.span().location().expect("a location"))
+            .collect();
+        assert_eq!(located.len(), 2);
+        for location in located {
+            assert_eq!(location.function(), "runtime::located");
+            assert_eq!(location.file(), file!());
+            assert_eq!(location.line(), declared.line());
+        }
+        let work = spans
+            .iter()
+            .find(|selected| selected.span().name() == "work")
+            .expect("work ran");
+        assert_eq!(work.span().location(), None, "ScopeDesc::new records none");
+    }
 }

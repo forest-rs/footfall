@@ -46,6 +46,11 @@ The first release.
   tables by name, thread, context, label, or argument;
   comparisons split a change into more work and slower work; and every
   answer says what it covers.
+- Scopes declared with `scope_desc!`'s two-argument form record their
+  function, file, and line. Snapshots, the wire format, and capture files
+  carry the location once per payload rather than per event, analysis
+  spans return it from `Span::location`, and the Chrome trace export shows
+  it as each scope's `location` argument.
 - `footfall_export`: Chrome Trace JSON for Perfetto.
 
 ### Integrations

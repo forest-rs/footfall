@@ -100,6 +100,22 @@ never `const`; the compiler rejects a `const` descriptor where one is
 required. Label keys are identified by name, so give keys distinct names; a
 library should prefix its keys with its own name.
 
+Give `scope_desc!` a second argument, the function or module the scope
+belongs to, and the descriptor also records where it is declared: that name
+with the file and line of the macro call. Snapshots carry the location with
+each scope, so tools can lead from a span to its code, and the Chrome trace
+export shows it as the scope's `location` argument:
+
+```rust
+use footfall::ScopeDesc;
+
+static LAYOUT: ScopeDesc = footfall::scope_desc!("layout", "renderer::layout");
+assert_eq!(
+    LAYOUT.location().map(|location| location.function()),
+    Some("renderer::layout")
+);
+```
+
 ## Context Discipline
 
 The architectural rule is simple:
