@@ -52,7 +52,9 @@
 //! ```
 //!
 //! The `scope_desc!`, `counter_desc!`, `event_desc!`, and
-//! `resource_kind_desc!` macros also record the source location.
+//! `resource_kind_desc!` macros build descriptors too; the two-argument form
+//! of `scope_desc!` also records where the scope is declared, which
+//! snapshots carry so tools can lead from a span to its code.
 //!
 //! # Contexts
 //!

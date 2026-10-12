@@ -41,6 +41,8 @@ use std::{
 /// named after the descriptor unit. A `footfall_contexts` event on track `0`
 /// lists every context by id with its labels as typed JSON values, so tools
 /// can map track names and `context_id` arguments back to structured labels.
+/// A scope whose descriptor records where it is declared carries a
+/// `location` argument with its `function`, `file`, and `line`.
 #[must_use]
 pub fn to_chrome_trace_json(snapshot: &OwnedSnapshot) -> String {
     let mut output = String::new();
@@ -520,6 +522,7 @@ fn build_timed_observation(
     match event.observation() {
         OwnedObservation::ScopeBegin {
             name,
+            location,
             context_id,
             token,
             args,
@@ -550,6 +553,15 @@ fn build_timed_observation(
             }
             json.push_str(",\"context\":");
             write_context(&mut json, context)?;
+            if let Some(location) = location {
+                json.push_str(",\"location\":{");
+                write_json_field_str(&mut json, "function", location.function())?;
+                json.push(',');
+                write_json_field_str(&mut json, "file", location.file())?;
+                json.push(',');
+                write_json_field_u64(&mut json, "line", location.line().into())?;
+                json.push('}');
+            }
             json.push_str("}}");
             Ok(Exported::Event(json))
         }
@@ -931,7 +943,7 @@ mod tests {
     use super::{to_chrome_trace_json, track_name};
     use footfall_core::{
         Args, Context, ContextId, CounterDescId, FlowId, FlowPhase, LabelKey, MarkerKind,
-        MarkerPhase, ScopeToken, Unit,
+        MarkerPhase, ScopeToken, SourceLocation, Unit,
     };
     use footfall_runtime::{
         ContextSnapshot, CounterKind, CounterSnapshot, Drops, EventWindow, Observation, Snapshot,
@@ -941,6 +953,7 @@ mod tests {
 
     static FRAME: LabelKey = LabelKey::new("frame");
     static PASS: LabelKey = LabelKey::new("pass");
+    static RECORD_AT: SourceLocation = SourceLocation::new("app::record", "src/app.rs", 42);
 
     #[test]
     fn exporter_emits_metadata_context_tracks_and_scope_pairing() {
@@ -973,6 +986,7 @@ mod tests {
                 Observation::ScopeBegin {
                     desc_id: footfall_core::ScopeDescId::new(2),
                     name: "record",
+                    location: Some(&RECORD_AT),
                     context_id: ContextId::new(1),
                     token: ScopeToken::new(9),
                     args: Args::none().with("items", 3_u32),
@@ -1025,6 +1039,9 @@ mod tests {
         assert!(json.contains("\"upload_bytes [frame=7 / pass=1]\""));
         assert!(json.contains("\"ph\":\"B\""));
         assert!(json.contains("\"values\":{\"items\":3}"));
+        assert!(json.contains(
+            "\"location\":{\"function\":\"app::record\",\"file\":\"src/app.rs\",\"line\":42}}"
+        ));
         assert!(json.contains("\"ph\":\"E\""));
         assert!(json.contains("\"ph\":\"s\""));
         assert!(json.contains("\"footfall_capture\""));
@@ -1119,6 +1136,7 @@ mod tests {
         Observation::ScopeBegin {
             desc_id: footfall_core::ScopeDescId::new(1),
             name,
+            location: None,
             context_id: ContextId::new(1),
             token: ScopeToken::new(token),
             args: Args::none(),

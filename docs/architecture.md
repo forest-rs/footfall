@@ -78,7 +78,8 @@ context handle:
 - A descriptor (`ScopeDesc`, `CounterDesc`, `EventDesc`, `ResourceKindDesc`)
   names one kind of observation. Its identity is its address, so descriptors
   are `static` items; the types make reaching one through a `const` a compile
-  error.
+  error. A scope descriptor can also record where it is declared, which the
+  runtime keeps as a reference to the descriptor's own static location.
 - A `ContextHandle` names the owner. Contexts are registered once per owner,
   and every emission carries only the integer handle, so attribution costs
   the same however many labels the context has.
@@ -144,8 +145,9 @@ state.
 
 The wire encoding is compact because events dominate traffic: LEB128
 integers, deltas for timestamps and sequence numbers, and descriptor names
-written once per payload. The protocol version is the only fixed-width
-field, so any reader can check it first. The format is specified in
+and scope source locations written once per payload rather than per event.
+The protocol version is the only fixed-width field, so any reader can check
+it first. The format is specified in
 [the wire-format document](session-wire-format.md), and the guarantees a
 consumer can rely on in [the consumer contract](session-consumer-contract.md).
 

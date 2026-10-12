@@ -44,6 +44,12 @@ use crate::{
 /// The first bytes of every capture file.
 pub const CAPTURE_MAGIC: &[u8; 8] = b"FFALLCAP";
 
+/// How capture files chunk snapshots. Each events envelope writes a
+/// descriptor's name, and a scope's source location, once, so envelopes of
+/// up to 8192 events, as the WebTransport server sends, keep that cost
+/// small per event.
+const CAPTURE_CHUNKING: Chunking = Chunking::new(256, 256, 256, 8192);
+
 /// Writes snapshots to a capture file.
 #[derive(Debug)]
 pub struct CaptureWriter<W: Write> {
@@ -56,7 +62,7 @@ impl<W: Write> CaptureWriter<W> {
     pub fn new(inner: W) -> io::Result<Self> {
         let mut writer = Self {
             inner,
-            chunking: Chunking::default(),
+            chunking: CAPTURE_CHUNKING,
         };
         writer.inner.write_all(CAPTURE_MAGIC)?;
         writer

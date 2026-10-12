@@ -18,7 +18,7 @@ use footfall_core::{
 use footfall_runtime::{CounterKind, Drops, SnapshotMetadata};
 use footfall_session::{
     OwnedArgEntry, OwnedContextSnapshot, OwnedCounterSnapshot, OwnedHistogramSnapshot,
-    OwnedLabelValue, OwnedObservation, OwnedSnapshot, SnapshotKind,
+    OwnedLabelValue, OwnedObservation, OwnedSnapshot, OwnedSourceLocation, SnapshotKind,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -80,6 +80,7 @@ struct Begun {
     id: SpanId,
     desc_id: ScopeDescId,
     name: Arc<str>,
+    location: Option<OwnedSourceLocation>,
     context_id: ContextId,
     thread_id: u64,
     begin: Duration,
@@ -387,6 +388,7 @@ impl Trace {
             OwnedObservation::ScopeBegin {
                 desc_id,
                 name,
+                location,
                 context_id,
                 token,
                 args,
@@ -402,6 +404,7 @@ impl Trace {
                         id: SpanId::new(event.sequence()),
                         desc_id: *desc_id,
                         name,
+                        location: location.clone(),
                         context_id: *context_id,
                         thread_id,
                         begin: at,
@@ -434,6 +437,7 @@ impl Trace {
                     token: *token,
                     desc_id: begun.desc_id,
                     name: begun.name,
+                    location: begun.location,
                     context_id: begun.context_id,
                     thread_id: begun.thread_id,
                     begin: begun.begin,
@@ -826,6 +830,7 @@ impl Trace {
             .map(|begun| OpenSpan {
                 id: begun.id,
                 name: Arc::clone(&begun.name),
+                location: begun.location.clone(),
                 context_id: begun.context_id,
                 thread_id: begun.thread_id,
                 begin: begun.begin,

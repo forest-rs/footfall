@@ -33,11 +33,13 @@ fn address_id<T>(desc: &'static T) -> u64 {
     ptr::from_ref(desc).addr() as u64
 }
 
-/// Where in the source a descriptor is declared.
+/// Where in the source a scope descriptor is declared.
 ///
-/// The `scope_desc!`, `counter_desc!`, `event_desc!`, and
-/// `resource_kind_desc!` macros record it, or pass one to
+/// The two-argument form of [`scope_desc!`](crate::scope_desc!) records it
+/// with the file and line of the macro call, or pass one to
 /// [`ScopeDesc::with_location`]; [`ScopeDesc::location`] returns it.
+/// Backends can pass it on, as the runtime does into snapshots, so a tool
+/// can lead from a span to its code.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SourceLocation {
     function: &'static str,
@@ -126,10 +128,13 @@ impl ScopeDesc {
         self.name
     }
 
-    /// Returns the static source location when one is available.
+    /// Returns where the descriptor is declared, when it records that.
+    ///
+    /// The location lives as long as the descriptor, so a backend can keep
+    /// the reference instead of copying it.
     #[must_use]
-    pub const fn location(&self) -> Option<SourceLocation> {
-        self.location
+    pub const fn location(&self) -> Option<&SourceLocation> {
+        self.location.as_ref()
     }
 }
 
@@ -329,7 +334,7 @@ mod tests {
     fn scope_descriptor_can_carry_source_location() {
         assert_eq!(
             LOCATED.location(),
-            Some(SourceLocation::new("record_pass", "record.rs", 42))
+            Some(&SourceLocation::new("record_pass", "record.rs", 42))
         );
     }
 

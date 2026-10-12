@@ -7,7 +7,7 @@ use alloc::{format, string::String, vec, vec::Vec};
 
 use footfall_core::{
     Context, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, LabelKey, MarkerKind,
-    MarkerPhase, ScopeToken,
+    MarkerPhase, ScopeToken, SourceLocation,
 };
 use footfall_runtime::{CounterKind, Snapshot, SnapshotMetadata, ThreadSnapshot};
 use std::io::ErrorKind;
@@ -21,12 +21,13 @@ use super::{
 use crate::{
     Chunking, Envelope, EnvelopeHeader, OwnedArgEntry, OwnedContextEntry, OwnedContextSnapshot,
     OwnedCounterSnapshot, OwnedLabelValue, OwnedObservation, OwnedSessionEnvelope,
-    OwnedSessionPayload, OwnedSnapshotSummary, OwnedTimedObservation, PROTOCOL_VERSION, Payload,
-    RowCounts, collect_snapshot,
+    OwnedSessionPayload, OwnedSnapshotSummary, OwnedSourceLocation, OwnedTimedObservation,
+    PROTOCOL_VERSION, Payload, RowCounts, collect_snapshot,
 };
 
 static FRAME: LabelKey = LabelKey::new("frame");
 static REASON: LabelKey = LabelKey::new("reason");
+static RECORD_AT: SourceLocation = SourceLocation::new("record", "app.rs", 300);
 
 fn to_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
@@ -57,7 +58,8 @@ fn encoded_envelopes_match_golden_fixtures() {
     assert_eq!(to_hex(&encoded), "0100000002040103036f7073010100070e");
 
     // Timestamps and sequence numbers are deltas from the previous row, and a
-    // descriptor's name is written only the first time its id appears.
+    // descriptor's name, with a scope's source location, is written only the
+    // first time its id appears.
     let events = OwnedSessionEnvelope::new(
         EnvelopeHeader::new(PROTOCOL_VERSION, 3),
         OwnedSessionPayload::Events(vec![
@@ -68,6 +70,7 @@ fn encoded_envelopes_match_golden_fixtures() {
                 OwnedObservation::ScopeBegin {
                     desc_id: footfall_core::ScopeDescId::new(5),
                     name: String::from("record"),
+                    location: Some(OwnedSourceLocation::new("record", "app.rs", 300)),
                     context_id: ContextId::new(1),
                     token: ScopeToken::new(9),
                     args: vec![OwnedArgEntry::new(
@@ -83,6 +86,7 @@ fn encoded_envelopes_match_golden_fixtures() {
                 OwnedObservation::ScopeBegin {
                     desc_id: footfall_core::ScopeDescId::new(5),
                     name: String::from("record"),
+                    location: Some(OwnedSourceLocation::from(&RECORD_AT)),
                     context_id: ContextId::new(1),
                     token: ScopeToken::new(10),
                     args: Vec::new(),
@@ -98,15 +102,78 @@ fn encoded_envelopes_match_golden_fixtures() {
             ),
         ]),
     );
+    // The first row's location is present (`01`), then its function
+    // "record", file "app.rs", and line 300 (`ac02`); the second row, of the
+    // same descriptor, carries neither name nor location.
+    let expected = "010000000306031e08020005067265636f7264\
+                    01067265636f7264066170702e7273ac02\
+                    010901056974656d7300030202020005010a000502030109";
     let encoded = encode_owned_envelope(&events).expect("encoding should succeed");
-    assert_eq!(
-        to_hex(&encoded),
-        "010000000306031e08020005067265636f7264010901056974656d730003020202000501\
-         0a000502030109"
-    );
+    assert_eq!(to_hex(&encoded), expected);
     assert_eq!(
         decode_envelope(&encoded).expect("decoding should succeed"),
         events
+    );
+
+    // The production encoder for borrowed runtime snapshots, whose scope
+    // begins refer to the descriptor's static location, writes the same.
+    let begin = |token, args| footfall_runtime::Observation::ScopeBegin {
+        desc_id: footfall_core::ScopeDescId::new(5),
+        name: "record",
+        location: Some(&RECORD_AT),
+        context_id: ContextId::new(1),
+        token: ScopeToken::new(token),
+        args,
+    };
+    let borrowed = [
+        footfall_runtime::TimedObservation::new(
+            15,
+            4,
+            2,
+            begin(9, footfall_core::Args::none().with("items", 3_u32)),
+        ),
+        footfall_runtime::TimedObservation::new(16, 5, 2, begin(10, footfall_core::Args::none())),
+        footfall_runtime::TimedObservation::new(
+            13,
+            6,
+            3,
+            footfall_runtime::Observation::ScopeEnd {
+                token: ScopeToken::new(9),
+            },
+        ),
+    ];
+    let encoded = encode_envelope(Envelope::new(
+        EnvelopeHeader::new(PROTOCOL_VERSION, 3),
+        Payload::Events(&borrowed),
+    ))
+    .expect("encoding should succeed");
+    assert_eq!(to_hex(&encoded), expected);
+
+    // A scope without a location writes one absent tag (`00`) after its name.
+    let unlocated = OwnedSessionEnvelope::new(
+        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+        OwnedSessionPayload::Events(vec![OwnedTimedObservation::new(
+            0,
+            0,
+            1,
+            OwnedObservation::ScopeBegin {
+                desc_id: footfall_core::ScopeDescId::new(1),
+                name: String::from("record"),
+                location: None,
+                context_id: ContextId::new(0),
+                token: ScopeToken::new(1),
+                args: Vec::new(),
+            },
+        )]),
+    );
+    let encoded = encode_owned_envelope(&unlocated).expect("encoding should succeed");
+    assert_eq!(
+        to_hex(&encoded),
+        "010000000006010000010001067265636f726400000100"
+    );
+    assert_eq!(
+        decode_envelope(&encoded).expect("decoding should succeed"),
+        unlocated
     );
 
     // Context rows carry label keys by name. The production encoder for
@@ -495,42 +562,69 @@ fn integers_are_leb128_and_reject_overflow() {
 
 /// Events are the bulk of a subscription's traffic; a typical scope's
 /// begin and end take a few bytes each, not the dozens fixed-width integers
-/// and repeated names would cost.
+/// and repeated names or source locations would cost.
 #[test]
 fn typical_events_stay_compact() {
-    let mut events = Vec::new();
-    for index in 0..1000_u64 {
-        let at = 1_000_000 + index * 250;
-        events.push(OwnedTimedObservation::new(
-            at,
-            2 * index,
-            1 + index % 4,
-            OwnedObservation::ScopeBegin {
-                desc_id: footfall_core::ScopeDescId::new(1 + index % 8),
-                name: format!("scope_{}", index % 8),
-                context_id: ContextId::new(100 + index % 16),
-                token: ScopeToken::new(10_000 + index),
-                args: Vec::new(),
-            },
-        ));
-        events.push(OwnedTimedObservation::new(
-            at + 120,
-            2 * index + 1,
-            1 + index % 4,
-            OwnedObservation::ScopeEnd {
-                token: ScopeToken::new(10_000 + index),
-            },
-        ));
+    let location = |scope: u64| {
+        OwnedSourceLocation::new(
+            format!("app::render::scope_{scope}"),
+            "src/render.rs",
+            u32::try_from(100 * (scope + 1)).expect("a small line"),
+        )
+    };
+    let encode = |located: bool| {
+        let mut events = Vec::new();
+        for index in 0..1000_u64 {
+            let at = 1_000_000 + index * 250;
+            events.push(OwnedTimedObservation::new(
+                at,
+                2 * index,
+                1 + index % 4,
+                OwnedObservation::ScopeBegin {
+                    desc_id: footfall_core::ScopeDescId::new(1 + index % 8),
+                    name: format!("scope_{}", index % 8),
+                    location: located.then(|| location(index % 8)),
+                    context_id: ContextId::new(100 + index % 16),
+                    token: ScopeToken::new(10_000 + index),
+                    args: Vec::new(),
+                },
+            ));
+            events.push(OwnedTimedObservation::new(
+                at + 120,
+                2 * index + 1,
+                1 + index % 4,
+                OwnedObservation::ScopeEnd {
+                    token: ScopeToken::new(10_000 + index),
+                },
+            ));
+        }
+        let envelope = OwnedSessionEnvelope::new(
+            EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+            OwnedSessionPayload::Events(events),
+        );
+        let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
+        assert_eq!(
+            decode_envelope(&encoded).expect("decoding should succeed"),
+            envelope
+        );
+        encoded.len()
+    };
+    let (unlocated, located) = (encode(false), encode(true));
+    for bytes in [unlocated, located] {
+        let per_event = bytes / 2000;
+        assert!(per_event <= 8, "{per_event} bytes per event");
     }
-    let envelope = OwnedSessionEnvelope::new(
-        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
-        OwnedSessionPayload::Events(events),
-    );
-    let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
-    let per_event = encoded.len() / 2000;
-    assert!(per_event <= 8, "{per_event} bytes per event");
-    assert_eq!(
-        decode_envelope(&encoded).expect("decoding should succeed"),
-        envelope
-    );
+    // Each of the eight scopes' locations is written once, with its first
+    // begin, in place of an absent tag: no event pays for it again.
+    let once: usize = (0..8)
+        .map(|scope| {
+            let location = location(scope);
+            location.function().len()
+                + 1
+                + location.file().len()
+                + 1
+                + varint_len(u64::from(location.line()))
+        })
+        .sum();
+    assert_eq!(located - unlocated, once);
 }

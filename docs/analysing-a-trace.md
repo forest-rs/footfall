@@ -164,7 +164,9 @@ time, so a span that waited for a lock counts its waiting.
 `SpanQuery::instances` returns the spans closest to the median and the
 worst, each with its id. From any span, `Trace::parent`, `Trace::children`,
 `Trace::frame_at`, `Trace::flows_through`, and the messages recorded inside
-it (`Message::span`) lead to the work around it.
+it (`Message::span`) lead to the work around it, and `Span::location` leads
+to its code: the function, file, and line where its scope descriptor is
+declared, when the descriptor records them.
 
 ## Comparing
 

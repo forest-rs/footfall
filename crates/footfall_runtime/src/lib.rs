@@ -49,7 +49,7 @@ use footfall_core::{
     Args, Backend, Context, ContextHandle, ContextId, CounterDesc, CounterDescId, EventDesc,
     EventDescId, FlowId, FlowPhase, InstallBackendError, InstrumentationLevel, MarkerKind,
     MarkerPhase, ResourceId, ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, ScopeToken,
-    Unit, install_backend, set_max_level,
+    SourceLocation, Unit, install_backend, set_max_level,
 };
 use std::{
     boxed::Box,
@@ -2117,6 +2117,11 @@ pub enum Observation {
         desc_id: ScopeDescId,
         /// Stable descriptor name.
         name: &'static str,
+        /// Where the scope descriptor is declared, when it records that.
+        ///
+        /// It is the descriptor's own location, so recording one copies a
+        /// reference, never its text.
+        location: Option<&'static SourceLocation>,
         /// Canonical semantic context id.
         context_id: ContextId,
         /// Opaque scope token returned to the caller.
@@ -2620,6 +2625,7 @@ impl Backend for Runtime {
             Observation::ScopeBegin {
                 desc_id: desc.id(),
                 name: desc.name(),
+                location: desc.location(),
                 context_id,
                 token,
                 args: *args,
@@ -2917,7 +2923,7 @@ mod tests {
     use footfall_core::{
         Args, Backend as _, Context, ContextHandle, ContextId, CounterDesc, FlowId, FlowPhase,
         InstrumentationLevel, LabelKey, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc,
-        ScopeDesc, ScopeToken, Unit,
+        ScopeDesc, ScopeToken, SourceLocation, Unit,
     };
 
     static FRAME: LabelKey = LabelKey::new("frame");
@@ -3325,6 +3331,7 @@ mod tests {
             Observation::ScopeBegin {
                 desc_id: RECORD.id(),
                 name: RECORD.name(),
+                location: RECORD.location(),
                 context_id,
                 token,
                 args: Args::none().with("items", 3_u32),
@@ -3389,6 +3396,37 @@ mod tests {
     }
 
     #[test]
+    fn scope_begins_refer_to_their_descriptors_location() {
+        static LOCATED: ScopeDesc = ScopeDesc::with_location(
+            "located",
+            SourceLocation::new("tests::located", "lib.rs", 7),
+        );
+        static PLAIN: ScopeDesc = ScopeDesc::new("plain");
+        let runtime = test_runtime(8, 8);
+        for desc in [&LOCATED, &PLAIN] {
+            let token = runtime.scope_begin(desc, ContextHandle::ROOT, &Args::none());
+            runtime.scope_end(token);
+        }
+
+        let locations: Vec<_> = runtime
+            .snapshot()
+            .events
+            .iter()
+            .filter_map(|event| match &event.observation {
+                Observation::ScopeBegin { location, .. } => Some(*location),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(locations.len(), 2);
+        let declared = LOCATED.location().expect("declared with a location");
+        assert!(
+            locations[0].is_some_and(|location| core::ptr::eq(location, declared)),
+            "the descriptor's own location, not a copy"
+        );
+        assert_eq!(locations[1], None);
+    }
+
+    #[test]
     fn sequential_scopes_at_one_timestamp_keep_program_order() {
         let runtime = test_runtime(8, 8);
         static FIRST: ScopeDesc = ScopeDesc::new("first");
@@ -3401,6 +3439,7 @@ mod tests {
                 Observation::ScopeBegin {
                     desc_id: desc.id(),
                     name: desc.name(),
+                    location: desc.location(),
                     context_id,
                     token,
                     args: Args::none(),

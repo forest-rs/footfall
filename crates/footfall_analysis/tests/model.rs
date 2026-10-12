@@ -100,6 +100,7 @@ impl Recording {
             Observation::ScopeBegin {
                 desc_id: desc.id(),
                 name: desc.name(),
+                location: desc.location(),
                 context_id: ContextId::new(context),
                 token,
                 args,

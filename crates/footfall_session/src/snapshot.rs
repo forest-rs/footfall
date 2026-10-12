@@ -3,12 +3,12 @@
 
 //! Runtime snapshot publication envelopes.
 
-use alloc::{string::String, vec::Vec};
+use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use std::collections::{HashMap, HashSet};
 
 use footfall_core::{
     ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, LabelValue, MarkerKind, MarkerPhase,
-    ResourceId, ResourceKindId, ScopeDescId, ScopeToken, Unit,
+    ResourceId, ResourceKindId, ScopeDescId, ScopeToken, SourceLocation, Unit,
 };
 use footfall_runtime::{
     ContextSnapshot, CounterKind, CounterSnapshot, Drops, EventCursor, EventWindow,
@@ -849,6 +849,102 @@ impl OwnedTimedObservation {
     }
 }
 
+/// Where a scope descriptor is declared: function, file, and line, as
+/// [`OwnedObservation::ScopeBegin`] carries it.
+///
+/// Every begin of one scope carries the same location, so copies are cheap:
+/// one converted from a runtime snapshot refers to the descriptor's own
+/// static text, and decoded ones share one allocation per descriptor.
+#[derive(Clone)]
+pub struct OwnedSourceLocation(LocationText);
+
+#[derive(Clone)]
+enum LocationText {
+    Static(&'static SourceLocation),
+    Shared(Arc<SharedLocation>),
+}
+
+struct SharedLocation {
+    function: Box<str>,
+    file: Box<str>,
+    line: u32,
+}
+
+impl OwnedSourceLocation {
+    /// Creates a location from its function, file, and 1-based line.
+    #[must_use]
+    pub fn new(function: impl Into<String>, file: impl Into<String>, line: u32) -> Self {
+        Self(LocationText::Shared(Arc::new(SharedLocation {
+            function: function.into().into_boxed_str(),
+            file: file.into().into_boxed_str(),
+            line,
+        })))
+    }
+
+    /// Returns the function or module the descriptor names as its own.
+    #[must_use]
+    pub fn function(&self) -> &str {
+        match &self.0 {
+            LocationText::Static(location) => location.function(),
+            LocationText::Shared(location) => &location.function,
+        }
+    }
+
+    /// Returns the source file, as the compiler named it.
+    #[must_use]
+    pub fn file(&self) -> &str {
+        match &self.0 {
+            LocationText::Static(location) => location.file(),
+            LocationText::Shared(location) => &location.file,
+        }
+    }
+
+    /// Returns the 1-based source line.
+    #[must_use]
+    pub fn line(&self) -> u32 {
+        match &self.0 {
+            LocationText::Static(location) => location.line(),
+            LocationText::Shared(location) => location.line,
+        }
+    }
+}
+
+impl From<&'static SourceLocation> for OwnedSourceLocation {
+    /// Refers to a descriptor's static location without copying its text.
+    fn from(location: &'static SourceLocation) -> Self {
+        Self(LocationText::Static(location))
+    }
+}
+
+impl PartialEq for OwnedSourceLocation {
+    fn eq(&self, other: &Self) -> bool {
+        self.line() == other.line()
+            && self.file() == other.file()
+            && self.function() == other.function()
+    }
+}
+
+impl Eq for OwnedSourceLocation {}
+
+impl core::hash::Hash for OwnedSourceLocation {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.function().hash(state);
+        self.file().hash(state);
+        self.line().hash(state);
+    }
+}
+
+impl core::fmt::Debug for OwnedSourceLocation {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("OwnedSourceLocation")
+            .field("function", &self.function())
+            .field("file", &self.file())
+            .field("line", &self.line())
+            .finish()
+    }
+}
+
 /// What one event recorded, as [`OwnedTimedObservation::observation`]
 /// returns it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -860,6 +956,8 @@ pub enum OwnedObservation {
         desc_id: ScopeDescId,
         /// Stable descriptor name.
         name: String,
+        /// Where the scope descriptor is declared, when it records that.
+        location: Option<OwnedSourceLocation>,
         /// Canonical semantic context id.
         context_id: ContextId,
         /// Opaque scope token returned to the caller.
@@ -1407,12 +1505,14 @@ fn owned_observation(observation: &Observation) -> Option<OwnedObservation> {
         Observation::ScopeBegin {
             desc_id,
             name,
+            location,
             context_id,
             token,
             args,
         } => OwnedObservation::ScopeBegin {
             desc_id: *desc_id,
             name: String::from(*name),
+            location: location.map(OwnedSourceLocation::from),
             context_id: *context_id,
             token: *token,
             args: owned_args(*args),

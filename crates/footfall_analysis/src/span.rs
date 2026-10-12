@@ -7,7 +7,7 @@ use crate::time::TimeRange;
 use core::fmt;
 use core::time::Duration;
 use footfall_core::{ContextId, ScopeDescId, ScopeToken};
-use footfall_session::{OwnedArgEntry, OwnedLabelValue};
+use footfall_session::{OwnedArgEntry, OwnedLabelValue, OwnedSourceLocation};
 use std::sync::Arc;
 
 /// Identifies a span within its runtime instance: the sequence number of
@@ -52,6 +52,7 @@ pub struct Span {
     pub(crate) token: ScopeToken,
     pub(crate) desc_id: ScopeDescId,
     pub(crate) name: Arc<str>,
+    pub(crate) location: Option<OwnedSourceLocation>,
     pub(crate) context_id: ContextId,
     pub(crate) thread_id: u64,
     pub(crate) begin: Duration,
@@ -93,6 +94,13 @@ impl Span {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Returns where the scope descriptor is declared: function, file, and
+    /// line. It is `None` when the descriptor does not record a location.
+    #[must_use]
+    pub const fn location(&self) -> Option<&OwnedSourceLocation> {
+        self.location.as_ref()
     }
 
     /// Returns the context the span was attributed to; resolve its labels
@@ -185,6 +193,7 @@ impl Span {
 pub struct OpenSpan {
     pub(crate) id: SpanId,
     pub(crate) name: Arc<str>,
+    pub(crate) location: Option<OwnedSourceLocation>,
     pub(crate) context_id: ContextId,
     pub(crate) thread_id: u64,
     pub(crate) begin: Duration,
@@ -203,6 +212,13 @@ impl OpenSpan {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Returns where the scope descriptor is declared; see
+    /// [`Span::location`].
+    #[must_use]
+    pub const fn location(&self) -> Option<&OwnedSourceLocation> {
+        self.location.as_ref()
     }
 
     /// Returns the context the span is attributed to.
