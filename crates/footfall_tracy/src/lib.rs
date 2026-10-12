@@ -234,7 +234,12 @@ impl TracyBackend {
             CounterUpdate::Add => current.saturating_add(value),
             CounterUpdate::Set => value,
         };
-        let plotted = *current as f64;
+        let plotted = match desc.unit() {
+            // Ratios are parts per million; Tracy's percentage plots take
+            // percent.
+            Unit::Ratio => *current as f64 / 10_000.0,
+            _ => *current as f64,
+        };
         drop(counters);
 
         self.client.plot(plot_name, plotted);
