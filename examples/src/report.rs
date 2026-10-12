@@ -7,75 +7,179 @@
 use crate::format;
 use crate::style::{BAD, DIM, GOOD, HEADING, NAME, WARN};
 use anstream::println;
-use footfall::analysis::{Frame, Spans};
+use core::time::Duration;
+use footfall::analysis::{Basis, Caveat, Comparison, Frame, GroupBy, SpanTable, Trace};
 use footfall::session::OwnedSnapshot;
+use std::collections::BTreeMap;
 
-/// Prints which scopes took the most time, by name.
-pub fn spans(spans: &Spans, limit: usize) {
-    let mut rows: Vec<_> = spans.by_name().into_iter().collect();
-    rows.sort_by_key(|(_, stats)| core::cmp::Reverse(stats.total_micros()));
+/// Prints which scopes took the most time, from a table grouped by name.
+pub fn spans(table: &SpanTable, limit: usize) {
     println!("{HEADING}Where the time went{HEADING:#}");
+    let rows = table.rows();
     if rows.is_empty() {
         println!("  {DIM}no completed scopes{DIM:#}");
+        basis(table.basis());
         return;
     }
-    let width = rows.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+    let names: Vec<_> = rows.iter().map(|row| row.describe()).collect();
+    let width = names.iter().map(String::len).max().unwrap_or(0);
     println!(
         "  {DIM}{:width$}  {:>7}  {:>10}  {:>10}  {:>10}  {:>10}{DIM:#}",
-        "scope", "count", "total", "self", "mean", "max"
+        "scope", "count", "total", "self", "median", "max"
     );
-    for (name, stats) in rows.iter().take(limit) {
+    for (name, row) in names.iter().zip(rows).take(limit) {
+        let stats = row.stats();
         println!(
             "  {NAME}{name:width$}{NAME:#}  {:>7}  {:>10}  {:>10}  {:>10}  {:>10}",
             format::count(stats.count()),
-            format::micros(stats.total_micros()),
-            format::micros(stats.self_micros()),
-            format::micros(stats.mean_micros()),
-            format::micros(stats.max_micros()),
+            format::duration(stats.total()),
+            format::duration(stats.self_time()),
+            format::duration(stats.time().median()),
+            format::duration(stats.time().max()),
         );
     }
     if rows.len() > limit {
         println!("  {DIM}… and {} more{DIM:#}", rows.len() - limit);
     }
-    if !spans.open().is_empty() || spans.unmatched_ends() > 0 {
+    basis(table.basis());
+}
+
+/// Prints what a table's figures leave out, when they leave anything out.
+pub fn basis(basis: &Basis) {
+    if !basis.recorded().is_yes() {
+        println!("  {WARN}{}{WARN:#}", basis.recorded());
+        return;
+    }
+    if basis.open() > 0 || basis.unmatched_ends() > 0 {
         println!(
-            "  {DIM}{} still open, {} ended before the window began{DIM:#}",
-            spans.open().len(),
-            spans.unmatched_ends()
+            "  {DIM}left out: {} still open, {} ended without a begin{DIM:#}",
+            basis.open(),
+            basis.unmatched_ends()
+        );
+    }
+    if basis.missed_events() > 0 {
+        println!(
+            "  {WARN}{} events missing in {} gap(s); nested times may be incomplete{WARN:#}",
+            format::count(basis.missed_events()),
+            basis.gaps().len()
         );
     }
 }
 
 /// Prints the time each scope took under each value of a context label, such
-/// as each render pass: the attribution Footfall exists for.
-pub fn spans_by_label(spans: &Spans, snapshot: &OwnedSnapshot, key: &str) {
+/// as each render pass: the attribution Footfall exists for. Scopes whose
+/// context lacks the label are a group of their own.
+pub fn spans_by_label(trace: &Trace, key: &str) {
     println!("{HEADING}By {key}{HEADING:#}");
-    let groups = spans.by_label(snapshot, key);
+    let table = trace
+        .spans()
+        .group_by(GroupBy::Label(key.to_owned()))
+        .group_by(GroupBy::Name)
+        .table();
+    let mut groups = BTreeMap::<String, (Duration, Vec<String>)>::new();
+    for row in table.rows() {
+        let [label, name] = row.key() else {
+            continue;
+        };
+        let group = groups.entry(label.to_string()).or_default();
+        group.0 += row.stats().total();
+        group
+            .1
+            .push(format!("{name} {}", format::duration(row.stats().total())));
+    }
     if groups.is_empty() {
-        println!("  {DIM}no scopes ran under a `{key}` label{DIM:#}");
+        println!("  {DIM}no completed scopes{DIM:#}");
         return;
     }
-    let rows: Vec<_> = groups
-        .into_iter()
-        .map(|(value, scopes)| {
-            let total: u64 = scopes.values().map(|stats| stats.total_micros()).sum();
-            let parts: Vec<_> = scopes
-                .iter()
-                .map(|(name, stats)| format!("{name} {}", format::micros(stats.total_micros())))
-                .collect();
-            (format!("{key}={value}"), total, parts.join(", "))
-        })
-        .collect();
-    let width = rows
-        .iter()
-        .map(|(label, ..)| label.len())
-        .max()
-        .unwrap_or(0);
-    for (label, total, parts) in rows {
+    let mut rows: Vec<_> = groups.into_iter().collect();
+    rows.sort_by_key(|(_, (total, _))| core::cmp::Reverse(*total));
+    let width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
+    for (label, (total, parts)) in rows {
         println!(
-            "  {NAME}{label:width$}{NAME:#}  {:>10}  {DIM}{parts}{DIM:#}",
-            format::micros(total)
+            "  {NAME}{label:width$}{NAME:#}  {:>10}  {DIM}{}{DIM:#}",
+            format::duration(total),
+            parts.join(", ")
         );
+    }
+}
+
+/// Prints a comparison: each scope's time per unit on both sides, how much
+/// of the change came from more calls and how much from slower calls, and
+/// how much of it could be noise.
+pub fn comparison(comparison: &Comparison, baseline: &str, candidate: &str, limit: usize) {
+    let rows = comparison.rows();
+    if rows.is_empty() {
+        println!("  {DIM}no completed scopes on either side{DIM:#}");
+        return;
+    }
+    let names: Vec<_> = rows.iter().take(limit).map(|row| row.describe()).collect();
+    let width = names.iter().map(String::len).max().unwrap_or(0).max(5);
+    println!(
+        "  {DIM}{:width$}  {:>10}  {:>10}  {:>10}  {:>14}  {:>14}  {:>9}{DIM:#}",
+        "scope", baseline, candidate, "change", "from calls", "from cost", "±"
+    );
+    for (name, row) in names.iter().zip(rows) {
+        let calls = |measure: &footfall::analysis::Measure| measure.count_per_unit();
+        let noise = row.standard_error_micros();
+        let change = row.change_micros();
+        // A change within two standard errors could be noise.
+        let style = match noise {
+            Some(noise) if change.abs() <= 2.0 * noise => DIM,
+            _ if change > 0.0 => BAD,
+            _ => GOOD,
+        };
+        println!(
+            "  {NAME}{name:width$}{NAME:#}  {:>10}  {:>10}  {style}{:>10}{style:#}  {:>14}  {:>14}  {:>9}",
+            format::change_micros(row.baseline().micros_per_unit()).trim_start_matches('+'),
+            format::change_micros(row.candidate().micros_per_unit()).trim_start_matches('+'),
+            format::change_micros(change),
+            format!(
+                "{} ({:.1}→{:.1})",
+                format::change_micros(row.volume_micros()),
+                calls(row.baseline()),
+                calls(row.candidate())
+            ),
+            format::change_micros(row.cost_micros()),
+            noise.map_or_else(
+                || String::from("?"),
+                |noise| format::change_micros(noise)
+                    .trim_start_matches('+')
+                    .to_owned()
+            ),
+        );
+    }
+    println!(
+        "  {DIM}per unit: {} {baseline}, {} {candidate}; spans {} each unit{DIM:#}",
+        comparison.baseline().units(),
+        comparison.candidate().units(),
+        comparison.selection().describe(),
+    );
+    for caveat in comparison.caveats() {
+        let note = match caveat {
+            Caveat::FewUnits => String::from("too few units on a side to estimate noise"),
+            Caveat::DifferentInstances => {
+                String::from("different runs: scopes matched by name, not id")
+            }
+            Caveat::DifferentProducers {
+                baseline,
+                candidate,
+            } => {
+                format!("different producer versions: {baseline} and {candidate}")
+            }
+            Caveat::DifferentCapture => String::from("captured with different settings"),
+            Caveat::Incomplete => String::from("a side is incomplete; see below"),
+            other => format!("{other:?}"),
+        };
+        println!("  {WARN}caution:{WARN:#} {note}");
+    }
+    for (label, side) in [
+        (baseline, comparison.baseline()),
+        (candidate, comparison.candidate()),
+    ] {
+        if !side.basis().is_complete() {
+            println!("  {DIM}{label}:{DIM:#}");
+            basis(side.basis());
+        }
     }
 }
 
@@ -101,7 +205,7 @@ pub fn frames(frames: &[Frame], budget_micros: u64) {
 /// Prints each counter's current value, largest first within each unit.
 pub fn counters(snapshot: &OwnedSnapshot, limit: usize) {
     println!("{HEADING}Counters{HEADING:#}");
-    let mut totals = std::collections::BTreeMap::<&str, (footfall::Unit, u64)>::new();
+    let mut totals = BTreeMap::<&str, (footfall::Unit, u64)>::new();
     for counter in snapshot.counters() {
         let entry = totals.entry(counter.name()).or_insert((counter.unit(), 0));
         entry.1 = entry.1.saturating_add(counter.value());
@@ -156,7 +260,12 @@ impl FrameStats {
     /// Computes statistics over `frames`, or `None` when there are none.
     #[must_use]
     pub fn of(frames: &[Frame], budget_micros: u64) -> Option<Self> {
-        Self::of_durations(frames.iter().map(Frame::duration_micros), budget_micros)
+        Self::of_durations(
+            frames
+                .iter()
+                .map(|frame| format::as_micros(frame.duration())),
+            budget_micros,
+        )
     }
 
     /// Computes statistics over frame durations in microseconds.

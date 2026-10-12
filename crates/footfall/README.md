@@ -27,7 +27,7 @@ a tool needs as modules.
 | `runtime` | `footfall::runtime` | Bounded in-process capture with snapshots and cursors |
 | `export` | `footfall::export` | Chrome Trace JSON for Perfetto and `chrome://tracing` |
 | `session` | `footfall::session` | Snapshots for consumers, the envelope codec, capture files |
-| `analysis` | `footfall::analysis` | Spans, frames, and per-frame counter changes from snapshots |
+| `analysis` | `footfall::analysis` | Traces of snapshots: span queries, frames, comparisons, timelines |
 | `wtransport` | `footfall::wtransport` | Serve sessions and attach to them over local WebTransport |
 | `tracing` | `footfall::tracing_layer` | A `tracing` layer that forwards spans and events |
 | `tracy` | `footfall::tracy` | A live Tracy backend |

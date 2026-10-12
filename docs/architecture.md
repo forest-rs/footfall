@@ -29,7 +29,7 @@ behind it.
                   capture files          local WebTransport
                      │
               footfall_analysis
-              spans, frames, per-frame counter changes
+              traces, span queries, comparisons
 ```
 
 `footfall_tracing` sits beside the instrumented code: a `tracing` layer that
@@ -59,8 +59,9 @@ Each crate owns one thing and says what it does not own.
   identity and certificate pinning, and request, response, and
   subscription framing over WebTransport.
 - **`footfall_analysis`** owns interpretation that every tool would
-  otherwise repeat: pairing scopes into spans, markers into frames, and
-  counter samples into per-frame changes, across windows.
+  otherwise repeat: a `Trace` of one runtime instance with spans on
+  per-thread tracks, frames, counter series, and flows; queries and
+  comparisons over it; and a statement of what each answer covers.
 - **`footfall_export`** owns projection into Chrome Trace JSON.
 - **`footfall_tracing`**, **`footfall_tracy`**, **`footfall_fanout`**, and
   **`footfall_memory`** are adapters and helpers at the edges.
@@ -154,6 +155,26 @@ per-user state directory, so tools find every producer on the machine
 without configuration. Subscriptions are demand-driven: the server takes
 each snapshot only when the client asks for the next one, so a slow client
 never receives stale data and its losses are reported exactly.
+
+## Analysis
+
+A `Trace` is built from one runtime instance's snapshots, pushed one after
+another. Sequence numbers make the bookkeeping exact: events a trace has seen
+are skipped when snapshots overlap, and the numbers missing from a snapshot
+are the events evicted before it was read, which become gaps placed in time
+by the events around them. Spans and frames are identified by the sequence
+number of the event that began them, so an id cited from one snapshot finds
+the same span in any other snapshot or capture of the instance.
+
+Every answer carries a `Basis` that says what it covers: whether the
+producer recorded the data at all, how spans crossing a range's edge were
+counted, which spans were left out because they were still open or began
+before the trace, and where events are missing. A consumer can tell
+"nothing happened" from "nothing was recorded" from "the data is
+incomplete" without consulting anything else.
+
+Analysis works on `Duration`s rather than the runtime's microsecond
+timestamps, so a finer clock would not change its interface.
 
 ## Invariants
 

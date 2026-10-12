@@ -5,16 +5,19 @@
 //! frame, messages, and losses, kept up to date one window at a time.
 
 use crate::{Key, Update};
-use footfall::analysis::{Continuity, FrameTracker, SpanTracker};
+use footfall::analysis::{Continuity, GroupBy, TimeRange, Trace};
 use footfall::session::{CounterKind, Drops, OwnedObservation, OwnedSnapshot};
-use footfall::{CounterDescId, Unit};
+use footfall::{CounterDescId, MarkerKind, Unit};
+use footfall_examples::format;
 use std::collections::{BTreeMap, VecDeque};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Frames kept for the chart and statistics.
 const FRAME_HISTORY: usize = 600;
-/// Windows of scopes the scope table covers.
-const SCOPE_WINDOWS: usize = 20;
+/// The producer's recent time the scope table covers.
+pub(crate) const SCOPE_SPAN: Duration = Duration::from_secs(5);
+/// The producer's time the trace keeps; it forgets anything older.
+const TRACE_HISTORY: Duration = Duration::from_secs(30);
 /// Messages kept.
 const MESSAGE_HISTORY: usize = 100;
 
@@ -44,7 +47,7 @@ pub(crate) struct About {
     pub event_capacity: usize,
 }
 
-/// One scope name's totals over recent windows.
+/// One scope name's totals over the last [`SCOPE_SPAN`].
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ScopeTotals {
     pub count: u64,
@@ -95,9 +98,7 @@ pub(crate) struct App {
     pub missed: u64,
     pub gaps: u64,
     pub drops: Drops,
-    frame_tracker: FrameTracker,
-    span_tracker: SpanTracker,
-    scope_windows: VecDeque<BTreeMap<String, ScopeTotals>>,
+    trace: Trace,
     counter_frames: VecDeque<BTreeMap<CounterDescId, (String, Unit, bool, u64)>>,
     last_window_at: Option<Instant>,
 }
@@ -123,9 +124,7 @@ impl App {
             missed: 0,
             gaps: 0,
             drops: Drops::default(),
-            frame_tracker: FrameTracker::new(),
-            span_tracker: SpanTracker::new(),
-            scope_windows: VecDeque::new(),
+            trace: Trace::new(),
             counter_frames: VecDeque::new(),
             last_window_at: None,
         }
@@ -151,8 +150,25 @@ impl App {
     }
 
     fn window(&mut self, window: &OwnedSnapshot, bytes: Option<usize>, show: bool) {
-        let frames = self.frame_tracker.push(window);
-        let spans = self.span_tracker.push(window);
+        // A snapshot from another runtime instance is a restarted producer,
+        // whose history starts over in a new trace.
+        let (pushed, restarted) = match self.trace.push(window) {
+            Ok(pushed) => (pushed, false),
+            Err(_) => {
+                self.trace = Trace::new();
+                self.frames.clear();
+                self.counter_frames.clear();
+                self.messages.clear();
+                let pushed = self
+                    .trace
+                    .push(window)
+                    .expect("a new trace accepts a full snapshot");
+                (pushed, true)
+            }
+        };
+        let now_in_trace = self.trace.observed().end();
+        self.trace
+            .forget_before(now_in_trace.saturating_sub(TRACE_HISTORY));
         if !show {
             return;
         }
@@ -165,17 +181,11 @@ impl App {
         }
         self.last_window_at = Some(now);
 
-        self.status = match self.frame_tracker.continuity() {
-            Continuity::Gap => {
+        self.status = match pushed.continuity() {
+            _ if restarted => Status::Restarted,
+            Continuity::Gap { .. } => {
                 self.gaps += 1;
                 Status::Gap
-            }
-            Continuity::Restarted => {
-                self.frames.clear();
-                self.scope_windows.clear();
-                self.counter_frames.clear();
-                self.messages.clear();
-                Status::Restarted
             }
             Continuity::First | Continuity::Continuous => Status::Live,
         };
@@ -195,8 +205,13 @@ impl App {
         self.missed += window.window().missed();
         self.drops = window.drops();
 
-        for frame in &frames {
-            self.frames.push_back(frame.duration_micros());
+        let frames = pushed
+            .frames()
+            .iter()
+            .filter_map(|id| self.trace.frame(*id))
+            .filter(|frame| frame.kind() == MarkerKind::Frame);
+        for frame in frames {
+            self.frames.push_back(format::as_micros(frame.duration()));
             self.frames_seen += 1;
             let mut counters = BTreeMap::new();
             for counter in frame.counters() {
@@ -223,32 +238,29 @@ impl App {
             self.counter_frames.pop_front();
         }
 
-        let mut scopes = BTreeMap::new();
-        for (name, stats) in spans.by_name() {
-            scopes.insert(
-                name.to_owned(),
-                ScopeTotals {
-                    count: stats.count(),
-                    total: stats.total_micros(),
-                    own: stats.self_micros(),
-                    max: stats.max_micros(),
-                },
-            );
-        }
-        self.scope_windows.push_back(scopes);
-        while self.scope_windows.len() > SCOPE_WINDOWS {
-            self.scope_windows.pop_front();
-        }
-        self.scopes = BTreeMap::new();
-        for window in &self.scope_windows {
-            for (name, totals) in window {
-                let sum = self.scopes.entry(name.clone()).or_default();
-                sum.count += totals.count;
-                sum.total += totals.total;
-                sum.own += totals.own;
-                sum.max = sum.max.max(totals.max);
-            }
-        }
+        let recent = TimeRange::new(now_in_trace.saturating_sub(SCOPE_SPAN), now_in_trace);
+        let table = self
+            .trace
+            .spans()
+            .within(recent)
+            .group_by(GroupBy::Name)
+            .table();
+        self.scopes = table
+            .rows()
+            .iter()
+            .map(|row| {
+                let stats = row.stats();
+                (
+                    row.describe(),
+                    ScopeTotals {
+                        count: stats.count(),
+                        total: format::as_micros(stats.total()),
+                        own: format::as_micros(stats.self_time()),
+                        max: format::as_micros(stats.time().max()),
+                    },
+                )
+            })
+            .collect();
 
         self.counters = self.counter_rows(window);
 

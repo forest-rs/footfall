@@ -12,7 +12,7 @@
 //! ```
 
 use anstream::println;
-use footfall::analysis::Spans;
+use footfall::analysis::{GroupBy, Trace};
 use footfall::runtime::Runtime;
 use footfall::session::OwnedSnapshot;
 use footfall::tracing_layer::FootfallLayer;
@@ -46,14 +46,14 @@ fn main() -> std::io::Result<()> {
     }
 
     let snapshot = OwnedSnapshot::from(runtime.snapshot());
-    let spans = Spans::from_snapshot(&snapshot);
+    let trace = Trace::from_snapshot(&snapshot);
     println!(
         "{HEADING}footfall tracing_bridge{HEADING:#} {DIM}· five frames of plain `tracing` spans{DIM:#}\n"
     );
-    report::spans(&spans, 10);
+    report::spans(&trace.spans().group_by(GroupBy::Name).table(), 10);
     println!();
     // Span fields become context labels, so time can be split by them.
-    report::spans_by_label(&spans, &snapshot, "paths");
+    report::spans_by_label(&trace, "paths");
     println!();
     let messages = snapshot
         .events()

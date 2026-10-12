@@ -21,3 +21,6 @@ struct InstrumentingAnAppDoctests;
 #[cfg(doctest)]
 #[doc = include_str!("../../docs/session-consumer-contract.md")]
 struct SessionConsumerContractDoctests;
+#[cfg(doctest)]
+#[doc = include_str!("../../docs/analysing-a-trace.md")]
+struct AnalysingATraceDoctests;

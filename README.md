@@ -117,6 +117,8 @@ https://127.0.0.1:43091/footfall/session · main
   contexts, levels, capture, export, and serving.
 - [Session consumer contract](docs/session-consumer-contract.md): what a tool
   attaching to a session can rely on.
+- [Analysing a trace](docs/analysing-a-trace.md): asking where time went,
+  what changed, and what an answer covers.
 - [Session wire format](docs/session-wire-format.md): the bytes, for tools in
   other languages.
 - [Architecture](docs/architecture.md): how the crates fit and why.
@@ -131,7 +133,7 @@ https://127.0.0.1:43091/footfall/session · main
 | `footfall_runtime` | `runtime` | Bounded in-process capture with snapshots and cursors |
 | `footfall_export` | `export` | Chrome Trace JSON for Perfetto and `chrome://tracing` |
 | `footfall_session` | `session` | Snapshots for consumers, the envelope codec, capture files |
-| `footfall_analysis` | `analysis` | Spans, frames, and per-frame counter changes |
+| `footfall_analysis` | `analysis` | Traces of snapshots: span queries, frames, comparisons, timelines |
 | `footfall_session_wtransport` | `wtransport` | Serve and attach to sessions over local WebTransport |
 | `footfall_tracing` | `tracing` | A `tracing` layer that forwards into Footfall |
 | `footfall_tracy` | `tracy` | A live Tracy backend |

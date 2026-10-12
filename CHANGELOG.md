@@ -36,8 +36,13 @@ The first release.
 - `footfall_session_wtransport`: serve runtimes to local tools, which find
   every producer without configuration, then fetch snapshots or subscribe
   to windows of changes. Graceful shutdown delivers everything recorded.
-- `footfall_analysis`: spans, frames, and per-frame counter changes, across a
-  subscription's windows, with gaps and restarts reported.
+- `footfall_analysis`: a `Trace` of one runtime instance, built from a
+  snapshot or a subscription's windows: spans on per-thread tracks with ids
+  that hold across snapshots and captures, frames with counter changes,
+  counter series, messages, resource lifetimes, and flows. Span queries
+  filter by frame, time, name, thread, or label and group into tables;
+  comparisons split a change into more work and slower work; and every
+  answer says what it covers.
 - `footfall_export`: Chrome Trace JSON for Perfetto.
 
 ### Integrations

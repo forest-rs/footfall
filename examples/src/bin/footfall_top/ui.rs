@@ -159,7 +159,10 @@ fn draw_scopes(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ],
     )
     .header(header)
-    .block(block(format!("Scopes · recent windows · by {sort} time")));
+    .block(block(format!(
+        "Scopes · last {} s · by {sort} time",
+        crate::app::SCOPE_SPAN.as_secs()
+    )));
     frame.render_widget(table, area);
 }
 
