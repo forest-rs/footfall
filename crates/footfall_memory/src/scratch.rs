@@ -5,7 +5,8 @@ use alloc::vec::Vec;
 use core::mem::size_of;
 use footfall_core::{ContextHandle, CounterDesc, counter_add, gauge_set};
 
-/// Standard counter descriptors for scratch-buffer observation.
+/// The counters a [`TrackedScratchVec`] reports through: current bytes, peak
+/// bytes, and growth events. Pass it to [`TrackedScratchVec::new`].
 #[derive(Clone, Copy, Debug)]
 pub struct ScratchMetrics {
     /// Current reserved bytes.
@@ -50,7 +51,8 @@ impl ScratchMetrics {
     }
 }
 
-/// `Vec` wrapper that reports scratch-buffer growth and capacity.
+/// `Vec` wrapper that reports scratch-buffer growth and capacity through the
+/// counters of a [`ScratchMetrics`], under one context.
 #[derive(Debug)]
 pub struct TrackedScratchVec<T> {
     inner: Vec<T>,

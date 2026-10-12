@@ -23,7 +23,12 @@ use std::{fmt, io};
 use tokio::sync::watch;
 use wtransport::{Connection, Endpoint, RecvStream, SendStream, ServerConfig};
 
-/// Discoverable metadata for one local Footfall WebTransport session.
+/// What discovery says about one session: its id, process, and producer.
+///
+/// [`Discovery::sessions`](crate::Discovery::sessions) and
+/// [`LocalSession::announcement`](crate::LocalSession::announcement) return
+/// them; servers build one per session with
+/// [`ServedSession::announcement`](crate::ServedSession::announcement).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionAnnouncement {
     /// Stable session id unique within one session server.
@@ -99,7 +104,7 @@ impl SessionAnnouncement {
     }
 }
 
-/// Request kind received by a session server.
+/// What a client asked for, as [`SessionRequest::kind`] returns it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum SessionRequestKind {
@@ -111,7 +116,7 @@ pub enum SessionRequestKind {
         session_id: String,
         /// Where the consumer's previous read ended, from
         /// [`next_cursor`](footfall_session::OwnedSnapshot::next_cursor), or `None` for everything
-        /// retained. Pass it to `Runtime::snapshot_since`.
+        /// retained. Pass it to [`Runtime::snapshot_since`](footfall_runtime::Runtime::snapshot_since).
         since: Option<EventCursor>,
     },
     /// Subscribe to one named session: a snapshot now, and another every
@@ -119,7 +124,7 @@ pub enum SessionRequestKind {
     Subscribe {
         /// Session id advertised by discovery.
         session_id: String,
-        /// Where the first snapshot's events start, as for `Snapshot`.
+        /// Where the first snapshot's events start, as for [`Snapshot`].
         since: Option<EventCursor>,
         /// How long to wait between snapshots.
         interval: Duration,
@@ -139,7 +144,8 @@ impl SessionRequestKind {
     }
 }
 
-/// Summary of one served request.
+/// What a server did for one request, returned by the
+/// [`SessionRequest`] `respond_*` methods for logging or tests.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServedRequest {
     /// Request authority observed by the server.
@@ -170,7 +176,7 @@ impl ServedRequest {
     }
 }
 
-/// Classification for a served request.
+/// What kind of answer a request got, as [`ServedRequest::kind`] returns it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ServedRequestKind {
@@ -193,7 +199,8 @@ pub enum ServedRequestKind {
     Error,
 }
 
-/// Configuration for a one-shot session server.
+/// Address and path for a [`SessionServer`]; pass it to
+/// [`SessionServer::bind`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionServerConfig {
     /// Local UDP address to bind.
@@ -257,7 +264,13 @@ impl SessionServerConfig {
     }
 }
 
-/// One-shot WebTransport server for Footfall session envelopes.
+/// A WebTransport server you drive yourself.
+///
+/// [`bind`](Self::bind) it with a [`SessionIdentity`]
+/// and a [`SessionServerConfig`], then either [`serve`](Self::serve) a set of
+/// runtimes, or call [`accept_request`](Self::accept_request) and answer each
+/// [`SessionRequest`] yourself. [`LocalSessionServer`](crate::LocalSessionServer)
+/// does all of this for the common case.
 pub struct SessionServer {
     pub(crate) endpoint: Endpoint<wtransport::endpoint::endpoint_side::Server>,
     pub(crate) path: String,
@@ -379,7 +392,9 @@ pub(crate) async fn read_request(
     })
 }
 
-/// Accepted request waiting for a session server response.
+/// A request a client made, as [`SessionServer::accept_request`] returns it.
+///
+/// Answer it with exactly one of the `respond_*` methods.
 pub struct SessionRequest {
     authority: String,
     path: String,
@@ -592,7 +607,7 @@ impl SessionRequest {
     }
 
     /// Responds with an error, which the client receives as
-    /// `ClientError::Server` with this code and message.
+    /// [`ClientError::Server`](crate::ClientError::Server) with this code and message.
     ///
     /// Use [`SessionErrorCode::NotFound`] for an unknown session id and
     /// [`SessionErrorCode::Unsupported`] for a request kind the server does

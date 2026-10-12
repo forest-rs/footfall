@@ -5,7 +5,7 @@
 //!
 //! [`TracyBackend`] is a [`footfall_core::Backend`] that emits directly into `tracy-client`.
 //!
-//! This first slice intentionally maps only the parts of Footfall that Tracy represents naturally:
+//! It maps the parts of Footfall that Tracy represents naturally:
 //!
 //! - scopes become Tracy zones
 //! - counters and gauges become Tracy plots
@@ -38,7 +38,11 @@ use tracy_client::{
     Client, Frame, FrameName, PlotConfiguration, PlotFormat, PlotName, Span, SpanLocation,
 };
 
-/// Live Tracy backend.
+/// A [`Backend`] that sends every emission to a running Tracy profiler.
+///
+/// Create one with [`TracyBackend::new`] and install it with
+/// [`TracyBackend::install_global`], or combine it with a runtime through
+/// `footfall_fanout`.
 pub struct TracyBackend {
     client: Client,
     instance: u64,

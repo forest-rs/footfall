@@ -1,11 +1,56 @@
 // Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Transport-neutral session envelopes for Footfall.
+//! Footfall snapshots for consumers outside the instrumented process.
 //!
-//! This crate does not participate in hot-path emission. Without the `std`
-//! feature it only defines the protocol version and error codes; snapshot
-//! publication, the codec, and capture files need `std`.
+//! A runtime snapshot belongs to the process that took it. This crate
+//! defines the form it takes everywhere else: [`OwnedSnapshot`], which a
+//! consumer gets the same way whether the snapshot was taken in process,
+//! received from a live session, or read from a capture file, and which
+//! `footfall_analysis` and `footfall_export` work on.
+//!
+//! - [`OwnedSnapshot`] is what consumers read. It converts from a runtime
+//!   `Snapshot`, joins consecutive windows with
+//!   [`append`](OwnedSnapshot::append), and folds in changes with
+//!   [`apply`](OwnedSnapshot::apply).
+//! - [`capture`] saves snapshots to a file and reads them back.
+//! - Snapshots travel as versioned, chunked envelopes:
+//!   [`publish_snapshot`] and [`publish_changes`] hand them to a
+//!   [`Consumer`], [`codec`] encodes and decodes them, and
+//!   [`OwnedSnapshot::from_envelopes`] reassembles them. Transports such as
+//!   `footfall_session_wtransport` build on these; consumers rarely need
+//!   them.
+//!
+//! ```
+//! use footfall_core::{Backend as _, ContextHandle, ScopeDesc};
+//! use footfall_runtime::Runtime;
+//! use footfall_session::{OwnedSnapshot, capture::{CaptureReader, CaptureWriter}};
+//!
+//! static RENDER: ScopeDesc = ScopeDesc::new("render");
+//! let runtime = Runtime::default();
+//! let token = runtime.scope_begin(&RENDER, ContextHandle::ROOT, &Default::default());
+//! runtime.scope_end(token);
+//!
+//! // In process: convert the runtime snapshot.
+//! let live = OwnedSnapshot::from(runtime.snapshot());
+//!
+//! // Offline: the same snapshot after a round trip through a capture file.
+//! let mut writer = CaptureWriter::new(Vec::new())?;
+//! writer.write_owned(&live)?;
+//! let bytes = writer.finish()?;
+//! let saved = CaptureReader::new(bytes.as_slice())?.read_snapshot()?;
+//! assert_eq!(saved.as_ref(), Some(&live));
+//! # Ok::<(), std::io::Error>(())
+//! ```
+//!
+//! The wire format and the contract consumers can rely on are documented in
+//! the [session wire format] and [session consumer contract] guides.
+//!
+//! Without the `std` feature this crate only defines the protocol version
+//! and error codes.
+//!
+//! [session wire format]: https://github.com/forest-rs/footfall/blob/main/docs/session-wire-format.md
+//! [session consumer contract]: https://github.com/forest-rs/footfall/blob/main/docs/session-consumer-contract.md
 
 #![no_std]
 
@@ -49,6 +94,12 @@ pub use snapshot::{
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
 
 /// Semantic protocol version for a stream of session messages.
+///
+/// [`PROTOCOL_VERSION`] is the version this crate speaks; each envelope
+/// header carries the version it was produced at
+/// (`EnvelopeHeader::protocol_version`), and [`ProtocolVersion::can_decode`]
+/// says whether one is readable. Transports report a peer's version, for
+/// example in discovery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProtocolVersion {
     major: u16,

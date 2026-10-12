@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 /// Every emission function takes a handle instead of a context, so
 /// attributing an observation costs one integer however many labels the
 /// context carries. Obtain handles from [`register_context`],
-/// [`RegisteredContext`], or [`LazyContext`]; [`ContextHandle::ROOT`] stands
+/// [`RegisteredContext`], or `LazyContext` (with `std`); [`ContextHandle::ROOT`] stands
 /// for the empty root context and needs no registration.
 ///
 /// Handle values are allocated by `footfall_core` from one process-wide
@@ -72,7 +72,7 @@ impl ContextHandle {
 ///
 /// Register after installing the backend. A backend installed later never
 /// learns about contexts registered before it, and attributes their
-/// observations to the root context. Use [`LazyContext`] for contexts that
+/// observations to the root context. Use `LazyContext` (with `std`) for contexts that
 /// live in `static` items, which may be first touched before installation.
 ///
 /// Release the handle with [`release_context`] when its owner goes away, or

@@ -33,7 +33,11 @@ fn address_id<T>(desc: &'static T) -> u64 {
     ptr::from_ref(desc).addr() as u64
 }
 
-/// Static source location associated with a descriptor.
+/// Where in the source a descriptor is declared.
+///
+/// The `scope_desc!`, `counter_desc!`, `event_desc!`, and
+/// `resource_kind_desc!` macros record it, or pass one to
+/// [`ScopeDesc::with_location`]; [`ScopeDesc::location`] returns it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SourceLocation {
     function: &'static str,
@@ -71,7 +75,12 @@ impl SourceLocation {
     }
 }
 
-/// Static metadata describing one scope kind.
+/// Names one kind of timed scope, such as `"layout"`.
+///
+/// Declare one per kind of work and pass it to [`scope`](crate::scope()),
+/// [`scope_with`](crate::scope_with), the [`scope!`](crate::scope!) macro, or
+/// [`scope_begin`](crate::scope_begin). Snapshots identify it by a
+/// [`ScopeDescId`].
 ///
 /// Identity is the descriptor's address; see the [crate docs](crate#descriptors) for why
 /// descriptors must be `static` items.
@@ -124,7 +133,11 @@ impl ScopeDesc {
     }
 }
 
-/// Static metadata describing one point-event kind, such as a log channel.
+/// Names one kind of point event, such as a log channel.
+///
+/// Pass it to [`message`](crate::message) or
+/// [`message_with`](crate::message_with). Snapshots identify it by an
+/// [`EventDescId`].
 ///
 /// Identity is the descriptor's address; see the [crate docs](crate#descriptors) for why
 /// descriptors must be `static` items.
@@ -159,7 +172,12 @@ impl EventDesc {
     }
 }
 
-/// Static metadata describing one counter, gauge, or histogram.
+/// Names one counter, gauge, or histogram and its [`Unit`].
+///
+/// Pass it to [`counter_add`](crate::counter_add) for a value that only
+/// grows, [`gauge_set`](crate::gauge_set) for a current value, or
+/// [`histogram_record`](crate::histogram_record) for a distribution.
+/// Snapshots identify it by a [`CounterDescId`].
 ///
 /// Identity is the descriptor's address; see the [crate docs](crate#descriptors) for why
 /// descriptors must be `static` items.
@@ -214,7 +232,12 @@ impl CounterDesc {
     }
 }
 
-/// Static metadata describing one logical resource kind.
+/// Names one kind of resource whose lifecycle is tracked, such as `"atlas"`.
+///
+/// Pass it to [`resource_create`](crate::resource_create),
+/// [`resource_update`](crate::resource_update), and
+/// [`resource_drop`](crate::resource_drop), each with the [`ResourceId`](crate::ResourceId) of
+/// one instance. Snapshots identify it by a [`ResourceKindId`].
 ///
 /// Identity is the descriptor's address; see the [crate docs](crate#descriptors) for why
 /// descriptors must be `static` items.

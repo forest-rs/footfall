@@ -22,7 +22,19 @@ use crate::{
 /// against the publication contract.
 ///
 /// This is what a consumer works with: the envelopes are only how a snapshot
-/// travels. Build one with [`OwnedSnapshot::from_envelopes`].
+/// travels. You get one from:
+///
+/// - a runtime snapshot in the same process, with `OwnedSnapshot::from`;
+/// - a capture file, with [`CaptureReader::read_snapshot`](crate::capture::CaptureReader::read_snapshot);
+/// - a live session, from `SessionClient::fetch` or `Subscription::next` in
+///   `footfall_session_wtransport`;
+/// - envelopes from any other transport, with [`OwnedSnapshot::from_envelopes`].
+///
+/// Read its rows with [`contexts`](Self::contexts),
+/// [`counters`](Self::counters), [`histograms`](Self::histograms), and
+/// [`events`](Self::events); analyze it with `footfall_analysis`, export it
+/// with `footfall_export`, or save it with
+/// [`CaptureWriter::write_owned`](crate::capture::CaptureWriter::write_owned).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedSnapshot {
     summary: OwnedSnapshotSummary,

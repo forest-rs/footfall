@@ -3,7 +3,14 @@
 
 use core::sync::atomic::{AtomicU8, Ordering};
 
-/// Runtime instrumentation level.
+/// How much the installed backend collects.
+///
+/// Each level adds to the one before: `Off`, then `Counters`, then `Scoped`,
+/// then `Trace`. Emissions above the level return immediately. The installed
+/// backend sets the level with [`set_max_level`]; [`max_level`] reads it, so a
+/// call site can skip preparing arguments that would be discarded. The
+/// runtime's level is set through `RuntimeBuilder::level` and
+/// `Runtime::set_level` in `footfall_runtime`, and reported in each snapshot.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub enum InstrumentationLevel {

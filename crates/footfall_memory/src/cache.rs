@@ -3,7 +3,8 @@
 
 use footfall_core::{ContextHandle, CounterDesc, counter_add, gauge_set};
 
-/// Standard counter descriptors for cache observation.
+/// The counters a [`CacheStats`] reports through: resident bytes, hits,
+/// misses, and evictions. Pass it to [`CacheStats::new`].
 #[derive(Clone, Copy, Debug)]
 pub struct CacheMetrics {
     /// Resident byte gauge.
@@ -58,7 +59,8 @@ impl CacheMetrics {
     }
 }
 
-/// Lightweight cache statistics helper.
+/// Reports one cache's activity through the counters of a [`CacheMetrics`],
+/// under one context. Create it with [`CacheStats::new`] next to the cache.
 #[derive(Clone, Copy, Debug)]
 pub struct CacheStats {
     metrics: CacheMetrics,
