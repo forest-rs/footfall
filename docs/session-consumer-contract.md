@@ -128,7 +128,9 @@ Every client failure is a `ClientError` variant a consumer can act on:
 
 - `TimedOut`: no complete response within the client's timeout, usually
   because no server is listening; the default is five seconds
-- `CertificateRejected`: the server's certificate does not match the pin
+- `CertificateRejected`: the client rejected the server's certificate, with a
+  `CertificateProblem` saying why: the hash does not match the pin, the
+  certificate expired or is not valid yet, or it cannot be pinned
 - `SessionRejected`: the server refused the session, usually a wrong path
 - `Server`: the server answered with an error code (`not_found` for an
   unknown session id, `unsupported` for a request it does not handle) and a
