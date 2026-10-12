@@ -2,7 +2,10 @@
 
 This document is the byte-level specification of the format used by
 `footfall_session_wtransport`, complete enough to write a client in another
-language. The semantic model is the transport-neutral envelope model in
+language. The envelope encoding is implemented by `footfall_session::codec`
+and also used by capture files (`footfall_session::capture`), which store a
+`FFALLCAP` header, the `u16` protocol major and minor, and then
+length-prefixed envelopes exactly as a snapshot response carries them. The semantic model is the transport-neutral envelope model in
 `footfall_session`; see the [consumer contract](session-consumer-contract.md)
 for what the values mean and how to use them.
 

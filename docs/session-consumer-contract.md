@@ -174,6 +174,21 @@ the meantime appear in the next window's `missed` count. Polling with
 `fetch` and the previous snapshot's cursor reads the same windows on the
 consumer's schedule instead.
 
+## Saving and Reloading
+
+`footfall_session::capture` writes snapshots to a capture file and reads
+them back as the same `OwnedSnapshot` values a live consumer receives, so
+live and offline tools share one model, one set of identities, and one
+export path. `CaptureWriter::write_owned` saves snapshots received from a
+session, for example each one a subscription delivers, and `CaptureReader`
+yields them in order.
+
+`OwnedSnapshot::append` joins consecutive windows from one runtime instance
+into one snapshot, counting events neither window held as missed, and
+`footfall_export::to_chrome_trace_json` turns any `OwnedSnapshot` into a
+trace for Perfetto. `footfall_session::codec` encodes and decodes single
+envelopes for consumers that carry them some other way.
+
 ## What a UI Actually Needs
 
 A useful first UI does not need every Footfall detail.

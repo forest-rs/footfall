@@ -1,0 +1,292 @@
+// Copyright 2026 the Footfall Authors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! Capture files: snapshots saved for later reading.
+//!
+//! A capture file is the header `FFALLCAP` followed by the `u16` protocol
+//! major and minor version, little-endian, and then snapshot publications
+//! back to back: each envelope as a `u32` byte length followed by the
+//! envelope encoded as in the [wire-format document]. A file can hold any
+//! number of snapshots, from one runtime or several, and a reader rebuilds
+//! each one exactly as a live consumer would have received it.
+//!
+//! ```
+//! use footfall_runtime::Runtime;
+//! use footfall_session::capture::{CaptureReader, CaptureWriter};
+//!
+//! let runtime = Runtime::default();
+//! let mut writer = CaptureWriter::new(Vec::new())?;
+//! writer.write_snapshot(&runtime.snapshot())?;
+//! let bytes = writer.finish()?;
+//!
+//! let snapshots: Vec<_> = CaptureReader::new(bytes.as_slice())?.collect::<Result<_, _>>()?;
+//! assert_eq!(snapshots[0].metadata().instance_id(), runtime.instance_id());
+//! # Ok::<(), std::io::Error>(())
+//! ```
+//!
+//! [wire-format document]: https://github.com/forest-rs/footfall/blob/main/docs/session-wire-format.md
+
+use alloc::{format, vec, vec::Vec};
+use std::io::{self, Read, Write};
+
+use footfall_runtime::Snapshot;
+
+use crate::{
+    Chunking, Consumer, Envelope, OwnedSessionEnvelope, OwnedSessionPayload, OwnedSnapshot,
+    PROTOCOL_VERSION, ProtocolVersion,
+    codec::{MAX_SESSION_ENVELOPE_BYTES, decode_envelope, encode_envelope, encode_owned_envelope},
+    publish_snapshot,
+};
+
+/// The first bytes of every capture file.
+pub const CAPTURE_MAGIC: &[u8; 8] = b"FFALLCAP";
+
+/// Writes snapshots to a capture file.
+#[derive(Debug)]
+pub struct CaptureWriter<W: Write> {
+    inner: W,
+    chunking: Chunking,
+}
+
+impl<W: Write> CaptureWriter<W> {
+    /// Starts a capture, writing the header to `inner`.
+    pub fn new(inner: W) -> io::Result<Self> {
+        let mut writer = Self {
+            inner,
+            chunking: Chunking::default(),
+        };
+        writer.inner.write_all(CAPTURE_MAGIC)?;
+        writer
+            .inner
+            .write_all(&PROTOCOL_VERSION.major().to_le_bytes())?;
+        writer
+            .inner
+            .write_all(&PROTOCOL_VERSION.minor().to_le_bytes())?;
+        Ok(writer)
+    }
+
+    /// Appends a runtime snapshot.
+    pub fn write_snapshot(&mut self, snapshot: &Snapshot) -> io::Result<()> {
+        let mut frames = FrameWriter {
+            inner: &mut self.inner,
+        };
+        publish_snapshot(snapshot, self.chunking, &mut frames)
+    }
+
+    /// Appends a snapshot received from a session or read from another
+    /// capture.
+    pub fn write_owned(&mut self, snapshot: &OwnedSnapshot) -> io::Result<()> {
+        for envelope in snapshot.to_envelopes(self.chunking) {
+            write_frame(&mut self.inner, &encode_owned_envelope(&envelope)?)?;
+        }
+        Ok(())
+    }
+
+    /// Flushes what has been written so far, so a reader of a capture still
+    /// being written sees every complete snapshot.
+    pub fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+
+    /// Flushes the capture and returns the underlying writer.
+    pub fn finish(mut self) -> io::Result<W> {
+        self.inner.flush()?;
+        Ok(self.inner)
+    }
+}
+
+struct FrameWriter<'a, W: Write> {
+    inner: &'a mut W,
+}
+
+impl<W: Write> Consumer for FrameWriter<'_, W> {
+    type Error = io::Error;
+
+    fn consume(&mut self, envelope: Envelope<'_>) -> io::Result<()> {
+        write_frame(self.inner, &encode_envelope(envelope)?)
+    }
+}
+
+fn write_frame(writer: &mut impl Write, frame: &[u8]) -> io::Result<()> {
+    let len = u32::try_from(frame.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "envelope exceeds u32 length"))?;
+    writer.write_all(&len.to_le_bytes())?;
+    writer.write_all(frame)
+}
+
+/// Reads snapshots from a capture file, one at a time.
+///
+/// As an iterator it yields each snapshot in file order, or the error that
+/// stopped reading. Errors are [`io::ErrorKind::InvalidData`] for a file
+/// that is not a capture, was written by an incompatible protocol version,
+/// or holds a malformed publication, and
+/// [`io::ErrorKind::UnexpectedEof`] for a file that ends partway through a
+/// snapshot, as one being written might.
+#[derive(Debug)]
+pub struct CaptureReader<R: Read> {
+    inner: R,
+    protocol_version: ProtocolVersion,
+    failed: bool,
+}
+
+impl<R: Read> CaptureReader<R> {
+    /// Opens a capture, reading and checking its header.
+    pub fn new(mut inner: R) -> io::Result<Self> {
+        let mut magic = [0_u8; 8];
+        inner.read_exact(&mut magic)?;
+        if &magic != CAPTURE_MAGIC {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "not a Footfall capture file",
+            ));
+        }
+        let mut version = [0_u8; 4];
+        inner.read_exact(&mut version)?;
+        let protocol_version = ProtocolVersion::new(
+            u16::from_le_bytes([version[0], version[1]]),
+            u16::from_le_bytes([version[2], version[3]]),
+        );
+        if !PROTOCOL_VERSION.can_decode(protocol_version) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "capture was written with session protocol {}.{}, which this reader ({}.{}) cannot decode",
+                    protocol_version.major(),
+                    protocol_version.minor(),
+                    PROTOCOL_VERSION.major(),
+                    PROTOCOL_VERSION.minor()
+                ),
+            ));
+        }
+        Ok(Self {
+            inner,
+            protocol_version,
+            failed: false,
+        })
+    }
+
+    /// Returns the protocol version the capture was written with.
+    #[must_use]
+    pub const fn protocol_version(&self) -> ProtocolVersion {
+        self.protocol_version
+    }
+
+    /// Reads the next snapshot, or `None` at the end of the file.
+    pub fn read_snapshot(&mut self) -> io::Result<Option<OwnedSnapshot>> {
+        let mut envelopes = Vec::new();
+        loop {
+            let mut len = [0_u8; 4];
+            match self.inner.read(&mut len[..1])? {
+                0 if envelopes.is_empty() => return Ok(None),
+                0 => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "capture ends partway through a snapshot",
+                    ));
+                }
+                _ => self.inner.read_exact(&mut len[1..])?,
+            }
+            let len = usize::try_from(u32::from_le_bytes(len)).unwrap_or(usize::MAX);
+            if len > MAX_SESSION_ENVELOPE_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("capture envelope of {len} bytes exceeds the limit"),
+                ));
+            }
+            let mut frame = vec![0_u8; len];
+            self.inner.read_exact(&mut frame)?;
+            let envelope = decode_envelope(&frame)?;
+            let ends = matches!(envelope.payload(), OwnedSessionPayload::SnapshotEnd(_));
+            envelopes.push(envelope);
+            if ends {
+                return assemble(envelopes).map(Some);
+            }
+        }
+    }
+}
+
+fn assemble(envelopes: Vec<OwnedSessionEnvelope>) -> io::Result<OwnedSnapshot> {
+    OwnedSnapshot::from_envelopes(envelopes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+impl<R: Read> Iterator for CaptureReader<R> {
+    type Item = io::Result<OwnedSnapshot>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.failed {
+            return None;
+        }
+        match self.read_snapshot() {
+            Ok(snapshot) => snapshot.map(Ok),
+            Err(error) => {
+                self.failed = true;
+                Some(Err(error))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+    use std::io::ErrorKind;
+
+    use footfall_core::{Backend as _, ContextHandle, MarkerKind, MarkerPhase};
+    use footfall_runtime::Runtime;
+
+    use super::{CaptureReader, CaptureWriter};
+    use crate::OwnedSnapshot;
+
+    fn mark(runtime: &Runtime) {
+        runtime.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, ContextHandle::ROOT);
+    }
+
+    #[test]
+    fn captures_round_trip_runtime_and_owned_snapshots() {
+        let runtime = Runtime::default();
+        mark(&runtime);
+        let first = runtime.snapshot();
+        mark(&runtime);
+        let second = runtime.snapshot_since(first.next_cursor());
+
+        let mut writer = CaptureWriter::new(Vec::new()).expect("header writes");
+        writer.write_snapshot(&first).expect("snapshot writes");
+        writer
+            .write_owned(&OwnedSnapshot::from(&second))
+            .expect("owned snapshot writes");
+        let bytes = writer.finish().expect("capture finishes");
+
+        let read: Vec<_> = CaptureReader::new(bytes.as_slice())
+            .expect("header reads")
+            .collect::<Result<_, _>>()
+            .expect("snapshots read");
+        assert_eq!(
+            read,
+            [OwnedSnapshot::from(&first), OwnedSnapshot::from(&second)]
+        );
+    }
+
+    #[test]
+    fn readers_reject_other_files_and_report_truncation() {
+        let error = CaptureReader::new(&b"not a capture"[..]).expect_err("wrong magic");
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+
+        let runtime = Runtime::default();
+        mark(&runtime);
+        let mut writer = CaptureWriter::new(Vec::new()).expect("header writes");
+        writer
+            .write_snapshot(&runtime.snapshot())
+            .expect("snapshot writes");
+        let bytes = writer.finish().expect("capture finishes");
+
+        let truncated = &bytes[..bytes.len() - 3];
+        let mut reader = CaptureReader::new(truncated).expect("header reads");
+        let error = reader
+            .next()
+            .expect("an item")
+            .expect_err("the snapshot is cut short");
+        assert_eq!(error.kind(), ErrorKind::UnexpectedEof);
+        assert!(reader.next().is_none(), "reading stops after an error");
+    }
+}
