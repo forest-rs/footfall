@@ -29,9 +29,10 @@
 use footfall::{
     ClockDesc, ClockReading, CounterDesc, DropReason, EventDesc, FlowId, FramePoint,
     FramePointKind, LabelKey, RegisteredContext, ResourceId, ResourceKindDesc, ScopeDesc,
-    TickPeriod, TimelineDesc, TimelineSpan, args, clock_sync, context, counter_add, flow_begin,
-    flow_end, flow_step, frame_begin_numbered, frame_end_numbered, frame_point, gauge_set,
-    histogram_record, message_with, resource_create, resource_drop, resource_update, timeline_span,
+    TickPeriod, TimelineDesc, TimelineSpan, TimingBasis, args, clock_sync, context, counter_add,
+    flow_begin, flow_end, flow_step, frame_begin_numbered, frame_end_numbered, frame_point,
+    gauge_set, histogram_record, message_with, resource_create, resource_drop, resource_update,
+    timeline_span,
 };
 use footfall_memory::{CacheMetrics, CacheStats};
 use std::collections::VecDeque;
@@ -496,7 +497,18 @@ impl Gpu {
     }
 
     fn submit(&mut self, frame: u64, flow: FlowId, passes: &[(&'static ScopeDesc, Duration)]) {
-        let mut at = self.idle_at.max(self.start.elapsed());
+        let submitted = self.start.elapsed();
+        frame_point(
+            &FramePoint::at(
+                frame,
+                FramePointKind::Submitted,
+                &HOST_CLOCK,
+                TickPeriod::NANOSECOND,
+                Self::host_ticks(submitted),
+            )
+            .with_basis(TimingBasis::Observed),
+        );
+        let mut at = self.idle_at.max(submitted);
         // The compositor expects the frame at the first refresh after a
         // typical frame's GPU work that the frames it has queued leave free,
         // not knowing what this one holds.
@@ -553,13 +565,16 @@ impl Gpu {
                 timeline_span(&span(scope, *begin, *end));
             }
             // The display reports when it showed the frame.
-            frame_point(&FramePoint::at(
-                *frame,
-                FramePointKind::Presented,
-                &HOST_CLOCK,
-                TickPeriod::NANOSECOND,
-                Self::host_ticks(*shown),
-            ));
+            frame_point(
+                &FramePoint::at(
+                    *frame,
+                    FramePointKind::Presented,
+                    &HOST_CLOCK,
+                    TickPeriod::NANOSECOND,
+                    Self::host_ticks(*shown),
+                )
+                .with_basis(TimingBasis::Observed),
+            );
             self.in_flight.pop_front();
         }
     }

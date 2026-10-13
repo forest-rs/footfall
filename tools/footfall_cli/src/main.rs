@@ -26,12 +26,13 @@ mod top;
 use anstream::{eprintln, println};
 use clap::{Parser, Subcommand};
 use footfall::analysis::{
-    Comparison, GroupBy, KeyPart, LateCause, Outcome, Population, Selection, SpanId, Trace,
+    Comparison, GroupBy, KeyPart, LateCause, Outcome, Population, Selection, SpanId, Support,
+    Trace, Why,
 };
 use footfall::session::OwnedSnapshot;
 use footfall::session::capture::{CaptureReader, CaptureWriter};
 use footfall::wtransport::{ClientError, SessionClient};
-use footfall::{DropReason, FramePointKind};
+use footfall::{DropReason, FramePointKind, TimingBasis};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
@@ -488,6 +489,13 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
         .map(|(count, why)| format!("{} {why}", format::count(count)))
         .collect();
         println!("  late: {}", named.join(" · "));
+        let support = counts.late_support;
+        println!(
+            "  {DIM}how sure: {} observed · {} inferred · {} unresolved{DIM:#}",
+            format::count(support.observed),
+            format::count(support.inferred),
+            format::count(support.unresolved),
+        );
     }
     let intervals = pacing.intervals();
     if intervals.count() > 0 {
@@ -567,8 +575,8 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
     late.sort_by_key(|frame| core::cmp::Reverse(late_by(frame.outcome())));
     println!("\n{HEADING}Worst misses{HEADING:#}");
     println!(
-        "  {DIM}{:>7}  {:<14}  {:<14}  {:>12}  {:>10}  {:>14}{DIM:#}",
-        "frame", "outcome", "why", "begin to end", "GPU busy", "past deadline"
+        "  {DIM}{:>7}  {:<14}  {:<14}  {:<10}  {:<18}  {:>12}  {:>10}  {:>14}{DIM:#}",
+        "frame", "outcome", "why", "how sure", "also", "begin to end", "GPU busy", "past deadline"
     );
     for frame in late.iter().take(top) {
         let (outcome, why) = match frame.outcome() {
@@ -589,11 +597,15 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
         };
         let past_deadline = frame
             .deadline()
-            .zip(frame.work())
-            .and_then(|(deadline, work)| work.end().checked_sub(deadline))
+            .zip(frame.submitted().or(frame.work().map(|work| work.end())))
+            .and_then(|(deadline, submitted)| submitted.checked_sub(deadline))
             .map_or_else(|| String::from("-"), format::duration);
+        let (sure, also) = frame.why().map_or_else(
+            || (String::from("-"), String::from("-")),
+            |why| (support(why.support).to_owned(), also(why)),
+        );
         println!(
-            "  {:>7}  {BAD}{outcome:<14}{BAD:#}  {why:<14}  {:>12}  {:>10}  {:>14}",
+            "  {:>7}  {BAD}{outcome:<14}{BAD:#}  {why:<14}  {sure:<10}  {also:<18}  {:>12}  {:>10}  {:>14}",
             frame.number().to_string(),
             frame
                 .work()
@@ -628,6 +640,41 @@ fn late_by(outcome: Outcome) -> Duration {
         Outcome::Dropped { .. } => Duration::MAX,
         Outcome::Late { by, .. } | Outcome::SubmittedLate { by } => by,
         _ => Duration::ZERO,
+    }
+}
+
+/// How sure the trace is of a late frame's cause, in a word.
+fn support(support: Support) -> &'static str {
+    match support {
+        Support::Observed => "observed",
+        Support::Inferred => "inferred",
+        _ => "unresolved",
+    }
+}
+
+/// The conditions that held for a late frame besides its leading cause.
+fn also(why: &Why) -> String {
+    let mut also = Vec::new();
+    if why.cause != LateCause::MissedDeadline
+        && let Some(by) = why.submitted_late
+    {
+        also.push(format!("deadline +{}", format::duration(by)));
+    }
+    if why.cause != LateCause::Gpu
+        && let Some(by) = why.gpu_late
+    {
+        also.push(format!("GPU +{}", format::duration(by)));
+    }
+    if why.cause != LateCause::Backlog && why.behind_previous {
+        also.push(String::from("queued"));
+    }
+    if why.presented == TimingBasis::Estimated {
+        also.push(String::from("shown ~est."));
+    }
+    if also.is_empty() {
+        String::from("-")
+    } else {
+        also.join(", ")
     }
 }
 

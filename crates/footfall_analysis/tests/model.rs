@@ -1616,6 +1616,46 @@ fn late_frames_say_what_made_them_late() {
     assert_eq!(counts.missed(), 5);
     assert_eq!(counts.late_causes.gpu, 1);
     assert_eq!(counts.total(), 8);
+
+    // The evidence behind each cause, and how strongly the trace supports it.
+    use footfall_analysis::Support;
+    let why = |number: u64| {
+        *pacing
+            .frame(number)
+            .and_then(|frame| frame.why())
+            .expect("a late frame")
+    };
+    assert!(pacing.frame(1).and_then(|frame| frame.why()).is_none());
+    let deadline = why(2);
+    assert_eq!(deadline.support, Support::Observed);
+    assert_eq!(deadline.submitted_late, Some(us(833)));
+    assert!(!deadline.submit_reported, "judged by its end marker");
+    let gpu = why(4);
+    assert_eq!(
+        (gpu.support, gpu.gpu_late, gpu.submitted_late),
+        (Support::Observed, Some(us(3_333)), None)
+    );
+    let backlog = why(5);
+    assert_eq!(
+        (backlog.support, backlog.behind_previous),
+        (Support::Inferred, true),
+        "the queue itself was not observed"
+    );
+    let display = why(6);
+    assert_eq!(
+        (display.support, display.gpu_recorded, display.gpu_late),
+        (Support::Unresolved, true, None),
+        "the compositor was not observed"
+    );
+    assert_eq!(
+        (why(7).support, why(7).gpu_recorded),
+        (Support::Unresolved, false)
+    );
+    let support = counts.late_support;
+    assert_eq!(
+        (support.observed, support.inferred, support.unresolved),
+        (2, 1, 2)
+    );
     assert!(
         !Outcome::Dropped {
             reason: DropReason::Superseded
@@ -1842,6 +1882,20 @@ fn frame_points_say_how_their_times_were_known_and_what_the_scheduler_knew() {
     // Frame 3: the platform did not present it and did not say why.
     recording.numbered_frame(3, 33_333, 36_000);
     recording.frame_point(70_000, 3, Dropped(DropReason::NotPresented), &HOST, None);
+    // Frame 4: its work ran past its deadline, and it was shown late, at a
+    // time assumed from the refresh rate.
+    recording.numbered_frame(4, 50_000, 64_000);
+    recording.frame_point(64_000, 4, Deadline, &HOST, Some(62_500));
+    recording.frame_point(64_000, 4, Target, &HOST, Some(66_667));
+    recording.frame_point_with(
+        90_000,
+        4,
+        Presented,
+        &HOST,
+        Some(83_333),
+        TimingBasis::Estimated,
+        Args::none(),
+    );
     let trace = Trace::from_snapshot(&recording.snapshot(100_000));
 
     let pacing = trace.pacing(us(1_000));
@@ -1876,5 +1930,21 @@ fn frame_points_say_how_their_times_were_known_and_what_the_scheduler_knew() {
         "not presented without a reason is a miss"
     );
     let basis = pacing.presentation_basis();
-    assert_eq!((basis.observed, basis.estimated, basis.unknown), (1, 1, 0));
+    assert_eq!((basis.observed, basis.estimated, basis.unknown), (1, 2, 0));
+    assert_eq!(
+        first.why().map(|why| why.support),
+        Some(footfall_analysis::Support::Observed)
+    );
+    assert!(first.why().is_some_and(|why| why.submit_reported));
+    assert_eq!(
+        pacing
+            .frame(4)
+            .and_then(|frame| frame.why())
+            .map(|why| (why.cause, why.support)),
+        Some((
+            footfall_analysis::LateCause::MissedDeadline,
+            footfall_analysis::Support::Inferred
+        )),
+        "how late rests on an estimated presentation"
+    );
 }

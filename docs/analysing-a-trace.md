@@ -106,7 +106,23 @@ A late frame's `LateCause` is the first of these the trace shows, in order:
 | `Unknown` | has no deadline or CPU work to judge |
 
 So the first frame of a run of late frames carries the cause, and the ones
-behind it say `Backlog`. Only some drops are misses (`DropReason::is_miss`):
+behind it say `Backlog`.
+
+The cause is the leading explanation, not proof. `FramePacing::why` says
+what the trace shows: every condition that held (submitted after the
+deadline, GPU work finishing after the target, the frame before still
+waiting), whether the submission time was reported or read from the end
+marker, whether GPU work was recorded, how the presentation time was known,
+and how strongly the trace supports the cause:
+
+| `Support` | Meaning |
+|---|---|
+| `Observed` | The trace recorded the condition: a late submission, or recorded GPU work finishing after the target |
+| `Inferred` | It rests on something not observed: a queue read from the frame before's presentation, or an estimated presentation time |
+| `Unresolved` | The program's part looked in time, and what came after was not observed |
+
+`OutcomeCounts::late_support` counts late frames by support, so an answer
+can say how much of it rests on inference. Only some drops are misses (`DropReason::is_miss`):
 a frame that missed its deadline or found no surface leaves the previous
 frame on screen, but one the program discarded or superseded, or that a
 later frame replaced, leaves nothing missing. `OutcomeCounts` counts those
