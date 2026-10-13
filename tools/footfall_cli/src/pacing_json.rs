@@ -179,6 +179,7 @@ fn frame(frame: &FramePacing) -> Json {
         ),
         ("gpu_busy_ns", Json::nanos_or_null(frame.gpu_busy())),
         ("latency_ns", Json::nanos_or_null(frame.latency())),
+        ("unplaced_points", Json::from(frame.unplaced_points())),
         ("points", Json::Object(points)),
     ])
 }

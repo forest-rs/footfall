@@ -1772,7 +1772,7 @@ fn forgetting_covers_frame_points_waiting_work_and_old_clock_readings() {
 
 #[test]
 fn frame_streams_keep_each_windows_frames_apart() {
-    use footfall_core::FramePointKind::{Presented, Target};
+    use footfall_core::FramePointKind::{Expected, Presented, Target};
     let (main, tools) = (FrameStream::new(1), FrameStream::new(2));
     let mut recording = Recording::new(7);
     recording.clock_sync(0, &HOST, 0);
@@ -1802,6 +1802,8 @@ fn frame_streams_keep_each_windows_frames_apart() {
             recording.frame_point(shown, frame, Presented, &HOST, Some(shown));
         }
     }
+    // The tools window also reported a time on a clock never synced.
+    recording.frame_point(200_000, tools.frame(3), Expected, &LOST_CLOCK, Some(1));
     let trace = Trace::from_snapshot(&recording.snapshot(300_000));
 
     assert_eq!(
@@ -1843,6 +1845,21 @@ fn frame_streams_keep_each_windows_frames_apart() {
             tools_only.intervals().median()
         ),
         (2, us(33_333))
+    );
+    assert_eq!(
+        (
+            pacing.unplaced_points(),
+            main_only.unplaced_points(),
+            tools_only.unplaced_points()
+        ),
+        (1, 0, 1),
+        "narrowing to a stream keeps what its frames left out"
+    );
+    assert_eq!(
+        pacing
+            .frame(tools.frame(3))
+            .map(|frame| frame.unplaced_points()),
+        Some(1)
     );
     assert_eq!(main.frame(1).to_string(), "1:1");
     assert_eq!(FrameNumber::from(1).to_string(), "1");
