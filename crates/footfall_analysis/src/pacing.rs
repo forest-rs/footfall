@@ -402,9 +402,12 @@ impl Pacing {
                 Outcome::Early { .. } => counts.early += 1,
                 Outcome::Late { cause, .. } => {
                     counts.late += 1;
-                    match frame.why.map(|why| why.support) {
-                        Some(Support::Observed) => counts.late_support.observed += 1,
-                        Some(Support::Inferred) => counts.late_support.inferred += 1,
+                    match frame.why.map(|why| (why.support, why.unstated_basis())) {
+                        Some((Support::Observed, unstated)) => {
+                            counts.late_support.observed += 1;
+                            counts.late_support.observed_unstated += u64::from(unstated);
+                        }
+                        Some((Support::Inferred, _)) => counts.late_support.inferred += 1,
                         _ => counts.late_support.unresolved += 1,
                     }
                     let causes = &mut counts.late_causes;
@@ -736,12 +739,29 @@ pub struct Why {
     pub presented: TimingBasis,
 }
 
+impl Why {
+    /// Returns whether the cause rests on a time recorded without a basis
+    /// ([`TimingBasis::Unknown`]): the presentation time, or the reported
+    /// submission time of a missed deadline. Such a time is taken at its
+    /// word, so the cause can still be [`Observed`](Support::Observed).
+    #[must_use]
+    pub fn unstated_basis(&self) -> bool {
+        self.presented == TimingBasis::Unknown
+            || (self.cause == LateCause::MissedDeadline
+                && self.submit_reported
+                && self.submitted == TimingBasis::Unknown)
+    }
+}
+
 /// How many late frames' causes had each [`Support`], as
 /// [`OutcomeCounts::late_support`] holds them.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SupportCounts {
     /// Their causes were observed.
     pub observed: u64,
+    /// Of the observed, how many rest on a time recorded without saying
+    /// whether it was observed or estimated; see [`Why::unstated_basis`].
+    pub observed_unstated: u64,
     /// Their causes were inferred.
     pub inferred: u64,
     /// The trace stops short of their causes.

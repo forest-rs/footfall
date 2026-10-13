@@ -211,6 +211,10 @@ pub enum FramePointKind {
 /// display reported is evidence, one worked out from the refresh rate is a
 /// guess. A forecast, such as a [`Target`](FramePointKind::Target), is what
 /// its kind says it is.
+///
+/// Say it for every presentation and submission time. Analysis takes an
+/// unstated time at its word, so a cause shown by one can still count as
+/// observed, but it reports how many causes rest on unstated times.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub enum TimingBasis {

@@ -142,9 +142,12 @@ times were known, and how strongly the trace supports the cause:
 
 Deadlines and targets are the scheduler's plans, taken as given. And an
 observed condition is not proof that it made the frame late, only the
-leading explanation.
+leading explanation. A time recorded without a basis
+(`TimingBasis::Unknown`) is taken at its word, so a cause it shows can be
+`Observed`; `Why::unstated_basis` says when one does.
 
-`OutcomeCounts::late_support` counts late frames by support, so an answer
+`OutcomeCounts::late_support` counts late frames by support, and how many
+of the observed rest on unstated times (`observed_unstated`), so an answer
 can say how much of it rests on inference. Only some drops are misses (`DropReason::is_miss`):
 a frame that missed its deadline or found no surface leaves the previous
 frame on screen, but one the program discarded or superseded, or that a
