@@ -506,11 +506,20 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
     }
     let wasted = pacing.wasted();
     if wasted.frames > 0 {
+        let gpu = if wasted.gpu_frames == 0 {
+            String::from("no GPU work recorded")
+        } else {
+            format!(
+                "{} of GPU work over {}",
+                format::duration(wasted.gpu),
+                format::count(wasted.gpu_frames)
+            )
+        };
         println!(
-            "  never shown: {} frames, {} of CPU work and {} of GPU work spent on them",
+            "  never shown: {} frames, {} of CPU work over {}, {gpu}",
             format::count(wasted.frames),
             format::duration(wasted.cpu),
-            format::duration(wasted.gpu),
+            format::count(wasted.cpu_frames),
         );
     }
     if counts.unknown == counts.total() {
@@ -569,7 +578,9 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
             frame
                 .work()
                 .map_or_else(|| String::from("-"), |work| format::duration(work.length())),
-            format::duration(frame.gpu_busy()),
+            frame
+                .gpu_busy()
+                .map_or_else(|| String::from("-"), format::duration),
             past_deadline,
         );
     }
