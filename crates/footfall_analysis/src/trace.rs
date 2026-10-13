@@ -703,20 +703,29 @@ impl Trace {
         }
     }
 
-    /// Places the timeline spans whose clock now leads to the runtime's.
+    /// Places the timeline spans whose clock now leads to the runtime's,
+    /// then nests each timeline's new spans with the spans already there.
     fn place_timeline_spans(&mut self, pushed: &mut Pushed) {
         let waiting = core::mem::take(&mut self.unplaced);
+        let mut placed = BTreeMap::<TimelineId, Vec<Span>>::new();
         for (sequence, thread_id, work) in waiting {
-            match self.place(sequence, thread_id, &work) {
-                Some(id) => pushed.spans.push(id),
+            match self.convert(sequence, thread_id, &work) {
+                Some(span) => {
+                    pushed.spans.push(span.id);
+                    placed.entry(work.timeline_id()).or_default().push(span);
+                }
                 None => self.unplaced.push((sequence, thread_id, work)),
             }
         }
+        for (timeline_id, spans) in placed {
+            self.nest(timeline_id, spans);
+        }
     }
 
-    /// Converts a timeline span's times and puts it on its timeline's track,
-    /// inside the deepest span already there that contains it.
-    fn place(&mut self, sequence: u64, thread_id: u64, work: &OwnedTimelineWork) -> Option<SpanId> {
+    /// Converts a timeline span's times to the runtime's clock, and records
+    /// its frame and flow, leaving its nesting to [`nest`](Self::nest).
+    /// Returns `None` while its clock does not yet lead to the runtime's.
+    fn convert(&mut self, sequence: u64, thread_id: u64, work: &OwnedTimelineWork) -> Option<Span> {
         let clock = work.begin().clock_id();
         let begin = self.clocks.to_runtime(clock, work.begin().ticks())?;
         let end = self.clocks.to_runtime(clock, work.end())?;
@@ -725,7 +734,7 @@ impl Trace {
         let id = SpanId::new(sequence);
         let name = self.intern(work.name());
         let timeline_id = work.timeline_id();
-        let track = self.timelines.entry(timeline_id).or_insert_with(|| {
+        self.timelines.entry(timeline_id).or_insert_with(|| {
             let mut track = Track::new(TrackKind::Timeline {
                 id: timeline_id,
                 kind: work.timeline_kind(),
@@ -733,52 +742,6 @@ impl Trace {
             track.name = Some(work.timeline_name().to_owned());
             track
         });
-        let range = TimeRange::new(begin_at, end_at);
-        let mut depth = 0;
-        let mut parent = None;
-        for row in (0..track.depth()).rev() {
-            if let Some(outer) = track
-                .spans_in(row, range)
-                .find(|outer| outer.begin <= begin_at && end_at <= outer.end)
-            {
-                depth = row + 1;
-                parent = Some((outer.id, outer.begin));
-                break;
-            }
-        }
-        if let Some((parent_id, parent_begin)) = parent
-            && let Some(outer) = track.row_mut(depth - 1).find_mut(parent_begin, parent_id)
-        {
-            outer.child_time = outer
-                .child_time
-                .saturating_add(end_at.saturating_sub(begin_at));
-        }
-        track.row_mut(depth).insert(Span {
-            id,
-            end_sequence: sequence,
-            token: ScopeToken::INVALID,
-            desc_id: work.desc_id(),
-            name,
-            location: work.location().cloned(),
-            context_id: work.context_id(),
-            thread_id,
-            begin: begin_at,
-            end: end_at,
-            depth,
-            parent: parent.map(|(parent_id, _)| parent_id),
-            child_time: Duration::ZERO,
-            interrupted: false,
-            args: work.args().to_vec(),
-            timeline: Some(timeline_id),
-            frame: work.frame(),
-            placement: Some(Placement {
-                between_syncs: begin.between_syncs() && end.between_syncs(),
-                distance: nanos(begin.distance().max(end.distance())),
-                via: begin.via(),
-            }),
-        });
-        self.span_index
-            .insert(id, (Lane::Timeline(timeline_id), depth, begin_at));
         if let Some(number) = work.frame() {
             self.frame_spans.entry(number).or_default().push(id);
         }
@@ -803,7 +766,111 @@ impl Trace {
                 steps.partition_point(|held| (held.at, held.sequence) <= (step.at, step.sequence));
             steps.insert(at, step);
         }
-        Some(id)
+        Some(Span {
+            id,
+            end_sequence: sequence,
+            token: ScopeToken::INVALID,
+            desc_id: work.desc_id(),
+            name,
+            location: work.location().cloned(),
+            context_id: work.context_id(),
+            thread_id,
+            begin: begin_at,
+            end: end_at,
+            depth: 0,
+            parent: None,
+            child_time: Duration::ZERO,
+            interrupted: false,
+            args: work.args().to_vec(),
+            timeline: Some(timeline_id),
+            frame: work.frame(),
+            placement: Some(Placement {
+                between_syncs: begin.between_syncs() && end.between_syncs(),
+                distance: nanos(begin.distance().max(end.distance())),
+                via: begin.via(),
+            }),
+        })
+    }
+
+    /// Puts new spans on a timeline's track, each inside the deepest span
+    /// that contains it, whatever order they were reported in.
+    ///
+    /// Timelines report work when it is read back, often a child before the
+    /// span around it. So the spans already on the track that begin no
+    /// earlier than the earliest new one come off and are nested again with
+    /// the new ones; a new span can only contain spans that begin no earlier
+    /// than it does. Spans that begin earlier stay where they are.
+    fn nest(&mut self, timeline_id: TimelineId, mut spans: Vec<Span>) {
+        let Some(from) = spans.iter().map(|span| span.begin).min() else {
+            return;
+        };
+        let Some(track) = self.timelines.get_mut(&timeline_id) else {
+            return;
+        };
+        for row in &mut track.rows {
+            spans.extend(row.take_from(from));
+        }
+        for span in &mut spans {
+            // A parent that stays loses the time of the child taken from it;
+            // the child gives it back if it nests there again.
+            if let Some(parent) = span.parent.take()
+                && let Some((_, depth, begin)) = self.span_index.get(&parent).copied()
+                && begin < from
+                && let Some(outer) = track.row_mut(depth).find_mut(begin, parent)
+            {
+                outer.child_time = outer.child_time.saturating_sub(span.duration());
+            }
+            span.depth = 0;
+            span.child_time = Duration::ZERO;
+        }
+        // Outer spans first: by begin, then the longest.
+        spans.sort_by_key(|span| (span.begin, core::cmp::Reverse(span.end), span.id));
+        let mut open: Vec<usize> = Vec::new();
+        for index in 0..spans.len() {
+            let (begin, end) = (spans[index].begin, spans[index].end);
+            while let Some(&outer) = open.last()
+                && !(spans[outer].begin <= begin && end <= spans[outer].end)
+            {
+                open.pop();
+            }
+            if let Some(&outer) = open.last() {
+                spans[outer].child_time = spans[outer].child_time.saturating_add(end - begin);
+                spans[index].depth = spans[outer].depth + 1;
+                spans[index].parent = Some(spans[outer].id);
+            } else if let Some((depth, outer)) = Self::container(track, begin, end) {
+                // Inside a span that stays on the track.
+                outer.child_time = outer.child_time.saturating_add(end - begin);
+                spans[index].depth = depth + 1;
+                spans[index].parent = Some(outer.id);
+            }
+            open.push(index);
+        }
+        for span in spans {
+            self.span_index.insert(
+                span.id,
+                (Lane::Timeline(timeline_id), span.depth, span.begin),
+            );
+            track.row_mut(span.depth).insert(span);
+        }
+        while track.rows.last().is_some_and(|row| row.spans.is_empty()) {
+            track.rows.pop();
+        }
+    }
+
+    /// Returns the deepest span on `track` that contains `begin..end`, and
+    /// its depth.
+    fn container(track: &mut Track, begin: Duration, end: Duration) -> Option<(u32, &mut Span)> {
+        let range = TimeRange::new(begin, end);
+        let (depth, id, outer_begin) = (0..track.depth()).rev().find_map(|row| {
+            track
+                .spans_in(row, range)
+                .find(|outer| outer.begin <= begin && end <= outer.end)
+                .map(|outer| (row, outer.id, outer.begin))
+        })?;
+        track
+            .row_mut(depth)
+            .find_mut(outer_begin, id)
+            .map(|outer| (depth, outer))
     }
 
     /// Returns the live resource with this id, or one created before the

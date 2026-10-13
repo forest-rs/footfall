@@ -388,6 +388,13 @@ impl Row {
             .filter(move |span| range.overlaps(span.begin, span.end))
     }
 
+    /// Takes out the spans that begin at or after `from`.
+    pub(crate) fn take_from(&mut self, from: Duration) -> Vec<Span> {
+        let at = self.spans.partition_point(|held| held.begin < from);
+        self.latest_end.truncate(at);
+        self.spans.split_off(at)
+    }
+
     /// Drops the spans that ended before `before`.
     pub(crate) fn forget(&mut self, before: Duration) -> Vec<SpanId> {
         let mut forgotten = Vec::new();

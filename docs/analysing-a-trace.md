@@ -95,7 +95,10 @@ a frame that missed its deadline or found no surface leaves the previous
 frame on screen, but one the program discarded or superseded, or that a
 later frame replaced, leaves nothing missing. `OutcomeCounts` counts those
 as `skipped` rather than `dropped`, and `Pacing::wasted` adds up the CPU and
-GPU work spent on every frame never shown.
+GPU work spent on every frame never shown, and says how many of them had
+each recorded. A frame's GPU busy time counts the time covered by its spans
+on each GPU timeline once, however they nest or overlap, and is `None` when
+no GPU work was recorded for it.
 
 `Pacing::prediction_error` says how good each prediction of a frame's
 display time was: the platform's `Predicted` time, the scheduler's

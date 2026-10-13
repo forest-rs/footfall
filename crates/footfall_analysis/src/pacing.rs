@@ -6,10 +6,11 @@
 
 use crate::frame::FrameId;
 use crate::query::DurationStats;
+use crate::span::TrackKind;
 use crate::time::{TimeRange, nanos};
 use crate::trace::Trace;
 use core::time::Duration;
-use footfall_core::{DropReason, FramePointKind};
+use footfall_core::{DropReason, FramePointKind, TimelineId, TimelineKind};
 use std::collections::BTreeSet;
 
 /// One numbered frame's pacing: its CPU work, its GPU work, its deadline,
@@ -21,7 +22,7 @@ pub struct FramePacing {
     frame: Option<FrameId>,
     work: Option<TimeRange>,
     gpu: Option<TimeRange>,
-    gpu_busy: Duration,
+    gpu_busy: Option<Duration>,
     deadline: Option<Duration>,
     predicted: Option<Duration>,
     target: Option<Duration>,
@@ -120,17 +121,22 @@ impl FramePacing {
         self.work
     }
 
-    /// Returns when the frame's GPU work ran: from the first of its timeline
-    /// spans to begin to the last to end.
+    /// Returns when the frame's GPU work ran: from the first of its spans
+    /// on GPU timelines to begin to the last to end.
     #[must_use]
     pub const fn gpu(&self) -> Option<TimeRange> {
         self.gpu
     }
 
-    /// Returns how long the GPU was busy with the frame: the summed length
-    /// of its outermost timeline spans.
+    /// Returns how long the GPU was busy with the frame: on each GPU
+    /// timeline, the time covered by at least one of the frame's spans, so
+    /// nested and overlapping spans count once, summed over the timelines.
+    /// Two queues busy at once for 1 ms count 2 ms.
+    ///
+    /// Returns `None` when no GPU work was recorded for the frame, which is
+    /// not the same as none being done.
     #[must_use]
-    pub const fn gpu_busy(&self) -> Duration {
+    pub const fn gpu_busy(&self) -> Option<Duration> {
         self.gpu_busy
     }
 
@@ -304,8 +310,14 @@ impl Pacing {
         let mut wasted = WastedWork::default();
         for frame in self.frames.iter().filter(|frame| frame.dropped.is_some()) {
             wasted.frames += 1;
-            wasted.cpu += frame.work.map_or(Duration::ZERO, |work| work.length());
-            wasted.gpu += frame.gpu_busy;
+            if let Some(work) = frame.work {
+                wasted.cpu_frames += 1;
+                wasted.cpu += work.length();
+            }
+            if let Some(busy) = frame.gpu_busy {
+                wasted.gpu_frames += 1;
+                wasted.gpu += busy;
+            }
         }
         wasted
     }
@@ -455,9 +467,14 @@ impl PredictionError {
 pub struct WastedWork {
     /// How many frames were never shown.
     pub frames: u64,
-    /// The CPU time between their markers.
+    /// How many of them the trace holds the markers of.
+    pub cpu_frames: u64,
+    /// The time between their markers, over the `cpu_frames` frames.
     pub cpu: Duration,
-    /// The time the GPU was busy with them.
+    /// How many of them had GPU work recorded.
+    pub gpu_frames: u64,
+    /// The time the GPU was busy with them, over the `gpu_frames` frames;
+    /// see [`FramePacing::gpu_busy`].
     pub gpu: Duration,
 }
 
@@ -468,7 +485,7 @@ struct Raw {
     frame: Option<FrameId>,
     work: Option<TimeRange>,
     gpu: Option<TimeRange>,
-    gpu_busy: Duration,
+    gpu_busy: Option<Duration>,
     deadline: Option<Duration>,
     predicted: Option<Duration>,
     target: Option<Duration>,
@@ -490,7 +507,7 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
                 frame: frame.map(crate::Frame::id),
                 work: frame.map(crate::Frame::range),
                 gpu: None,
-                gpu_busy: Duration::ZERO,
+                gpu_busy: None,
                 deadline: None,
                 predicted: None,
                 target: None,
@@ -523,16 +540,26 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
                 };
                 *slot = at.or(*slot);
             }
-            let spans: Vec<_> = trace.frame_spans(number).collect();
-            raw.gpu = spans
+            let mut gpu: Vec<(TimelineId, TimeRange)> = trace
+                .frame_spans(number)
+                .filter_map(|span| Some((span.timeline()?, span.range())))
+                .filter(|(timeline, _)| {
+                    trace.timeline(*timeline).is_some_and(|track| {
+                        matches!(
+                            track.kind(),
+                            TrackKind::Timeline {
+                                kind: TimelineKind::Gpu,
+                                ..
+                            }
+                        )
+                    })
+                })
+                .collect();
+            raw.gpu = gpu
                 .iter()
-                .map(|span| span.range())
+                .map(|(_, range)| *range)
                 .reduce(|a, b| TimeRange::new(a.start().min(b.start()), a.end().max(b.end())));
-            raw.gpu_busy = spans
-                .iter()
-                .filter(|span| span.depth() == 0)
-                .map(|span| span.duration())
-                .sum();
+            raw.gpu_busy = (!gpu.is_empty()).then(|| busy(&mut gpu));
             raw
         })
         .collect();
@@ -567,6 +594,30 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
         tolerance,
         unplaced_points,
     }
+}
+
+/// Returns the time covered by at least one of the ranges on each timeline,
+/// summed over the timelines.
+fn busy(spans: &mut [(TimelineId, TimeRange)]) -> Duration {
+    spans.sort_by_key(|(timeline, range)| (*timeline, range.start()));
+    let mut total = Duration::ZERO;
+    let mut covering: Option<(TimelineId, Duration, Duration)> = None;
+    for &(timeline, range) in spans.iter() {
+        covering = match covering {
+            Some((on, start, end)) if on == timeline && range.start() <= end => {
+                Some((on, start, end.max(range.end())))
+            }
+            Some((_, start, end)) => {
+                total += end - start;
+                Some((timeline, range.start(), range.end()))
+            }
+            None => Some((timeline, range.start(), range.end())),
+        };
+    }
+    if let Some((_, start, end)) = covering {
+        total += end - start;
+    }
+    total
 }
 
 /// Judges a frame against its target and deadline, and a late one against

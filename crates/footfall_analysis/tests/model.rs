@@ -1156,6 +1156,82 @@ fn gpu_work_without_a_clock_reading_waits_to_be_placed() {
     );
 }
 
+static COMPUTE: TimelineDesc = TimelineDesc::gpu("compute");
+
+#[test]
+fn gpu_work_nests_whatever_order_it_is_read_back_in() {
+    let mut recording = Recording::new(7);
+    recording.clock_sync(0, &GPU_CLOCK, 0);
+    recording.numbered_marker(0, MarkerPhase::Begin, Some(1234));
+    recording.numbered_marker(100, MarkerPhase::End, Some(1234));
+    // The passes are read back as they finish, before the frame around
+    // them, which comes in the next window.
+    let shadows = recording.timeline_span(700, &gpu(&SHADOWS, 150_000, 250_000));
+    let opaque = recording.timeline_span(700, &gpu(&OPAQUE, 300_000, 550_000));
+    let first_next = recording.next();
+    let frame = recording.timeline_span(800, &gpu(&GPU_FRAME, 100_000, 600_000));
+    // Compute work for the same frame, alongside the graphics work.
+    recording.timeline_span(
+        800,
+        &TimelineSpan::new(
+            &COMPUTE,
+            &OPAQUE,
+            footfall_core::ContextHandle::ROOT,
+            &GPU_CLOCK,
+            TickPeriod::NANOSECOND,
+            200_000,
+            300_000,
+        )
+        .in_frame(1234),
+    );
+
+    let mut trace = Trace::new();
+    trace
+        .push(&recording.window(0, first_next, &[], 750))
+        .expect("one instance");
+    assert_eq!(
+        trace.span(shadows).map(|span| span.depth()),
+        Some(0),
+        "nothing around it yet"
+    );
+    trace
+        .push(&recording.window(first_next, recording.next(), &[], 900))
+        .expect("one instance");
+
+    let gpu_frame = trace.span(frame).expect("placed");
+    assert_eq!((gpu_frame.depth(), gpu_frame.parent()), (0, None));
+    assert_eq!(
+        gpu_frame.self_time(),
+        us(150),
+        "500 less the passes' 100 and 250"
+    );
+    for pass in [shadows, opaque] {
+        let pass = trace.span(pass).expect("placed");
+        assert_eq!((pass.depth(), pass.parent()), (1, Some(frame)));
+    }
+    let graphics = trace.timeline_named("graphics").expect("the GPU timeline");
+    assert_eq!(graphics.depth(), 2);
+    assert_eq!(trace.children(gpu_frame).len(), 2);
+
+    // The same work in one snapshot nests the same way.
+    let whole = Trace::from_snapshot(&recording.snapshot(900));
+    for id in [frame, shadows, opaque] {
+        let nesting = |trace: &Trace| {
+            trace
+                .span(id)
+                .map(|span| (span.depth(), span.parent(), span.self_time()))
+        };
+        assert_eq!(nesting(&trace), nesting(&whole));
+    }
+
+    // The GPU was busy with the frame for 500 µs on the graphics queue,
+    // counting the passes inside once, and 100 µs on the compute queue.
+    let pacing = trace.pacing(us(1_000));
+    let frame = &pacing.frames()[0];
+    assert_eq!(frame.gpu_busy(), Some(us(600)));
+    assert_eq!(frame.gpu(), Some(range(100, 600)));
+}
+
 #[test]
 fn a_frames_gpu_work_counts_toward_that_frame_wherever_it_ran() {
     let mut recording = Recording::new(7);
@@ -1429,7 +1505,14 @@ fn late_frames_say_what_made_them_late() {
 
     let wasted = pacing.wasted();
     assert_eq!(
-        (wasted.frames, wasted.cpu, wasted.gpu),
-        (2, us(4_667), us(0))
+        (
+            wasted.frames,
+            wasted.cpu_frames,
+            wasted.cpu,
+            wasted.gpu_frames,
+            wasted.gpu
+        ),
+        (2, 1, us(4_667), 0, us(0)),
+        "only frame 3 has markers, and neither has GPU work"
     );
 }
