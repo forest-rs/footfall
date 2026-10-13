@@ -357,10 +357,27 @@ were, and what the late frames' work did differently.
 
 Say why a frame was dropped. A frame the program superseded with newer work
 (`DropReason::Superseded`) is not a miss, while one still waiting when its
-deadline passed (`DropReason::MissedDeadline`) is.
+deadline passed (`DropReason::MissedDeadline`) is, and so is one the
+platform reports it never presented without saying why
+(`DropReason::NotPresented`).
+
+Say how each time of something that happened was known, with
+`FramePoint::with_basis`: a presentation time the compositor reported is
+`TimingBasis::Observed`, one assumed to be the next refresh is
+`TimingBasis::Estimated`, and analysis counts how many of its judgments rest
+on estimates. Record `Submitted` when the frame was handed to the
+compositor or swapchain, which can differ from when its CPU work ended, and
+`Sampled`, the time its content was made for, such as the animation time.
+
+Numbers the scheduler worked from, such as its pipeline depth or safety
+margin, belong with the frame they describe: attach them to that frame's
+point with `FramePoint::with_args` rather than setting a gauge when the
+report arrives, which may be frames later. `FramePacing::args` returns them.
 
 ```rust
-use footfall::{ClockDesc, ClockReading, FramePoint, FramePointKind, TickPeriod};
+use footfall::{
+    Args, ClockDesc, ClockReading, FramePoint, FramePointKind, TickPeriod, TimingBasis,
+};
 
 static HOST: ClockDesc = ClockDesc::new("host");
 let period = TickPeriod::new(125, 3); // Mach absolute time
@@ -368,9 +385,15 @@ let (now, target, deadline) = (1_000_000_u64, 1_400_000_u64, 1_300_000_u64);
 
 footfall::clock_sync(ClockReading::new(&HOST, now, period));
 footfall::frame_point(&FramePoint::at(1234, FramePointKind::Target, &HOST, period, target));
-footfall::frame_point(&FramePoint::at(1234, FramePointKind::Deadline, &HOST, period, deadline));
+footfall::frame_point(
+    &FramePoint::at(1234, FramePointKind::Deadline, &HOST, period, deadline)
+        .with_args(Args::none().with("pipeline_depth", 2_u32)),
+);
 // Frames later, when the display reports the frame:
-footfall::frame_point(&FramePoint::at(1234, FramePointKind::Presented, &HOST, period, target));
+footfall::frame_point(
+    &FramePoint::at(1234, FramePointKind::Presented, &HOST, period, target)
+        .with_basis(TimingBasis::Observed),
+);
 // Or, if newer work replaced the next frame before it was submitted:
 footfall::frame_point(&FramePoint::dropped(1235, footfall::DropReason::Superseded));
 ```

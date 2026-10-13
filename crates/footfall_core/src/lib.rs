@@ -149,7 +149,7 @@ pub use id::{
 };
 pub use label::{LabelKey, LabelValue};
 pub use level::{InstrumentationLevel, max_level, set_max_level};
-pub use timeline::{DropReason, FramePoint, FramePointKind, TimelineSpan};
+pub use timeline::{DropReason, FramePoint, FramePointKind, TimelineSpan, TimingBasis};
 pub use unit::Unit;
 
 /// Builds a [`Context`] from label-key assignments.

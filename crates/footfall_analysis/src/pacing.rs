@@ -11,8 +11,9 @@ use crate::time::{TimeRange, nanos};
 use crate::trace::Trace;
 use core::time::Duration;
 use footfall_core::{
-    DropReason, FrameNumber, FramePointKind, FrameStream, TimelineId, TimelineKind,
+    DropReason, FrameNumber, FramePointKind, FrameStream, TimelineId, TimelineKind, TimingBasis,
 };
+use footfall_session::OwnedArgEntry;
 use std::collections::BTreeSet;
 
 /// One numbered frame's pacing: its CPU work, its GPU work, its deadline,
@@ -30,7 +31,11 @@ pub struct FramePacing {
     target: Option<Duration>,
     expected: Option<Duration>,
     presented: Option<Duration>,
+    submitted: Option<Duration>,
+    sampled: Option<Duration>,
     dropped: Option<DropReason>,
+    /// The bases and args the points that had them came with.
+    details: Vec<(FramePointKind, TimingBasis, Vec<OwnedArgEntry>)>,
     outcome: Outcome,
 }
 
@@ -202,8 +207,45 @@ impl FramePacing {
             FramePointKind::Target => self.target,
             FramePointKind::Expected => self.expected,
             FramePointKind::Presented => self.presented,
+            FramePointKind::Submitted => self.submitted,
+            FramePointKind::Sampled => self.sampled,
             _ => None,
         }
+    }
+
+    /// Returns when the frame was submitted to the compositor or swapchain,
+    /// when that was reported. Judging the deadline uses it, or the frame's
+    /// end marker without it.
+    #[must_use]
+    pub const fn submitted(&self) -> Option<Duration> {
+        self.submitted
+    }
+
+    /// Returns the time the frame's content was made for, such as when its
+    /// animations were sampled, when that was reported.
+    #[must_use]
+    pub const fn sampled(&self) -> Option<Duration> {
+        self.sampled
+    }
+
+    /// Returns how the recorder came by the frame's time of `kind`, such as
+    /// whether its presentation time was observed or estimated.
+    #[must_use]
+    pub fn basis(&self, kind: FramePointKind) -> TimingBasis {
+        self.details
+            .iter()
+            .find(|(held, ..)| *held == kind)
+            .map_or(TimingBasis::Unknown, |(_, basis, _)| *basis)
+    }
+
+    /// Returns what the recorder knew about the frame at its point of
+    /// `kind`, such as a scheduler's state when it planned the frame.
+    #[must_use]
+    pub fn args(&self, kind: FramePointKind) -> &[OwnedArgEntry] {
+        self.details
+            .iter()
+            .find(|(held, ..)| *held == kind)
+            .map_or(&[], |(.., args)| args)
     }
 
     /// Returns whether the frame was shown when it was meant to be.
@@ -325,6 +367,23 @@ impl Pacing {
                 Outcome::Dropped { .. } => counts.skipped += 1,
                 Outcome::SubmittedLate { .. } => counts.submitted_late += 1,
                 Outcome::Unknown => counts.unknown += 1,
+            }
+        }
+        counts
+    }
+
+    /// Returns how many of the shown frames' presentation times were
+    /// observed, such as reported by the compositor, how many estimated,
+    /// and how many came without saying. Judgments on estimated times are
+    /// only as good as the estimate.
+    #[must_use]
+    pub fn presentation_basis(&self) -> BasisCounts {
+        let mut counts = BasisCounts::default();
+        for frame in self.frames.iter().filter(|frame| frame.presented.is_some()) {
+            match frame.basis(FramePointKind::Presented) {
+                TimingBasis::Observed => counts.observed += 1,
+                TimingBasis::Estimated => counts.estimated += 1,
+                _ => counts.unknown += 1,
             }
         }
         counts
@@ -502,6 +561,18 @@ impl OutcomeCounts {
     }
 }
 
+/// How many times had each [`TimingBasis`], as
+/// [`Pacing::presentation_basis`] returns them.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BasisCounts {
+    /// Observed as they happened.
+    pub observed: u64,
+    /// Worked out rather than observed.
+    pub estimated: u64,
+    /// Recorded without saying.
+    pub unknown: u64,
+}
+
 /// How many late frames had each [`LateCause`], as
 /// [`OutcomeCounts::late_causes`] holds them.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -561,31 +632,15 @@ pub struct WastedWork {
     pub gpu: Duration,
 }
 
-/// What a numbered frame's points and work say, before its outcome is
-/// judged against the frame before it.
-struct Raw {
-    number: FrameNumber,
-    frame: Option<FrameId>,
-    work: Option<TimeRange>,
-    gpu: Option<TimeRange>,
-    gpu_busy: Option<Duration>,
-    deadline: Option<Duration>,
-    predicted: Option<Duration>,
-    target: Option<Duration>,
-    expected: Option<Duration>,
-    presented: Option<Duration>,
-    dropped: Option<DropReason>,
-}
-
 pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
     let mut numbers: BTreeSet<FrameNumber> = trace.numbered_frames().collect();
     numbers.extend(trace.frame_points().keys().copied());
     let mut unplaced_points = 0_u64;
-    let raws: Vec<Raw> = numbers
+    let mut frames: Vec<FramePacing> = numbers
         .into_iter()
         .map(|number| {
             let frame = trace.frame_numbered(number);
-            let mut raw = Raw {
+            let mut raw = FramePacing {
                 number,
                 frame: frame.map(crate::Frame::id),
                 work: frame.map(crate::Frame::range),
@@ -596,9 +651,18 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
                 target: None,
                 expected: None,
                 presented: None,
+                submitted: None,
+                sampled: None,
                 dropped: None,
+                details: Vec::new(),
+                outcome: Outcome::Unknown,
             };
-            for (kind, time, _) in trace.frame_points().get(&number).into_iter().flatten() {
+            for point in trace.frame_points().get(&number).into_iter().flatten() {
+                let (kind, time) = (&point.kind, &point.time);
+                if point.basis != TimingBasis::Unknown || !point.args.is_empty() {
+                    raw.details.retain(|(held, ..)| held != kind);
+                    raw.details.push((*kind, point.basis, point.args.clone()));
+                }
                 let at = match time {
                     Some(time) => match trace.clocks().to_runtime(time.clock_id(), time.ticks()) {
                         Some(converted) => Some(nanos(converted.nanos())),
@@ -615,6 +679,8 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
                     FramePointKind::Target => &mut raw.target,
                     FramePointKind::Expected => &mut raw.expected,
                     FramePointKind::Presented => &mut raw.presented,
+                    FramePointKind::Submitted => &mut raw.submitted,
+                    FramePointKind::Sampled => &mut raw.sampled,
                     FramePointKind::Dropped(reason) => {
                         raw.dropped = Some(*reason);
                         continue;
@@ -646,32 +712,14 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
             raw
         })
         .collect();
-    let frames: Vec<FramePacing> = raws
-        .iter()
-        .enumerate()
-        .map(|(index, raw)| {
-            // The frame just before, if the trace holds it.
-            let before = index
-                .checked_sub(1)
-                .map(|before| &raws[before])
-                .filter(|before| raw.number.previous() == Some(before.number));
-            let outcome = outcome(raw, before, tolerance);
-            FramePacing {
-                number: raw.number,
-                frame: raw.frame,
-                work: raw.work,
-                gpu: raw.gpu,
-                gpu_busy: raw.gpu_busy,
-                deadline: raw.deadline,
-                predicted: raw.predicted,
-                target: raw.target,
-                expected: raw.expected,
-                presented: raw.presented,
-                dropped: raw.dropped,
-                outcome,
-            }
-        })
-        .collect();
+    for index in 0..frames.len() {
+        // The frame just before in the same stream, if the trace holds it.
+        let before = index
+            .checked_sub(1)
+            .map(|before| &frames[before])
+            .filter(|before| frames[index].number.previous() == Some(before.number));
+        frames[index].outcome = outcome(&frames[index], before, tolerance);
+    }
     let gaps: Vec<TimeRange> = trace.gaps().iter().map(crate::Gap::range).collect();
     let (intervals, interval_breaks) = intervals(&frames, &gaps);
     Pacing {
@@ -751,14 +799,15 @@ fn busy(spans: &mut [(TimelineId, TimeRange)]) -> Duration {
 
 /// Judges a frame against its target and deadline, and a late one against
 /// the frame before it, `before`.
-fn outcome(raw: &Raw, before: Option<&Raw>, tolerance: Duration) -> Outcome {
+fn outcome(raw: &FramePacing, before: Option<&FramePacing>, tolerance: Duration) -> Outcome {
     if let Some(reason) = raw.dropped {
         return Outcome::Dropped { reason };
     }
+    let submitted = raw.submitted.or(raw.work.map(|work| work.end()));
     let submitted_late = raw
         .deadline
-        .zip(raw.work)
-        .and_then(|(deadline, work)| work.end().checked_sub(deadline))
+        .zip(submitted)
+        .and_then(|(deadline, submitted)| submitted.checked_sub(deadline))
         .filter(|by| !by.is_zero());
     let Some((presented, target)) = raw.presented.zip(raw.target) else {
         return match submitted_late {
@@ -775,7 +824,7 @@ fn outcome(raw: &Raw, before: Option<&Raw>, tolerance: Duration) -> Outcome {
         return Outcome::OnTime;
     }
     let submitted_in_time =
-        raw.deadline.is_some() && raw.work.is_some() && submitted_late.is_none();
+        raw.deadline.is_some() && submitted.is_some() && submitted_late.is_none();
     let cause = if submitted_late.is_some() {
         LateCause::MissedDeadline
     } else if before

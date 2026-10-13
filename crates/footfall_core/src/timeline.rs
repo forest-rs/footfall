@@ -192,6 +192,38 @@ pub enum FramePointKind {
     /// When the frame was expected to be shown, as of submitting it, such
     /// as the presentation time a compositor or swapchain reports at submit.
     Expected,
+    /// When the frame was submitted to the compositor or swapchain. The
+    /// frame's end marker is when its CPU work ended, which may come before
+    /// or after.
+    Submitted,
+    /// The time the frame's content was made for, such as the time its
+    /// animations were sampled at. Compared with when the frame was shown,
+    /// it says whether the frame showed the right moment.
+    Sampled,
+}
+
+/// How whoever recorded a [`FramePoint`] came by its time, as
+/// [`FramePoint::basis`] returns it.
+///
+/// It matters for the times of things that happened, such as when a frame
+/// was [`Presented`](FramePointKind::Presented) or
+/// [`Submitted`](FramePointKind::Submitted): a presentation time the
+/// display reported is evidence, one worked out from the refresh rate is a
+/// guess. A forecast, such as a [`Target`](FramePointKind::Target), is what
+/// its kind says it is.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum TimingBasis {
+    /// The recorder did not say.
+    #[default]
+    Unknown,
+    /// Observed as it happened: reported by the platform, such as a
+    /// compositor's presentation feedback, or read from a clock at the time,
+    /// such as when the program submitted the frame.
+    Observed,
+    /// Worked out rather than observed, such as a presentation time assumed
+    /// to be the next refresh after submitting.
+    Estimated,
 }
 
 /// Why a frame was never shown, as [`FramePointKind::Dropped`] carries it.
@@ -220,17 +252,21 @@ pub enum DropReason {
     /// It was submitted, but a later frame replaced it before the display
     /// showed it, as a mailbox swapchain does.
     Replaced,
+    /// It was submitted, and the platform reported that it was never shown,
+    /// without saying why: replaced by a later frame, or lost.
+    NotPresented,
 }
 
 impl DropReason {
     /// Returns `true` for a drop the user may see as a stutter: the frame
     /// missed its deadline, found no surface, or was dropped for a reason
-    /// not known.
+    /// not known, including a frame the platform did not present without
+    /// saying why.
     #[must_use]
     pub const fn is_miss(self) -> bool {
         matches!(
             self,
-            Self::Unknown | Self::MissedDeadline | Self::SurfaceUnavailable
+            Self::Unknown | Self::MissedDeadline | Self::SurfaceUnavailable | Self::NotPresented
         )
     }
 }
@@ -245,7 +281,7 @@ impl DropReason {
 /// [`clock_sync`](crate::clock_sync).
 ///
 /// ```
-/// use footfall_core::{ClockDesc, FramePoint, FramePointKind, TickPeriod};
+/// use footfall_core::{ClockDesc, FramePoint, FramePointKind, TickPeriod, TimingBasis};
 ///
 /// static HOST: ClockDesc = ClockDesc::new("host");
 /// let period = TickPeriod::new(125, 3);
@@ -253,13 +289,23 @@ impl DropReason {
 /// // When planning frame 1234.
 /// footfall_core::frame_point(&FramePoint::at(1234, FramePointKind::Target, &HOST, period, 400_000));
 /// // Frames later, when the display reports it.
-/// footfall_core::frame_point(&FramePoint::at(1234, FramePointKind::Presented, &HOST, period, 400_000));
+/// footfall_core::frame_point(
+///     &FramePoint::at(1234, FramePointKind::Presented, &HOST, period, 400_000)
+///         .with_basis(TimingBasis::Observed),
+/// );
 /// ```
+///
+/// A point can carry what its recorder knew about the frame at that point,
+/// such as the scheduler's pipeline depth when it planned the frame, with
+/// [`with_args`](Self::with_args), so the numbers stay with the frame they
+/// describe however late they are recorded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FramePoint {
     number: FrameNumber,
     kind: FramePointKind,
     time: Option<ClockReading>,
+    basis: TimingBasis,
+    args: Args,
 }
 
 impl FramePoint {
@@ -278,6 +324,8 @@ impl FramePoint {
             number: number.into(),
             kind,
             time: Some(ClockReading::new(clock, ticks, period)),
+            basis: TimingBasis::Unknown,
+            args: Args::none(),
         }
     }
 
@@ -288,7 +336,24 @@ impl FramePoint {
             number: number.into(),
             kind: FramePointKind::Dropped(reason),
             time: None,
+            basis: TimingBasis::Unknown,
+            args: Args::none(),
         }
+    }
+
+    /// Says how the recorder came by the time; see [`TimingBasis`].
+    #[must_use]
+    pub const fn with_basis(mut self, basis: TimingBasis) -> Self {
+        self.basis = basis;
+        self
+    }
+
+    /// Attaches what the recorder knew about the frame at this point, such
+    /// as a scheduler's state when it planned the frame.
+    #[must_use]
+    pub const fn with_args(mut self, args: Args) -> Self {
+        self.args = args;
+        self
     }
 
     /// Returns the program's number for the frame, in its stream.
@@ -308,5 +373,17 @@ impl FramePoint {
     #[must_use]
     pub const fn time(&self) -> Option<ClockReading> {
         self.time
+    }
+
+    /// Returns how the recorder came by the time.
+    #[must_use]
+    pub const fn basis(&self) -> TimingBasis {
+        self.basis
+    }
+
+    /// Returns what the recorder knew about the frame at this point.
+    #[must_use]
+    pub const fn args(&self) -> &Args {
+        &self.args
     }
 }

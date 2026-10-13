@@ -531,6 +531,7 @@ impl Backend for TracyBackend {
                     DropReason::SurfaceUnavailable => "no surface",
                     DropReason::OutputUnavailable => "no display",
                     DropReason::Replaced => "replaced",
+                    DropReason::NotPresented => "not presented",
                     _ => "reason not known",
                 };
                 self.client.message(
