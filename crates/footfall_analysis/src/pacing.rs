@@ -239,6 +239,32 @@ impl FramePacing {
         self.sampled
     }
 
+    /// Returns whether the frame's work was submitted by its deadline: by
+    /// its [`Submitted`](FramePointKind::Submitted) point, or its end marker
+    /// without one. `None` when the trace has no deadline or submission for
+    /// it.
+    ///
+    /// The deadline is the frame's own, from the frame scheduler, so this
+    /// holds whatever the refresh rate, and when it varies.
+    #[must_use]
+    pub fn met_deadline(&self) -> Option<bool> {
+        let (deadline, submitted) = self.deadline.zip(self.submission())?;
+        Some(submitted <= deadline)
+    }
+
+    /// Returns how long after its deadline the frame's work was submitted,
+    /// when it was; see [`met_deadline`](Self::met_deadline).
+    #[must_use]
+    pub fn submitted_late(&self) -> Option<Duration> {
+        let (deadline, submitted) = self.deadline.zip(self.submission())?;
+        submitted.checked_sub(deadline).filter(|by| !by.is_zero())
+    }
+
+    /// The time judged against the deadline.
+    fn submission(&self) -> Option<Duration> {
+        self.submitted.or(self.work.map(|work| work.end()))
+    }
+
     /// Returns how the recorder came by the frame's time of `kind`, such as
     /// whether its presentation time was observed or estimated.
     #[must_use]
@@ -476,6 +502,23 @@ impl Pacing {
             .collect()
     }
 
+    /// Returns how many frames had their work submitted by their deadlines
+    /// and how many after, whether or not they were shown; see
+    /// [`FramePacing::met_deadline`]. Frames with no deadline or submission
+    /// count as neither.
+    #[must_use]
+    pub fn deadlines(&self) -> DeadlineCounts {
+        let mut counts = DeadlineCounts::default();
+        for frame in &self.frames {
+            match frame.met_deadline() {
+                Some(true) => counts.met += 1,
+                Some(false) => counts.missed += 1,
+                None => {}
+            }
+        }
+        counts
+    }
+
     /// Returns how much later than their targets the late frames were shown.
     #[must_use]
     pub fn lateness(&self) -> DurationStats {
@@ -587,6 +630,24 @@ impl OutcomeCounts {
     #[must_use]
     pub const fn missed(&self) -> u64 {
         self.late + self.submitted_late + self.dropped
+    }
+}
+
+/// How many frames were submitted by their deadlines, as
+/// [`Pacing::deadlines`] returns them.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DeadlineCounts {
+    /// Submitted by their deadlines.
+    pub met: u64,
+    /// Submitted after their deadlines.
+    pub missed: u64,
+}
+
+impl DeadlineCounts {
+    /// Returns how many frames had a deadline and a submission to judge.
+    #[must_use]
+    pub const fn judged(&self) -> u64 {
+        self.met + self.missed
     }
 }
 
@@ -906,12 +967,7 @@ fn outcome(
     if let Some(reason) = raw.dropped {
         return (Outcome::Dropped { reason }, None);
     }
-    let submitted = raw.submitted.or(raw.work.map(|work| work.end()));
-    let submitted_late = raw
-        .deadline
-        .zip(submitted)
-        .and_then(|(deadline, submitted)| submitted.checked_sub(deadline))
-        .filter(|by| !by.is_zero());
+    let submitted_late = raw.submitted_late();
     let Some((presented, target)) = raw.presented.zip(raw.target) else {
         let outcome = match submitted_late {
             Some(by) => Outcome::SubmittedLate { by },
@@ -926,8 +982,7 @@ fn outcome(
     if presented <= target.saturating_add(tolerance) {
         return (Outcome::OnTime, None);
     }
-    let submitted_in_time =
-        raw.deadline.is_some() && submitted.is_some() && submitted_late.is_none();
+    let submitted_in_time = raw.met_deadline() == Some(true);
     let behind_previous = before
         .and_then(|before| before.presented)
         .is_some_and(|shown| shown.saturating_add(tolerance) >= target);

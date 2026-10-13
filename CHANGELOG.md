@@ -42,7 +42,8 @@ The first release.
   left unresolved by what the trace recorded. Points say whether their
   time was observed or estimated, can carry the recorder's numbers about
   the frame, such as a scheduler's state, and include when the frame was
-  submitted and the time its content was made for.
+  submitted and the time its content was made for. `Pacing::deadlines`
+  counts the frames submitted by and after their own deadlines.
 - `scope!` for a scope that lasts to the end of the block; `context!` and
   `args!` for labels and per-instance arguments.
 - Instrumentation levels, and `--cfg footfall_compile_out` to compile every
@@ -98,6 +99,9 @@ The first release.
   live or replays a capture, `record` saves a session to a capture file,
   `analyze` summarizes a capture (scopes, timelines, counters, and
   histograms), explains its slow frames and its frame pacing, compares two
-  runs, or shows one span, and `export` writes a Chrome trace.
+  runs, or shows one span, and `export` writes a Chrome trace. `summary`
+  and `slow` judge each frame against its own deadline when the trace
+  records them, so they hold at any refresh rate, and against a budget
+  (16.7 ms by default, or `--budget-ms`) when it does not.
   `analyze pacing --json` prints the pacing judgment, every frame with its
   points, basis, args, and why, as one JSON document for other programs.

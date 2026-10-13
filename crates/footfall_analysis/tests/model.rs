@@ -1624,6 +1624,21 @@ fn late_frames_say_what_made_them_late() {
     assert_eq!(counts.late_causes.gpu, 1);
     assert_eq!(counts.total(), 8);
 
+    // Each frame against its own deadline, whatever became of it.
+    let deadlines = pacing.deadlines();
+    assert_eq!(
+        (deadlines.met, deadlines.missed, deadlines.judged()),
+        (5, 1, 6),
+        "frames 3 and 8 have no deadline"
+    );
+    let judged = |number: u64| {
+        let frame = pacing.frame(number).expect("a frame");
+        (frame.met_deadline(), frame.submitted_late())
+    };
+    assert_eq!(judged(2), (Some(false), Some(us(833))));
+    assert_eq!(judged(4), (Some(true), None), "late, but not its work");
+    assert_eq!(judged(3), (None, None));
+
     // The evidence behind each cause, and how strongly the trace supports it.
     use footfall_analysis::Support;
     let why = |number: u64| {

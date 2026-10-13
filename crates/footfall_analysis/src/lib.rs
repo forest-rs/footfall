@@ -77,8 +77,8 @@ pub use compare::{
 };
 pub use frame::{Frame, FrameCounter, FrameId};
 pub use pacing::{
-    BasisCounts, FramePacing, LateCause, LateCauseCounts, Outcome, OutcomeCounts, Pacing,
-    PredictionError, Support, SupportCounts, WastedWork, Why,
+    BasisCounts, DeadlineCounts, FramePacing, LateCause, LateCauseCounts, Outcome, OutcomeCounts,
+    Pacing, PredictionError, Support, SupportCounts, WastedWork, Why,
 };
 pub use query::{
     DurationStats, GroupBy, Instances, KeyPart, Selected, SpanQuery, SpanStats, SpanTable, TableRow,

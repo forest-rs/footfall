@@ -25,6 +25,19 @@ configuration. Set `FOOTFALL_STATE_DIR` to the same directory for both to
 keep experiments apart from anything else running. Add `--help` to any
 command to see its options.
 
+## Slow frames
+
+`analyze summary` and `analyze slow` count a frame as slow when its work was
+submitted after its own deadline, when the trace records deadlines (as frame
+schedulers such as `frameclock` do). The deadline follows whatever refresh
+rate the scheduler planned for, including a variable one, so there is no
+budget to choose. Frames with no deadline are left out of that count.
+
+When the trace has no deadlines, a frame is slow when it takes longer than a
+fixed budget, 16.7 ms (one refresh at 60 Hz), and the report says the
+default was used. `--budget-ms` sets the budget and uses it even when the
+trace has deadlines. `footfall top` always uses a budget.
+
 ## Pacing as JSON
 
 `footfall analyze pacing --json` prints the judgment as one JSON document,
@@ -33,8 +46,7 @@ for scripts and other tools to check rather than read:
 ```sh
 # How many frames were submitted after their commit deadline?
 footfall analyze pacing run.ffcap --json |
-  jq '[.frames[] | .points | select(.submitted and .deadline)
-       | select(.submitted.at_ns > .deadline.at_ns)] | length'
+  jq '[.frames[] | select(.met_deadline == false)] | length'
 ```
 
 The document holds:
@@ -42,7 +54,8 @@ The document holds:
 - `footfall_version`, and `capture`: the file, process, process id,
   runtime instance (hex), and the producer's Footfall version.
 - `tolerance_ns`, `counts` (with `late_causes` and `late_support`),
-  `presentation_basis`, `intervals` (with `breaks` and `stutters`),
+  `deadlines` (how many frames were submitted by their deadlines, `met`,
+  and after, `missed`), `presentation_basis`, `intervals` (with `breaks` and `stutters`),
   `lateness`, `latency`, `prediction_error` for the `predicted`, `target`,
   and `expected` times, `wasted`, and `unplaced_points`: the figures the
   text report prints.
@@ -51,7 +64,9 @@ The document holds:
   sequence of its begin marker, when it has one; `outcome` (`on_time`,
   `early`, `late`, `dropped`, `submitted_late`, or `unknown`) with `by_ns`
   and whether it was `missed` (a dropped frame whose reason is not a miss,
-  such as `superseded`, is not); `why`, for a late frame; its CPU `work`
+  such as `superseded`, is not); `why`, for a late frame; whether its
+  work `met_deadline`, by its `submitted` point or else the end of its
+  `work`, and `submitted_late_ns`, how long after; its CPU `work`
   and `gpu` ranges, `gpu_busy_ns`, and `latency_ns`; and `points`, each
   frame point recorded for it by kind (`predicted`, `deadline`, `target`,
   `sampled`, `submitted`, `expected`, `presented`, and `dropped` with its

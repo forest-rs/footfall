@@ -75,15 +75,18 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
     title.push(Span::from("  "));
     title.push(Span::from(format!("● {badge}")).fg(color).bold());
 
-    let stats = FrameStats::of_durations(app.frames.iter().copied(), app.budget);
+    let stats = FrameStats::of_durations(app.frames.iter().copied());
     let summary = match stats {
         Some(stats) => {
-            let slow = if stats.slow == 0 {
+            let over = app
+                .frames
+                .iter()
+                .filter(|&&micros| micros > app.budget)
+                .count();
+            let slow = if over == 0 {
                 Span::from("none over budget").fg(FAST)
             } else {
-                Span::from(format!("{} over budget", stats.slow))
-                    .fg(SLOW)
-                    .bold()
+                Span::from(format!("{over} over budget")).fg(SLOW).bold()
             };
             Line::from(vec![
                 Span::styled(format!("last {} frames  ", stats.count), DIM),
