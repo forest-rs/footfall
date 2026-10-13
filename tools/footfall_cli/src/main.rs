@@ -348,6 +348,8 @@ fn summary(path: &Path, budget_ms: f64) -> Result<()> {
     println!();
     report::counters(&snapshot, 16);
     println!();
+    report::histograms(&snapshot, 16);
+    println!();
     report::losses(&snapshot);
     Ok(())
 }
@@ -538,16 +540,16 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
             String::from("no GPU work recorded")
         } else {
             format!(
-                "{} of GPU work over {}",
+                "GPU work {} ({})",
                 format::duration(wasted.gpu),
-                format::count(wasted.gpu_frames)
+                format::frames(wasted.gpu_frames)
             )
         };
         println!(
-            "  never shown: {} frames, {} of CPU work over {}, {gpu}",
-            format::count(wasted.frames),
+            "  never shown: {} · CPU work {} ({}) · {gpu}",
+            format::frames(wasted.frames),
             format::duration(wasted.cpu),
-            format::count(wasted.cpu_frames),
+            format::frames(wasted.cpu_frames),
         );
     }
     if counts.unknown == counts.total() {
