@@ -30,6 +30,25 @@ for _ in 0..3 {
 }
 ```
 
+A capture file reads back as the same trace, with what could not be added:
+
+```rust
+use footfall::analysis::Trace;
+use footfall::session::capture::CaptureReader;
+
+fn read(path: &str) -> std::io::Result<Trace> {
+    let captured = Trace::from_capture(CaptureReader::new(std::fs::File::open(path)?)?)?;
+    if !captured.complete() {
+        eprintln!(
+            "{path}: {} snapshots from another run skipped, cut short: {}",
+            captured.skipped(),
+            captured.truncated().is_some()
+        );
+    }
+    Ok(captured.into_trace())
+}
+```
+
 A trace pairs scope begins and ends into `Span`s, each on its thread's
 `Track` at its depth, and markers into `Frame`s. It keeps counter samples
 as `CounterSeries`, messages, resource lifetimes, and flows, each flow step

@@ -212,6 +212,53 @@ fn evicted_events_leave_a_gap_and_an_interrupted_span() {
 }
 
 #[test]
+fn a_recorded_capture_reads_back_as_the_live_trace_with_its_gaps() {
+    let runtime = Runtime::builder().event_capacity(2).build();
+    let mut recorder = footfall_session::capture::CaptureRecorder::new(&runtime, Vec::new())
+        .expect("a capture starts");
+    let mut cursor = footfall_session::EventCursor::default();
+    let mut live = Trace::new();
+    let token = runtime.scope_begin(&WORK, ContextHandle::ROOT, &Args::none());
+    recorder.write().expect("the first window is written");
+    live.push(&window(&runtime, &mut cursor))
+        .expect("one instance");
+
+    // Overflow the buffer so the next window misses events.
+    for _ in 0..4 {
+        runtime.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, ContextHandle::ROOT);
+    }
+    runtime.scope_end(token);
+    assert!(
+        recorder
+            .write()
+            .expect("the second window is written")
+            .missed()
+            > 0
+    );
+    live.push(&window(&runtime, &mut cursor))
+        .expect("one instance");
+    let bytes = recorder.finish().expect("the capture ends");
+
+    let captured = Trace::from_capture(
+        footfall_session::capture::CaptureReader::new(bytes.as_slice()).expect("the capture opens"),
+    )
+    .expect("the capture reads");
+    assert!(captured.complete());
+    let trace = captured.trace();
+    assert_eq!(
+        trace.gaps(),
+        live.gaps(),
+        "lost where the live trace lost them"
+    );
+    assert!(!trace.gaps().is_empty());
+    assert_eq!(trace.spans().iter().len(), live.spans().iter().len());
+    assert!(
+        trace.spans().iter()[0].span().interrupted(),
+        "events went missing while it ran"
+    );
+}
+
+#[test]
 fn a_span_leads_to_its_code_in_process_and_from_a_capture() {
     let runtime = Runtime::default();
     scope(&runtime, &LOCATED, ContextHandle::ROOT, || {});

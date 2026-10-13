@@ -20,7 +20,7 @@ use footfall_runtime::{CounterKind, Drops, SnapshotMetadata};
 use footfall_session::{
     Clocks, OwnedArgEntry, OwnedClockTicks, OwnedContextSnapshot, OwnedCounterSnapshot,
     OwnedHistogramSnapshot, OwnedLabelValue, OwnedObservation, OwnedSnapshot, OwnedSourceLocation,
-    OwnedTimelineWork, SnapshotKind,
+    OwnedTimelineWork, SnapshotKind, capture::CaptureReader,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -238,6 +238,50 @@ const fn mark_index(kind: MarkerKind) -> Option<usize> {
     }
 }
 
+/// A trace of a whole capture, as [`Trace::from_capture`] returns it, with
+/// what could not be added.
+#[derive(Debug)]
+pub struct CapturedTrace {
+    trace: Trace,
+    skipped: u64,
+    truncated: Option<std::io::Error>,
+}
+
+impl CapturedTrace {
+    /// Returns the trace.
+    #[must_use]
+    pub const fn trace(&self) -> &Trace {
+        &self.trace
+    }
+
+    /// Returns the trace, leaving the rest.
+    #[must_use]
+    pub fn into_trace(self) -> Trace {
+        self.trace
+    }
+
+    /// Returns how many snapshots the trace refused: from another runtime
+    /// instance, or holding only changes.
+    #[must_use]
+    pub const fn skipped(&self) -> u64 {
+        self.skipped
+    }
+
+    /// Returns the error that cut the capture short, when it ends partway
+    /// through a snapshot. The snapshots before it are in the trace.
+    #[must_use]
+    pub const fn truncated(&self) -> Option<&std::io::Error> {
+        self.truncated.as_ref()
+    }
+
+    /// Returns whether every snapshot in the capture is in the trace: none
+    /// skipped, and the capture not cut short.
+    #[must_use]
+    pub const fn complete(&self) -> bool {
+        self.skipped == 0 && self.truncated.is_none()
+    }
+}
+
 impl Trace {
     /// Creates a trace that has seen no snapshot.
     #[must_use]
@@ -258,6 +302,52 @@ impl Trace {
             .push(snapshot)
             .expect("a new trace accepts any full snapshot");
         trace
+    }
+
+    /// Creates a trace of a whole capture, pushing each snapshot in turn as
+    /// a live consumer would, so events lost between them become
+    /// [`gaps`](Self::gaps) where they were lost.
+    ///
+    /// Snapshots from another runtime instance than the first, such as a
+    /// producer that restarted while it was recorded, are refused and
+    /// counted in [`CapturedTrace::skipped`]. A capture cut short, as one
+    /// still being written can be, keeps its complete snapshots and says so
+    /// in [`CapturedTrace::truncated`].
+    ///
+    /// Fails for a capture with no snapshots, and for any error other than a
+    /// truncated end.
+    pub fn from_capture<R: std::io::Read>(
+        reader: CaptureReader<R>,
+    ) -> std::io::Result<CapturedTrace> {
+        let mut trace = Self::new();
+        let mut skipped = 0;
+        let mut truncated = None;
+        for snapshot in reader {
+            let snapshot = match snapshot {
+                Ok(snapshot) => snapshot,
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    truncated = Some(error);
+                    break;
+                }
+                Err(error) => return Err(error),
+            };
+            if trace.push(&snapshot).is_err() {
+                skipped += 1;
+            }
+        }
+        if trace.instance_id().is_none() {
+            return Err(truncated.unwrap_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "the capture holds no snapshots",
+                )
+            }));
+        }
+        Ok(CapturedTrace {
+            trace,
+            skipped,
+            truncated,
+        })
     }
 
     /// Adds a snapshot of the trace's runtime instance: the events it holds

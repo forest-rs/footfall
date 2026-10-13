@@ -34,7 +34,7 @@ use footfall::session::capture::{CaptureReader, CaptureWriter};
 use footfall::wtransport::{ClientError, SessionClient};
 use footfall::{DropReason, FramePointKind, TimingBasis};
 use std::fs::File;
-use std::io::{BufReader, BufWriter};
+use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use style::{BAD, DIM, GOOD, HEADING, HINT, NAME, WARN};
@@ -260,39 +260,29 @@ async fn record(path: &Path, session: Option<&str>, interval: Duration) -> Resul
     Ok(())
 }
 
-/// Reads every window of a capture and joins consecutive windows of the
-/// same runtime instance into one snapshot.
+/// Reads every window of a capture joined into one snapshot, warning about
+/// what could not be joined.
 fn read_joined(path: &Path) -> Result<OwnedSnapshot> {
-    let reader = CaptureReader::new(BufReader::new(File::open(path)?))?;
-    let mut joined: Option<OwnedSnapshot> = None;
-    let mut skipped = 0_usize;
-    for window in reader {
-        let window = match window {
-            Ok(window) => window,
-            // A recording stopped abruptly can end part way through a
-            // window; keep the complete ones.
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
-                eprintln!(
-                    "{WARN}{} ends part way through a window; using the complete ones{WARN:#}",
-                    path.display()
-                );
-                break;
-            }
-            Err(error) => return Err(error.into()),
-        };
-        match &mut joined {
-            None => joined = Some(window),
-            Some(joined) => {
-                if joined.append(window).is_err() {
-                    skipped += 1;
-                }
-            }
-        }
+    let joined = CaptureReader::new(File::open(path)?)?
+        .join()
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    warn_incomplete(path, joined.truncated().is_some(), joined.skipped());
+    Ok(joined.into_snapshot())
+}
+
+/// Says what of a capture was left out: a cut-short end, or windows from
+/// another run of the producer.
+fn warn_incomplete(path: &Path, truncated: bool, skipped: u64) {
+    if truncated {
+        // A recording stopped abruptly can end part way through a window.
+        eprintln!(
+            "{WARN}{} ends part way through a window; using the complete ones{WARN:#}",
+            path.display()
+        );
     }
     if skipped > 0 {
         eprintln!("{WARN}skipped {skipped} windows from another run of the producer{WARN:#}");
     }
-    joined.ok_or_else(|| format!("{} holds no snapshots", path.display()).into())
 }
 
 fn summary(path: &Path, budget_ms: f64) -> Result<()> {
@@ -355,28 +345,12 @@ fn summary(path: &Path, budget_ms: f64) -> Result<()> {
 }
 
 /// Reads every window of a capture into a trace of its first runtime
-/// instance.
+/// instance, warning about what could not be added.
 fn read_trace(path: &Path) -> Result<Trace> {
-    let reader = CaptureReader::new(BufReader::new(File::open(path)?))?;
-    let mut trace = Trace::new();
-    let mut skipped = 0_usize;
-    for window in reader {
-        let window = match window {
-            Ok(window) => window,
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(error) => return Err(error.into()),
-        };
-        if trace.push(&window).is_err() {
-            skipped += 1;
-        }
-    }
-    if skipped > 0 {
-        eprintln!("{WARN}skipped {skipped} windows from another run of the producer{WARN:#}");
-    }
-    if trace.instance_id().is_none() {
-        return Err(format!("{} holds no snapshots", path.display()).into());
-    }
-    Ok(trace)
+    let captured = Trace::from_capture(CaptureReader::new(File::open(path)?)?)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    warn_incomplete(path, captured.truncated().is_some(), captured.skipped());
+    Ok(captured.into_trace())
 }
 
 fn slow(path: &Path, budget_ms: f64, top: usize, by_arg: Option<&str>) -> Result<()> {

@@ -177,6 +177,37 @@ Open `trace.json` in [Perfetto](https://ui.perfetto.dev) or
 `chrome://tracing`. Scopes appear as slices on one track per thread, counters
 as counter tracks, and contexts and arguments as slice arguments.
 
+To record a run to a capture file that the [`footfall`
+command](../tools/footfall_cli/README.md) reads, without serving a session,
+write what was recorded since the last write every so often, such as every
+few hundred frames, and once more at exit:
+
+```rust
+use footfall::runtime::Runtime;
+use footfall::session::capture::CaptureRecorder;
+use std::{fs::File, io::BufWriter};
+
+fn record(runtime: &Runtime, frames: impl Iterator<Item = u64>) -> std::io::Result<()> {
+    let file = BufWriter::new(File::create("run.ffcap")?);
+    let mut recorder = CaptureRecorder::new(runtime, file)?;
+    for frame in frames {
+        // ... the frame ...
+        if frame % 300 == 0 {
+            let window = recorder.write()?;
+            if window.missed() > 0 {
+                eprintln!("{} events evicted before they were written", window.missed());
+            }
+        }
+    }
+    recorder.finish()?;
+    Ok(())
+}
+```
+
+Each write is flushed, so a run that ends abruptly leaves every complete
+write readable. Write often enough that the runtime's event buffer does not
+evict between writes; see [Sizing Capacity](#sizing-capacity).
+
 ## Sizing Capacity
 
 A runtime never grows past the capacities it was built with; what does not

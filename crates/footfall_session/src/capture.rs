@@ -24,12 +24,33 @@
 //! # Ok::<(), std::io::Error>(())
 //! ```
 //!
+//! A program can record itself with [`CaptureRecorder`], which writes what
+//! its runtime recorded since the last write each time it is asked, and a
+//! tool reads a whole capture as one snapshot with
+//! [`CaptureReader::join`]:
+//!
+//! ```
+//! use footfall_runtime::Runtime;
+//! use footfall_session::capture::{CaptureReader, CaptureRecorder};
+//!
+//! let runtime = Runtime::default();
+//! let mut recorder = CaptureRecorder::new(&runtime, Vec::new())?;
+//! // Each frame, or every few: write what was recorded since the last write.
+//! recorder.write()?;
+//! let bytes = recorder.finish()?;
+//!
+//! let joined = CaptureReader::new(bytes.as_slice())?.join()?;
+//! assert_eq!(joined.snapshot().metadata().instance_id(), runtime.instance_id());
+//! assert!(joined.complete());
+//! # Ok::<(), std::io::Error>(())
+//! ```
+//!
 //! [wire-format document]: https://github.com/forest-rs/footfall/blob/main/docs/session-wire-format.md
 
 use alloc::{format, vec, vec::Vec};
 use std::io::{self, BufReader, Read, Write};
 
-use footfall_runtime::Snapshot;
+use footfall_runtime::{EventCursor, EventWindow, Runtime, Snapshot};
 
 use crate::{
     Chunking, Consumer, Envelope, OwnedSessionEnvelope, OwnedSessionPayload, OwnedSnapshot,
@@ -101,6 +122,85 @@ impl<W: Write> CaptureWriter<W> {
     pub fn finish(mut self) -> io::Result<W> {
         self.inner.flush()?;
         Ok(self.inner)
+    }
+}
+
+/// Records a runtime to a capture as it runs.
+///
+/// Each [`write`](Self::write) appends a snapshot of what the runtime
+/// recorded since the previous one, so the file holds every event once and
+/// reads back the way a live consumer would have seen it. The first write
+/// holds everything the runtime still retains. Write often enough that the
+/// runtime's event buffer does not evict events between writes; the
+/// [`EventWindow`] each write returns, and [`missed`](Self::missed), say if
+/// it did.
+#[derive(Debug)]
+pub struct CaptureRecorder<'a, W: Write> {
+    runtime: &'a Runtime,
+    writer: CaptureWriter<W>,
+    cursor: EventCursor,
+    snapshots: u64,
+    events: u64,
+    missed: u64,
+}
+
+impl<'a, W: Write> CaptureRecorder<'a, W> {
+    /// Starts a capture of `runtime`, writing the header to `inner`.
+    pub fn new(runtime: &'a Runtime, inner: W) -> io::Result<Self> {
+        Ok(Self {
+            runtime,
+            writer: CaptureWriter::new(inner)?,
+            // A cursor of no instance reads from the start.
+            cursor: EventCursor::default(),
+            snapshots: 0,
+            events: 0,
+            missed: 0,
+        })
+    }
+
+    /// Appends a snapshot of what was recorded since the last write, and
+    /// flushes it, so a reader of the file sees it at once.
+    ///
+    /// Returns the snapshot's window: the event sequence numbers it covers,
+    /// and how many in that range the runtime evicted before they could be
+    /// written.
+    pub fn write(&mut self) -> io::Result<EventWindow> {
+        let snapshot = self.runtime.snapshot_since(self.cursor);
+        self.writer.write_snapshot(&snapshot)?;
+        self.writer.flush()?;
+        self.cursor = snapshot.next_cursor();
+        let window = snapshot.window();
+        self.snapshots += 1;
+        self.events += snapshot.events().len() as u64;
+        self.missed += window.missed();
+        Ok(window)
+    }
+
+    /// Returns how many snapshots have been written.
+    #[must_use]
+    pub const fn snapshots(&self) -> u64 {
+        self.snapshots
+    }
+
+    /// Returns how many events have been written.
+    #[must_use]
+    pub const fn events(&self) -> u64 {
+        self.events
+    }
+
+    /// Returns how many events the runtime evicted before they could be
+    /// written. Write more often, or give the runtime a larger event
+    /// capacity, to keep it zero.
+    #[must_use]
+    pub const fn missed(&self) -> u64 {
+        self.missed
+    }
+
+    /// Writes what was recorded since the last write, flushes the capture,
+    /// and returns the underlying writer.
+    pub fn finish(mut self) -> io::Result<W> {
+        self.write()?;
+        self.writer.finish()
     }
 }
 
@@ -266,6 +366,98 @@ fn assemble(envelopes: Vec<OwnedSessionEnvelope>) -> io::Result<OwnedSnapshot> {
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
+impl<R: Read> CaptureReader<R> {
+    /// Reads the rest of the capture as one snapshot: each snapshot appended
+    /// to the first, as [`OwnedSnapshot::append`] joins a subscription's
+    /// windows.
+    ///
+    /// Snapshots from another runtime instance than the first, such as a
+    /// producer that restarted while it was recorded, cannot be joined and
+    /// are counted in [`JoinedCapture::skipped`]. A capture cut short, as one
+    /// still being written can be, keeps its complete snapshots and says so
+    /// in [`JoinedCapture::truncated`].
+    ///
+    /// Fails for a capture with no snapshots, and for any error other than a
+    /// truncated end.
+    pub fn join(self) -> io::Result<JoinedCapture> {
+        let mut snapshot: Option<OwnedSnapshot> = None;
+        let mut skipped = 0;
+        let mut truncated = None;
+        for next in self {
+            let next = match next {
+                Ok(next) => next,
+                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
+                    truncated = Some(error);
+                    break;
+                }
+                Err(error) => return Err(error),
+            };
+            match &mut snapshot {
+                None => snapshot = Some(next),
+                Some(joined) => {
+                    if joined.append(next).is_err() {
+                        skipped += 1;
+                    }
+                }
+            }
+        }
+        let Some(snapshot) = snapshot else {
+            return Err(truncated.unwrap_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "the capture holds no snapshots")
+            }));
+        };
+        Ok(JoinedCapture {
+            snapshot,
+            skipped,
+            truncated,
+        })
+    }
+}
+
+/// A whole capture joined into one snapshot, as [`CaptureReader::join`]
+/// returns it, with what could not be joined.
+#[derive(Debug)]
+pub struct JoinedCapture {
+    snapshot: OwnedSnapshot,
+    skipped: u64,
+    truncated: Option<io::Error>,
+}
+
+impl JoinedCapture {
+    /// Returns the joined snapshot.
+    #[must_use]
+    pub const fn snapshot(&self) -> &OwnedSnapshot {
+        &self.snapshot
+    }
+
+    /// Returns the joined snapshot, leaving the rest.
+    #[must_use]
+    pub fn into_snapshot(self) -> OwnedSnapshot {
+        self.snapshot
+    }
+
+    /// Returns how many snapshots could not be joined to the first: from
+    /// another runtime instance, or ending before what came before them.
+    #[must_use]
+    pub const fn skipped(&self) -> u64 {
+        self.skipped
+    }
+
+    /// Returns the error that cut the capture short, when it ends partway
+    /// through a snapshot. The snapshots before it are joined.
+    #[must_use]
+    pub const fn truncated(&self) -> Option<&io::Error> {
+        self.truncated.as_ref()
+    }
+
+    /// Returns whether every snapshot in the capture was joined: none
+    /// skipped, and the capture not cut short.
+    #[must_use]
+    pub const fn complete(&self) -> bool {
+        self.skipped == 0 && self.truncated.is_none()
+    }
+}
+
 impl<R: Read> Iterator for CaptureReader<R> {
     type Item = io::Result<OwnedSnapshot>;
 
@@ -291,7 +483,7 @@ mod tests {
     use footfall_core::{Backend as _, ContextHandle, MarkerKind, MarkerPhase};
     use footfall_runtime::Runtime;
 
-    use super::{CaptureReader, CaptureWriter};
+    use super::{CaptureReader, CaptureRecorder, CaptureWriter};
     use crate::OwnedSnapshot;
 
     fn mark(runtime: &Runtime) {
@@ -321,6 +513,100 @@ mod tests {
             read,
             [OwnedSnapshot::from(&first), OwnedSnapshot::from(&second)]
         );
+    }
+
+    #[test]
+    fn recorders_write_each_event_once_and_say_what_was_evicted() {
+        let runtime = Runtime::builder().event_capacity(4).build();
+        mark(&runtime);
+        mark(&runtime);
+        let mut recorder = CaptureRecorder::new(&runtime, Vec::new()).expect("header writes");
+        let first = recorder.write().expect("first write");
+        assert_eq!((first.since(), first.next(), first.missed()), (0, 2, 0));
+        mark(&runtime);
+        let second = recorder.write().expect("second write");
+        assert_eq!((second.since(), second.next(), second.missed()), (2, 3, 0));
+        // Six events between writes, into a buffer of four: two are lost.
+        for _ in 0..6 {
+            mark(&runtime);
+        }
+        let third = recorder.write().expect("third write");
+        assert_eq!((third.since(), third.next(), third.missed()), (3, 9, 2));
+        assert_eq!(
+            (recorder.snapshots(), recorder.events(), recorder.missed()),
+            (3, 7, 2)
+        );
+        let bytes = recorder.finish().expect("capture finishes");
+
+        let joined = CaptureReader::new(bytes.as_slice())
+            .expect("header reads")
+            .join()
+            .expect("the capture joins");
+        assert!(joined.complete());
+        let snapshot = joined.snapshot();
+        assert_eq!(snapshot.events().len(), 7, "each event once");
+        assert_eq!(
+            (snapshot.window().since(), snapshot.window().next()),
+            (0, 9)
+        );
+        assert_eq!(
+            snapshot.window().missed(),
+            2,
+            "the evicted events stay missed"
+        );
+    }
+
+    #[test]
+    fn joining_skips_other_instances_and_keeps_what_precedes_a_cut() {
+        let runtime = Runtime::default();
+        let restarted = Runtime::default();
+        mark(&runtime);
+        mark(&restarted);
+        let mut writer = CaptureWriter::new(Vec::new()).expect("header writes");
+        writer
+            .write_snapshot(&runtime.snapshot())
+            .expect("snapshot writes");
+        writer
+            .write_snapshot(&restarted.snapshot())
+            .expect("snapshot writes");
+        mark(&runtime);
+        writer
+            .write_snapshot(&runtime.snapshot())
+            .expect("snapshot writes");
+        let bytes = writer.finish().expect("capture finishes");
+
+        let joined = CaptureReader::new(bytes.as_slice())
+            .expect("header reads")
+            .join()
+            .expect("the capture joins");
+        assert_eq!(joined.skipped(), 1, "the restarted runtime's snapshot");
+        assert!(joined.truncated().is_none());
+        assert!(!joined.complete());
+        assert_eq!(joined.snapshot().events().len(), 2);
+        assert_eq!(
+            joined.snapshot().metadata().instance_id(),
+            runtime.instance_id()
+        );
+
+        let cut = CaptureReader::new(&bytes[..bytes.len() - 3])
+            .expect("header reads")
+            .join()
+            .expect("the complete snapshots join");
+        assert_eq!(
+            cut.truncated().map(std::io::Error::kind),
+            Some(ErrorKind::UnexpectedEof)
+        );
+        assert_eq!(cut.snapshot().events().len(), 1, "the first snapshot");
+
+        let empty = CaptureWriter::new(Vec::new())
+            .expect("header writes")
+            .finish()
+            .expect("capture finishes");
+        let error = CaptureReader::new(empty.as_slice())
+            .expect("header reads")
+            .join()
+            .expect_err("nothing to join");
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
     }
 
     #[test]

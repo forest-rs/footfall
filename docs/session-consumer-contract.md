@@ -220,7 +220,15 @@ them back as the same `OwnedSnapshot` values a live consumer receives, so
 live and offline tools share one model, one set of identities, and one
 export path. `CaptureWriter::write_owned` saves snapshots received from a
 session, for example each one a subscription delivers, and `CaptureReader`
-yields them in order.
+yields them in order. A program records itself with `CaptureRecorder`,
+which writes what its runtime recorded since the last write each time it
+is asked, so the file holds every event once.
+
+`CaptureReader::join` reads a whole capture as one snapshot, and
+`footfall::analysis::Trace::from_capture` as one trace, pushing each
+snapshot as a live consumer would, so events lost between them stay gaps
+where they were lost. Both keep what precedes a cut-short end and skip
+snapshots from another runtime instance, and say whether they did.
 
 To analyse a session as it runs, push each window into a
 `footfall::analysis::Trace`. It pairs scopes and frames that span windows,
