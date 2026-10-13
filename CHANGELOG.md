@@ -99,3 +99,5 @@ The first release.
   `analyze` summarizes a capture (scopes, timelines, counters, and
   histograms), explains its slow frames and its frame pacing, compares two
   runs, or shows one span, and `export` writes a Chrome trace.
+  `analyze pacing --json` prints the pacing judgment, every frame with its
+  points, basis, args, and why, as one JSON document for other programs.
