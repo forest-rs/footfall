@@ -20,11 +20,14 @@ The first release.
 - Clock syncs and pairs relate other clocks, such as a GPU's or a frame
   scheduler's host clock, to the runtime's, and `Clocks` converts their
   times, following drift between syncs. `Clocks::forget_before` bounds
-  their history for live tools.
+  their history for live tools, and `Converted::settled` says whether
+  later readings could still change a conversion.
 - Timelines that are not CPU threads, such as GPU queues: `timeline_span`
   records finished work in the timeline's clock with its frame and flow.
-  Analysis places it on a track of its own and counts it toward its frame;
-  the Chrome export draws each timeline as a track.
+  Analysis places it on a track of its own and counts it toward its frame,
+  nesting it whatever order it is read back in and moving it when later
+  clock readings place it better; the Chrome export draws each timeline as
+  a track.
 - Frame points record a numbered frame's deadline, predicted, target, and
   expected display times, presentation, or drop and its reason whenever the
   frame scheduler or display reports them. `Trace::pacing` says which

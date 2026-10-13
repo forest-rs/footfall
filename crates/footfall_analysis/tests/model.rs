@@ -1233,6 +1233,73 @@ fn gpu_work_nests_whatever_order_it_is_read_back_in() {
 }
 
 #[test]
+fn timeline_spans_place_the_same_however_the_windows_split() {
+    let mut recording = Recording::new(7);
+    recording.clock_sync(0, &GPU_CLOCK, 0);
+    recording.numbered_marker(0, MarkerPhase::Begin, Some(1234));
+    recording.numbered_marker(100, MarkerPhase::End, Some(1234));
+    // Read back before the GPU clock's next reading, so placed at its
+    // nominal rate until that reading arrives.
+    let frame = recording.timeline_span(
+        500,
+        &gpu(&GPU_FRAME, 100_000, 600_000).after_flow(FlowId::new(1234)),
+    );
+    let shadows = recording.timeline_span(500, &gpu(&SHADOWS, 150_000, 250_000));
+    let before_reading = recording.next();
+    // The GPU clock ran 10% fast: its 1,100,000 ticks were 1,000 µs.
+    recording.clock_sync(1_000, &GPU_CLOCK, 1_100_000);
+    let opaque = recording.timeline_span(1_200, &gpu(&OPAQUE, 300_000, 550_000));
+    let next_frame = recording.timeline_span(1_300, &gpu(&OPAQUE, 1_150_000, 1_200_000));
+    recording.clock_sync(2_000, &GPU_CLOCK, 2_200_000);
+    let next = recording.next();
+    let whole = Trace::from_snapshot(&recording.snapshot(2_500));
+    assert_eq!(
+        whole.span(frame).map(|span| span.range()),
+        Some(TimeRange::new(
+            Duration::from_nanos(90_909),
+            Duration::from_nanos(545_454)
+        )),
+        "placed between the readings, following the drift"
+    );
+
+    let shape = |trace: &Trace| -> Vec<_> {
+        let spans = [frame, shadows, opaque, next_frame].map(|id| {
+            trace.span(id).map(|span| {
+                (
+                    span.range(),
+                    span.depth(),
+                    span.parent(),
+                    span.self_time(),
+                    span.placement().map(|placement| placement.between_syncs()),
+                )
+            })
+        });
+        let flow: Vec<_> = trace
+            .flows_through(frame)
+            .flat_map(|flow| flow.steps().iter().map(|step| (step.at(), step.span())))
+            .collect();
+        let pacing = trace.pacing(us(1_000));
+        let gpu = pacing
+            .frame(1234)
+            .map(|frame| (frame.gpu(), frame.gpu_busy()));
+        vec![format!("{spans:?} {flow:?} {gpu:?}")]
+    };
+    for split in 1..next {
+        let mut trace = Trace::new();
+        trace
+            .push(&recording.window(0, split, &[], 2_500))
+            .expect("one instance");
+        let second = trace
+            .push(&recording.window(split, next, &[], 2_500))
+            .expect("one instance");
+        assert_eq!(shape(&trace), shape(&whole), "split before event {split}");
+        if split == before_reading {
+            assert_eq!(second.moved_spans(), [frame, shadows]);
+        }
+    }
+}
+
+#[test]
 fn a_frames_gpu_work_counts_toward_that_frame_wherever_it_ran() {
     let mut recording = Recording::new(7);
     recording.clock_sync(0, &GPU_CLOCK, 0);
