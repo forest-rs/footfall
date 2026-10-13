@@ -102,8 +102,7 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
     // Shown on time, from what the frame scheduler or display reported.
     let shown = match app.pacing {
         Some(counts) => {
-            let missed = counts.late + counts.dropped + counts.submitted_late;
-            let missed = if missed == 0 {
+            let missed = if counts.missed() == 0 {
                 Span::from("none missed").fg(FAST)
             } else {
                 Span::from(format!(
@@ -113,12 +112,16 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .fg(SLOW)
                 .bold()
             };
-            Line::from(vec![
+            let mut line = vec![
                 Span::styled("shown  ", DIM),
                 Span::from(format!("{} on time", counts.on_time)),
                 Span::styled(" · ", DIM),
                 missed,
-            ])
+            ];
+            if counts.skipped > 0 {
+                line.push(Span::styled(format!(" · {} skipped", counts.skipped), DIM));
+            }
+            Line::from(line)
         }
         None => Line::styled(app.source.clone(), DIM),
     };

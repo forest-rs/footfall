@@ -18,10 +18,13 @@
 
 use anstream::{eprintln, println};
 use clap::{Parser, Subcommand};
-use footfall::analysis::{Comparison, GroupBy, KeyPart, Population, Selection, SpanId, Trace};
+use footfall::analysis::{
+    Comparison, GroupBy, KeyPart, LateCause, Outcome, Population, Selection, SpanId, Trace,
+};
 use footfall::session::OwnedSnapshot;
 use footfall::session::capture::{CaptureReader, CaptureWriter};
 use footfall::wtransport::{ClientError, SessionClient};
+use footfall::{DropReason, FramePointKind};
 use footfall_examples::style::{BAD, DIM, GOOD, HEADING, HINT, NAME, WARN};
 use footfall_examples::{format, report};
 use std::fs::File;
@@ -423,16 +426,35 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
         println!("No numbered frames: mark frames with frame_begin_numbered.");
         return Ok(());
     }
-    let missed = counts.late + counts.dropped + counts.submitted_late;
-    let style = if missed == 0 { GOOD } else { BAD };
+    let style = if counts.missed() == 0 { GOOD } else { BAD };
     println!(
-        "  {GOOD}{} on time{GOOD:#} · {style}{} late · {} dropped · {} submitted late{style:#} · {DIM}{} unknown{DIM:#}",
+        "  {GOOD}{} on time{GOOD:#} · {style}{} late · {} dropped · {} submitted late{style:#} · {DIM}{} skipped · {} unknown{DIM:#}",
         format::count(counts.on_time),
         format::count(counts.late),
         format::count(counts.dropped),
         format::count(counts.submitted_late),
+        format::count(counts.skipped),
         format::count(counts.unknown),
     );
+    if counts.late > 0 {
+        let causes = counts.late_causes;
+        let named: Vec<String> = [
+            (causes.missed_deadline, "missed their deadline"),
+            (causes.backlog, "queued behind a late frame"),
+            (causes.gpu, "GPU finished after the target"),
+            (causes.display, "held by the display"),
+            (
+                causes.after_submit,
+                "late after submit, no GPU work to tell",
+            ),
+            (causes.unknown, "cause not known"),
+        ]
+        .into_iter()
+        .filter(|(count, _)| *count > 0)
+        .map(|(count, why)| format!("{} {why}", format::count(count)))
+        .collect();
+        println!("  late: {}", named.join(" · "));
+    }
     let intervals = pacing.intervals();
     if intervals.count() > 0 {
         println!(
@@ -450,6 +472,15 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
             format::duration(latency.p99()),
         );
     }
+    let wasted = pacing.wasted();
+    if wasted.frames > 0 {
+        println!(
+            "  never shown: {} frames, {} of CPU work and {} of GPU work spent on them",
+            format::count(wasted.frames),
+            format::duration(wasted.cpu),
+            format::duration(wasted.gpu),
+        );
+    }
     if counts.unknown == counts.total() {
         println!(
             "  {WARN}no presentation feedback: report Presented and Target frame points to judge pacing{WARN:#}"
@@ -462,6 +493,8 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
         );
     }
 
+    predictions(&pacing);
+
     let mut late: Vec<_> = pacing
         .frames()
         .iter()
@@ -473,17 +506,25 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
     late.sort_by_key(|frame| core::cmp::Reverse(late_by(frame.outcome())));
     println!("\n{HEADING}Worst misses{HEADING:#}");
     println!(
-        "  {DIM}{:>7}  {:<14}  {:>10}  {:>10}  {:>16}{DIM:#}",
-        "frame", "outcome", "CPU work", "GPU busy", "past deadline"
+        "  {DIM}{:>7}  {:<14}  {:<14}  {:>10}  {:>10}  {:>14}{DIM:#}",
+        "frame", "outcome", "why", "CPU work", "GPU busy", "past deadline"
     );
     for frame in late.iter().take(top) {
-        let outcome = match frame.outcome() {
-            footfall::analysis::Outcome::Late { by } => {
-                format!("late {}", format::duration(by))
-            }
-            footfall::analysis::Outcome::Dropped => String::from("dropped"),
-            footfall::analysis::Outcome::SubmittedLate { .. } => String::from("submitted late"),
-            other => format!("{other:?}"),
+        let (outcome, why) = match frame.outcome() {
+            Outcome::Late { by, cause } => (
+                format!("late {}", format::duration(by)),
+                match cause {
+                    LateCause::MissedDeadline => "deadline",
+                    LateCause::Backlog => "backlog",
+                    LateCause::Gpu => "GPU",
+                    LateCause::Display => "display",
+                    LateCause::AfterSubmit => "after submit",
+                    _ => "-",
+                },
+            ),
+            Outcome::Dropped { reason } => (String::from("dropped"), drop_reason(reason)),
+            Outcome::SubmittedLate { .. } => (String::from("submitted late"), "deadline"),
+            other => (format!("{other:?}"), "-"),
         };
         let past_deadline = frame
             .deadline()
@@ -491,7 +532,7 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
             .and_then(|(deadline, work)| work.end().checked_sub(deadline))
             .map_or_else(|| String::from("-"), format::duration);
         println!(
-            "  {:>7}  {BAD}{outcome:<14}{BAD:#}  {:>10}  {:>10}  {:>16}",
+            "  {:>7}  {BAD}{outcome:<14}{BAD:#}  {why:<14}  {:>10}  {:>10}  {:>14}",
             frame.number(),
             frame
                 .work()
@@ -503,8 +544,8 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
 
     // What the missed frames did differently, CPU and GPU together. GPU
     // spans count toward their frame by number, wherever they ran.
-    let missed_ids = pacing.frame_ids(footfall::analysis::Outcome::missed);
-    let on_time_ids = pacing.frame_ids(|outcome| outcome == footfall::analysis::Outcome::OnTime);
+    let missed_ids = pacing.frame_ids(Outcome::missed);
+    let on_time_ids = pacing.frame_ids(|outcome| outcome == Outcome::OnTime);
     let frames = |ids: &[footfall::analysis::FrameId]| {
         Population::frames(&trace, ids.iter().filter_map(|id| trace.frame(*id)))
     };
@@ -519,12 +560,72 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
 }
 
 /// Orders missed frames: dropped first, then by how late.
-fn late_by(outcome: footfall::analysis::Outcome) -> Duration {
+fn late_by(outcome: Outcome) -> Duration {
     match outcome {
-        footfall::analysis::Outcome::Dropped => Duration::MAX,
-        footfall::analysis::Outcome::Late { by }
-        | footfall::analysis::Outcome::SubmittedLate { by } => by,
+        Outcome::Dropped { .. } => Duration::MAX,
+        Outcome::Late { by, .. } | Outcome::SubmittedLate { by } => by,
         _ => Duration::ZERO,
+    }
+}
+
+fn drop_reason(reason: DropReason) -> &'static str {
+    match reason {
+        DropReason::Discarded => "discarded",
+        DropReason::Superseded => "superseded",
+        DropReason::MissedDeadline => "deadline",
+        DropReason::SurfaceUnavailable => "no surface",
+        DropReason::OutputUnavailable => "no display",
+        DropReason::Replaced => "replaced",
+        _ => "-",
+    }
+}
+
+/// Prints how far each kind of predicted time was from when frames were
+/// shown, for the kinds the trace has.
+fn predictions(pacing: &footfall::analysis::Pacing) {
+    let rows: Vec<_> = [
+        (
+            FramePointKind::Predicted,
+            "predicted",
+            "by the platform, at frame start",
+        ),
+        (
+            FramePointKind::Target,
+            "target",
+            "by the scheduler, when planned",
+        ),
+        (FramePointKind::Expected, "expected", "at submit"),
+    ]
+    .into_iter()
+    .map(|(kind, name, when)| (pacing.prediction_error(kind), name, when))
+    .filter(|(error, ..)| error.off.count() > 0)
+    .collect();
+    if rows.is_empty() {
+        return;
+    }
+    println!("\n{HEADING}How far off the predicted display times were{HEADING:#}");
+    println!(
+        "  {DIM}{:<10} {:>7}  {:>10}  {:>10}  {:>10}  {:>7}  {:>7}  {}{DIM:#}",
+        "time",
+        "frames",
+        "median off",
+        "p99 off",
+        format!("within {}", format::duration(pacing.tolerance())),
+        "early",
+        "late",
+        "predicted"
+    );
+    for (error, name, when) in rows {
+        println!(
+            "  {:<10} {:>7}  {:>10}  {:>10}  {:>10}  {:>7}  {:>7}  {DIM}{when}{DIM:#}",
+            name,
+            format::count(error.off.count()),
+            format::duration(error.off.median()),
+            format::duration(error.off.p99()),
+            format::count(error.within()),
+            format::count(error.early.count()),
+            format::count(error.late.count()),
+        );
     }
 }
 

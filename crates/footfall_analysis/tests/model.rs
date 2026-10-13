@@ -1221,7 +1221,8 @@ impl Recording {
 
 #[test]
 fn pacing_says_which_frames_were_shown_on_time_and_why_not() {
-    use footfall_analysis::Outcome;
+    use footfall_analysis::{LateCause, Outcome};
+    use footfall_core::DropReason;
     use footfall_core::FramePointKind::{Deadline, Dropped, Presented, Target};
     let mut recording = Recording::new(7);
     // The host clock reads in step with the runtime's: 0 at 0.
@@ -1234,7 +1235,7 @@ fn pacing_says_which_frames_were_shown_on_time_and_why_not() {
     let third = recording.numbered_frame(3, 40_000, 45_000);
     recording.frame_point(45_000, 1, Presented, &HOST, Some(16_667));
     recording.frame_point(45_000, 2, Presented, &HOST, Some(50_000));
-    recording.frame_point(46_000, 3, Dropped, &HOST, None);
+    recording.frame_point(46_000, 3, Dropped(DropReason::MissedDeadline), &HOST, None);
     let fourth = recording.numbered_frame(4, 50_000, 64_000);
     recording.frame_point(64_000, 4, Deadline, &HOST, Some(62_500));
     recording.numbered_frame(5, 66_667, 70_000);
@@ -1253,8 +1254,13 @@ fn pacing_says_which_frames_were_shown_on_time_and_why_not() {
         outcomes,
         [
             Outcome::OnTime,
-            Outcome::Late { by: us(16_667) },
-            Outcome::Dropped,
+            Outcome::Late {
+                by: us(16_667),
+                cause: LateCause::Unknown,
+            },
+            Outcome::Dropped {
+                reason: DropReason::MissedDeadline,
+            },
             Outcome::SubmittedLate { by: us(1_500) },
             Outcome::Unknown,
         ]
@@ -1276,4 +1282,154 @@ fn pacing_says_which_frames_were_shown_on_time_and_why_not() {
         "frame 1 to frame 2"
     );
     assert_eq!(pacing.unplaced_points(), 1);
+}
+
+#[test]
+fn late_frames_say_what_made_them_late() {
+    use footfall_analysis::{LateCause, Outcome};
+    use footfall_core::DropReason;
+    use footfall_core::FramePointKind::{
+        Deadline, Dropped, Expected, Predicted, Presented, Target,
+    };
+    let mut recording = Recording::new(7);
+    recording.clock_sync(0, &HOST, 0);
+    recording.clock_sync(0, &GPU_CLOCK, 0);
+    // Each frame: its work, deadline, target, and when it was shown, in µs.
+    let frame = |recording: &mut Recording, number, work: (u64, u64), times: [Option<u64>; 3]| {
+        recording.numbered_frame(number, work.0, work.1);
+        let [deadline, target, presented] = times;
+        for (kind, time) in [
+            (Deadline, deadline),
+            (Target, target),
+            (Presented, presented),
+        ] {
+            if time.is_some() {
+                recording.frame_point(work.1, number, kind, &HOST, time);
+            }
+        }
+    };
+    let gpu_for =
+        |number, begin: u64, end: u64| gpu(&OPAQUE, begin * 1000, end * 1000).in_frame(number);
+    // 1: on time.
+    frame(
+        &mut recording,
+        1,
+        (0, 5_000),
+        [Some(12_500), Some(16_667), Some(16_667)],
+    );
+    recording.frame_point(0, 1, Predicted, &HOST, Some(16_667));
+    recording.frame_point(5_000, 1, Expected, &HOST, Some(16_667));
+    // 2: its work ran past its deadline.
+    frame(
+        &mut recording,
+        2,
+        (16_667, 30_000),
+        [Some(29_167), Some(33_333), Some(50_000)],
+    );
+    recording.frame_point(16_667, 2, Predicted, &HOST, Some(33_333));
+    // 3: superseded by newer work after it was built.
+    recording.numbered_frame(3, 33_333, 38_000);
+    recording.frame_point(38_000, 3, Dropped(DropReason::Superseded), &HOST, None);
+    // 4: submitted in time, but its GPU work ran past its target.
+    frame(
+        &mut recording,
+        4,
+        (50_000, 55_000),
+        [Some(62_500), Some(66_667), Some(83_333)],
+    );
+    recording.timeline_span(72_000, &gpu_for(4, 56_000, 70_000));
+    recording.frame_point(50_000, 4, Predicted, &HOST, Some(83_333));
+    // 5: in time, but frame 4 still held its slot.
+    frame(
+        &mut recording,
+        5,
+        (66_667, 70_000),
+        [Some(79_167), Some(83_333), Some(100_000)],
+    );
+    // 6: in time, rendered in time, nothing ahead of it: the display.
+    frame(
+        &mut recording,
+        6,
+        (100_000, 105_000),
+        [Some(112_500), Some(116_667), Some(133_333)],
+    );
+    recording.timeline_span(112_000, &gpu_for(6, 106_000, 110_000));
+    // 7: in time with nothing ahead, but no GPU work to tell.
+    frame(
+        &mut recording,
+        7,
+        (133_333, 137_000),
+        [Some(145_833), Some(150_000), Some(166_667)],
+    );
+    // 8: replaced on its way to the display.
+    recording.frame_point(170_000, 8, Dropped(DropReason::Replaced), &HOST, None);
+    let trace = Trace::from_snapshot(&recording.snapshot(180_000));
+
+    let pacing = trace.pacing(us(500));
+    let outcomes: Vec<_> = pacing
+        .frames()
+        .iter()
+        .map(|frame| frame.outcome())
+        .collect();
+    let late = |cause| Outcome::Late {
+        by: us(16_667),
+        cause,
+    };
+    assert_eq!(
+        outcomes,
+        [
+            Outcome::OnTime,
+            late(LateCause::MissedDeadline),
+            Outcome::Dropped {
+                reason: DropReason::Superseded
+            },
+            Outcome::Late {
+                by: us(16_666),
+                cause: LateCause::Gpu,
+            },
+            late(LateCause::Backlog),
+            Outcome::Late {
+                by: us(16_666),
+                cause: LateCause::Display,
+            },
+            late(LateCause::AfterSubmit),
+            Outcome::Dropped {
+                reason: DropReason::Replaced
+            },
+        ]
+    );
+    let counts = pacing.counts();
+    assert_eq!((counts.late, counts.skipped, counts.dropped), (5, 2, 0));
+    assert_eq!(counts.missed(), 5);
+    assert_eq!(counts.late_causes.gpu, 1);
+    assert_eq!(counts.total(), 8);
+    assert!(
+        !Outcome::Dropped {
+            reason: DropReason::Superseded
+        }
+        .missed()
+    );
+
+    let predicted = pacing.prediction_error(Predicted);
+    assert_eq!(
+        (
+            predicted.off.count(),
+            predicted.within(),
+            predicted.late.count()
+        ),
+        (3, 2, 1)
+    );
+    assert_eq!(
+        predicted.late.max(),
+        us(16_667),
+        "frame 2 was predicted for 33.3 ms"
+    );
+    let expected = pacing.prediction_error(Expected);
+    assert_eq!((expected.off.count(), expected.off.max()), (1, us(0)));
+
+    let wasted = pacing.wasted();
+    assert_eq!(
+        (wasted.frames, wasted.cpu, wasted.gpu),
+        (2, us(4_667), us(0))
+    );
 }

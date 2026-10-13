@@ -322,11 +322,19 @@ Whether a frame was shown when it was meant to be is known only to the
 frame scheduler and the display, and often only frames later. Record each
 time as it becomes known with `frame_point`, against the frame's number:
 its `Deadline` (the latest it could be submitted) and `Target` (when it
-should be shown) when it is planned, and `Presented` or `Dropped` when the
-display reports it. The times are ticks of the scheduler's clock, synced
-with `clock_sync` like any other clock. With frames marked by number and
-GPU work reported with its frame, analysis then says which frames were
-late, by how much, and what their work did differently.
+should be shown) when it is planned, and `Presented` when the display
+reports it, or `FramePoint::dropped` with a `DropReason` if it never will
+be. Report what the platform predicted too, when it says: `Predicted`, as
+a display link's target timestamp when the frame begins, and `Expected`,
+the presentation time known at submit. The times are ticks of the
+scheduler's clock, synced with `clock_sync` like any other clock. With
+frames marked by number and GPU work reported with its frame, analysis then
+says which frames were late, by how much, why, how good the predictions
+were, and what the late frames' work did differently.
+
+Say why a frame was dropped. A frame the program superseded with newer work
+(`DropReason::Superseded`) is not a miss, while one still waiting when its
+deadline passed (`DropReason::MissedDeadline`) is.
 
 ```rust
 use footfall::{ClockDesc, ClockReading, FramePoint, FramePointKind, TickPeriod};
@@ -340,6 +348,8 @@ footfall::frame_point(&FramePoint::at(1234, FramePointKind::Target, &HOST, perio
 footfall::frame_point(&FramePoint::at(1234, FramePointKind::Deadline, &HOST, period, deadline));
 // Frames later, when the display reports the frame:
 footfall::frame_point(&FramePoint::at(1234, FramePointKind::Presented, &HOST, period, target));
+// Or, if newer work replaced the next frame before it was submitted:
+footfall::frame_point(&FramePoint::dropped(1235, footfall::DropReason::Superseded));
 ```
 
 ## What Lives Where

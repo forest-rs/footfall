@@ -76,7 +76,10 @@ pub use compare::{
     Caveat, Comparison, ComparisonQuery, ComparisonRow, Measure, Metric, Population, Side,
 };
 pub use frame::{Frame, FrameCounter, FrameId};
-pub use pacing::{FramePacing, Outcome, OutcomeCounts, Pacing};
+pub use pacing::{
+    FramePacing, LateCause, LateCauseCounts, Outcome, OutcomeCounts, Pacing, PredictionError,
+    WastedWork,
+};
 pub use query::{
     DurationStats, GroupBy, Instances, KeyPart, Selected, SpanQuery, SpanStats, SpanTable, TableRow,
 };

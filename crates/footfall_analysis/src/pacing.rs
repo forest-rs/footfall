@@ -9,12 +9,12 @@ use crate::query::DurationStats;
 use crate::time::{TimeRange, nanos};
 use crate::trace::Trace;
 use core::time::Duration;
-use footfall_core::FramePointKind;
+use footfall_core::{DropReason, FramePointKind};
 use std::collections::BTreeSet;
 
-/// One numbered frame's pacing: its CPU work, its GPU work, its deadline and
-/// target, when it was shown, and what that adds up to, as
-/// [`Pacing::frames`] returns it.
+/// One numbered frame's pacing: its CPU work, its GPU work, its deadline,
+/// the times it was predicted, meant, and expected to be shown, when it was
+/// shown, and what that adds up to, as [`Pacing::frames`] returns it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FramePacing {
     number: u64,
@@ -23,9 +23,11 @@ pub struct FramePacing {
     gpu: Option<TimeRange>,
     gpu_busy: Duration,
     deadline: Option<Duration>,
+    predicted: Option<Duration>,
     target: Option<Duration>,
+    expected: Option<Duration>,
     presented: Option<Duration>,
-    dropped: bool,
+    dropped: Option<DropReason>,
     outcome: Outcome,
 }
 
@@ -40,9 +42,15 @@ pub enum Outcome {
     Late {
         /// How much later than its target.
         by: Duration,
+        /// What made it late, as far as the trace can tell.
+        cause: LateCause,
     },
-    /// Never shown.
-    Dropped,
+    /// Never shown. Only some reasons are misses; see
+    /// [`DropReason::is_miss`].
+    Dropped {
+        /// Why.
+        reason: DropReason,
+    },
     /// Its work was submitted after its deadline, and when it was shown is
     /// not known; it was probably late.
     SubmittedLate {
@@ -55,14 +63,41 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    /// Returns `true` for a frame shown late, dropped, or submitted late.
+    /// Returns `true` for a frame shown late, submitted late, or dropped for
+    /// a reason that is a miss, such as missing its deadline. A frame the
+    /// program discarded or superseded, or that a later frame replaced, is
+    /// not a miss.
     #[must_use]
     pub const fn missed(self) -> bool {
-        matches!(
-            self,
-            Self::Late { .. } | Self::Dropped | Self::SubmittedLate { .. }
-        )
+        match self {
+            Self::Late { .. } | Self::SubmittedLate { .. } => true,
+            Self::Dropped { reason } => reason.is_miss(),
+            _ => false,
+        }
     }
+}
+
+/// What made a frame late, as [`Outcome::Late`] says: the first of these the
+/// trace shows, in this order.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum LateCause {
+    /// Its CPU work was submitted after its deadline.
+    MissedDeadline,
+    /// It was submitted in time, but the frame before it was still waiting
+    /// to be shown at this one's target: frames queued ahead pushed it back.
+    Backlog,
+    /// It was submitted in time, but its GPU work finished after its target.
+    Gpu,
+    /// It was submitted and rendered in time, with nothing queued ahead of
+    /// it, and shown late anyway: the compositor or display held it.
+    Display,
+    /// It was submitted in time with nothing queued ahead of it, but no GPU
+    /// work was recorded for it, so whether the GPU or the display held it
+    /// is not known.
+    AfterSubmit,
+    /// Not known: the trace has no deadline or CPU work for the frame.
+    Unknown,
 }
 
 impl FramePacing {
@@ -106,10 +141,23 @@ impl FramePacing {
         self.deadline
     }
 
+    /// Returns when the platform predicted, as the frame began, that it
+    /// would be shown.
+    #[must_use]
+    pub const fn predicted(&self) -> Option<Duration> {
+        self.predicted
+    }
+
     /// Returns when the frame was meant to be shown.
     #[must_use]
     pub const fn target(&self) -> Option<Duration> {
         self.target
+    }
+
+    /// Returns when the frame was expected to be shown, as of submitting it.
+    #[must_use]
+    pub const fn expected(&self) -> Option<Duration> {
+        self.expected
     }
 
     /// Returns when the frame was shown.
@@ -118,10 +166,28 @@ impl FramePacing {
         self.presented
     }
 
-    /// Returns `true` when the frame was reported dropped.
+    /// Returns why the frame was never shown, when it was reported dropped.
     #[must_use]
-    pub const fn dropped(&self) -> bool {
+    pub const fn dropped(&self) -> Option<DropReason> {
         self.dropped
+    }
+
+    /// Returns the time of the frame's point of `kind`: its
+    /// [`Predicted`](FramePointKind::Predicted),
+    /// [`Target`](FramePointKind::Target),
+    /// [`Expected`](FramePointKind::Expected),
+    /// [`Deadline`](FramePointKind::Deadline), or
+    /// [`Presented`](FramePointKind::Presented) time.
+    #[must_use]
+    pub const fn time_of(&self, kind: FramePointKind) -> Option<Duration> {
+        match kind {
+            FramePointKind::Deadline => self.deadline,
+            FramePointKind::Predicted => self.predicted,
+            FramePointKind::Target => self.target,
+            FramePointKind::Expected => self.expected,
+            FramePointKind::Presented => self.presented,
+            _ => None,
+        }
     }
 
     /// Returns whether the frame was shown when it was meant to be.
@@ -169,21 +235,79 @@ impl Pacing {
         self.tolerance
     }
 
-    /// Returns how many frames had each outcome: on time, late, dropped,
-    /// submitted late, and unknown.
+    /// Returns how many frames had each outcome: on time, late (and why),
+    /// dropped, skipped, submitted late, and unknown.
     #[must_use]
     pub fn counts(&self) -> OutcomeCounts {
         let mut counts = OutcomeCounts::default();
         for frame in &self.frames {
             match frame.outcome {
                 Outcome::OnTime => counts.on_time += 1,
-                Outcome::Late { .. } => counts.late += 1,
-                Outcome::Dropped => counts.dropped += 1,
+                Outcome::Late { cause, .. } => {
+                    counts.late += 1;
+                    let causes = &mut counts.late_causes;
+                    match cause {
+                        LateCause::MissedDeadline => causes.missed_deadline += 1,
+                        LateCause::Backlog => causes.backlog += 1,
+                        LateCause::Gpu => causes.gpu += 1,
+                        LateCause::Display => causes.display += 1,
+                        LateCause::AfterSubmit => causes.after_submit += 1,
+                        LateCause::Unknown => causes.unknown += 1,
+                    }
+                }
+                Outcome::Dropped { reason } if reason.is_miss() => counts.dropped += 1,
+                Outcome::Dropped { .. } => counts.skipped += 1,
                 Outcome::SubmittedLate { .. } => counts.submitted_late += 1,
                 Outcome::Unknown => counts.unknown += 1,
             }
         }
         counts
+    }
+
+    /// Returns how far off the frames' times of `kind` were from when they
+    /// were shown: for [`Predicted`](FramePointKind::Predicted),
+    /// [`Target`](FramePointKind::Target), or
+    /// [`Expected`](FramePointKind::Expected), how good each prediction was.
+    /// Only frames with both times count, and a frame shown within the
+    /// [`tolerance`](Self::tolerance) of the time counts as neither early
+    /// nor late.
+    #[must_use]
+    pub fn prediction_error(&self, kind: FramePointKind) -> PredictionError {
+        let mut off = Vec::new();
+        let mut early = Vec::new();
+        let mut late = Vec::new();
+        for frame in &self.frames {
+            let (Some(predicted), Some(presented)) = (frame.time_of(kind), frame.presented) else {
+                continue;
+            };
+            let error = presented.abs_diff(predicted);
+            off.push(error);
+            if error > self.tolerance {
+                if presented > predicted {
+                    late.push(error);
+                } else {
+                    early.push(error);
+                }
+            }
+        }
+        PredictionError {
+            off: DurationStats::of(off),
+            early: DurationStats::of(early),
+            late: DurationStats::of(late),
+        }
+    }
+
+    /// Returns the work spent on frames that were never shown, for any
+    /// reason: CPU work between their markers, and GPU busy time.
+    #[must_use]
+    pub fn wasted(&self) -> WastedWork {
+        let mut wasted = WastedWork::default();
+        for frame in self.frames.iter().filter(|frame| frame.dropped.is_some()) {
+            wasted.frames += 1;
+            wasted.cpu += frame.work.map_or(Duration::ZERO, |work| work.length());
+            wasted.gpu += frame.gpu_busy;
+        }
+        wasted
     }
 
     /// Returns the frames whose outcome satisfies `keep`, by their frame
@@ -200,7 +324,7 @@ impl Pacing {
     #[must_use]
     pub fn lateness(&self) -> DurationStats {
         DurationStats::of(self.frames.iter().filter_map(|frame| match frame.outcome {
-            Outcome::Late { by } => Some(by),
+            Outcome::Late { by, .. } => Some(by),
             _ => None,
         }))
     }
@@ -256,8 +380,13 @@ pub struct OutcomeCounts {
     pub on_time: u64,
     /// Frames shown after their targets.
     pub late: u64,
-    /// Frames never shown.
+    /// The late frames, by what made them late.
+    pub late_causes: LateCauseCounts,
+    /// Frames never shown for a reason that is a miss.
     pub dropped: u64,
+    /// Frames never shown for a reason that is not a miss: discarded,
+    /// superseded, replaced, or for a display that was unavailable.
+    pub skipped: u64,
     /// Frames submitted after their deadlines, with no presentation time.
     pub submitted_late: u64,
     /// Frames with too little to judge.
@@ -268,22 +397,107 @@ impl OutcomeCounts {
     /// Returns how many frames were counted.
     #[must_use]
     pub const fn total(&self) -> u64 {
-        self.on_time + self.late + self.dropped + self.submitted_late + self.unknown
+        self.on_time + self.late + self.dropped + self.skipped + self.submitted_late + self.unknown
     }
+
+    /// Returns how many frames were missed: late, submitted late, or
+    /// dropped for a reason that is a miss.
+    #[must_use]
+    pub const fn missed(&self) -> u64 {
+        self.late + self.submitted_late + self.dropped
+    }
+}
+
+/// How many late frames had each [`LateCause`], as
+/// [`OutcomeCounts::late_causes`] holds them.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LateCauseCounts {
+    /// Submitted after their deadlines.
+    pub missed_deadline: u64,
+    /// Pushed back by frames queued ahead.
+    pub backlog: u64,
+    /// Their GPU work finished after their targets.
+    pub gpu: u64,
+    /// Held by the compositor or display.
+    pub display: u64,
+    /// Submitted in time, with no GPU work to tell the GPU from the display.
+    pub after_submit: u64,
+    /// Not known.
+    pub unknown: u64,
+}
+
+/// How far off a kind of predicted time was from when frames were shown, as
+/// [`Pacing::prediction_error`] returns it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PredictionError {
+    /// How far off, either way, for every frame with both times.
+    pub off: DurationStats,
+    /// For frames shown more than the tolerance before the predicted time,
+    /// how much before.
+    pub early: DurationStats,
+    /// For frames shown more than the tolerance after the predicted time,
+    /// how much after.
+    pub late: DurationStats,
+}
+
+impl PredictionError {
+    /// Returns how many frames were shown within the tolerance of the
+    /// predicted time.
+    #[must_use]
+    pub const fn within(&self) -> u64 {
+        self.off.count() - self.early.count() - self.late.count()
+    }
+}
+
+/// Work spent on frames that were never shown, as [`Pacing::wasted`]
+/// returns it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WastedWork {
+    /// How many frames were never shown.
+    pub frames: u64,
+    /// The CPU time between their markers.
+    pub cpu: Duration,
+    /// The time the GPU was busy with them.
+    pub gpu: Duration,
+}
+
+/// What a numbered frame's points and work say, before its outcome is
+/// judged against the frame before it.
+struct Raw {
+    number: u64,
+    frame: Option<FrameId>,
+    work: Option<TimeRange>,
+    gpu: Option<TimeRange>,
+    gpu_busy: Duration,
+    deadline: Option<Duration>,
+    predicted: Option<Duration>,
+    target: Option<Duration>,
+    expected: Option<Duration>,
+    presented: Option<Duration>,
+    dropped: Option<DropReason>,
 }
 
 pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
     let mut numbers: BTreeSet<u64> = trace.numbered_frames().collect();
     numbers.extend(trace.frame_points().keys().copied());
     let mut unplaced_points = 0_u64;
-    let frames = numbers
+    let raws: Vec<Raw> = numbers
         .into_iter()
         .map(|number| {
             let frame = trace.frame_numbered(number);
-            let mut deadline = None;
-            let mut target = None;
-            let mut presented = None;
-            let mut dropped = false;
+            let mut raw = Raw {
+                number,
+                frame: frame.map(crate::Frame::id),
+                work: frame.map(crate::Frame::range),
+                gpu: None,
+                gpu_busy: Duration::ZERO,
+                deadline: None,
+                predicted: None,
+                target: None,
+                expected: None,
+                presented: None,
+                dropped: None,
+            };
             for (kind, time) in trace.frame_points().get(&number).into_iter().flatten() {
                 let at = match time {
                     Some(time) => match trace.clocks().to_runtime(time.clock_id(), time.ticks()) {
@@ -295,54 +509,55 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
                     },
                     None => None,
                 };
-                match kind {
-                    FramePointKind::Deadline => deadline = at.or(deadline),
-                    FramePointKind::Target => target = at.or(target),
-                    FramePointKind::Presented => presented = at.or(presented),
-                    FramePointKind::Dropped => dropped = true,
-                    _ => {}
-                }
+                let slot = match kind {
+                    FramePointKind::Deadline => &mut raw.deadline,
+                    FramePointKind::Predicted => &mut raw.predicted,
+                    FramePointKind::Target => &mut raw.target,
+                    FramePointKind::Expected => &mut raw.expected,
+                    FramePointKind::Presented => &mut raw.presented,
+                    FramePointKind::Dropped(reason) => {
+                        raw.dropped = Some(*reason);
+                        continue;
+                    }
+                    _ => continue,
+                };
+                *slot = at.or(*slot);
             }
             let spans: Vec<_> = trace.frame_spans(number).collect();
-            let gpu = spans
+            raw.gpu = spans
                 .iter()
                 .map(|span| span.range())
                 .reduce(|a, b| TimeRange::new(a.start().min(b.start()), a.end().max(b.end())));
-            let gpu_busy = spans
+            raw.gpu_busy = spans
                 .iter()
                 .filter(|span| span.depth() == 0)
                 .map(|span| span.duration())
                 .sum();
-            let work = frame.map(crate::Frame::range);
-            let outcome = if dropped {
-                Outcome::Dropped
-            } else if let (Some(presented), Some(target)) = (presented, target) {
-                if presented > target.saturating_add(tolerance) {
-                    Outcome::Late {
-                        by: presented - target,
-                    }
-                } else {
-                    Outcome::OnTime
-                }
-            } else if let (Some(deadline), Some(work)) = (deadline, work)
-                && work.end() > deadline
-            {
-                Outcome::SubmittedLate {
-                    by: work.end() - deadline,
-                }
-            } else {
-                Outcome::Unknown
-            };
+            raw
+        })
+        .collect();
+    let frames = raws
+        .iter()
+        .enumerate()
+        .map(|(index, raw)| {
+            // The frame just before, if the trace holds it.
+            let before = index
+                .checked_sub(1)
+                .map(|before| &raws[before])
+                .filter(|before| before.number + 1 == raw.number);
+            let outcome = outcome(raw, before, tolerance);
             FramePacing {
-                number,
-                frame: frame.map(crate::Frame::id),
-                work,
-                gpu,
-                gpu_busy,
-                deadline,
-                target,
-                presented,
-                dropped,
+                number: raw.number,
+                frame: raw.frame,
+                work: raw.work,
+                gpu: raw.gpu,
+                gpu_busy: raw.gpu_busy,
+                deadline: raw.deadline,
+                predicted: raw.predicted,
+                target: raw.target,
+                expected: raw.expected,
+                presented: raw.presented,
+                dropped: raw.dropped,
                 outcome,
             }
         })
@@ -351,5 +566,49 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
         frames,
         tolerance,
         unplaced_points,
+    }
+}
+
+/// Judges a frame against its target and deadline, and a late one against
+/// the frame before it, `before`.
+fn outcome(raw: &Raw, before: Option<&Raw>, tolerance: Duration) -> Outcome {
+    if let Some(reason) = raw.dropped {
+        return Outcome::Dropped { reason };
+    }
+    let submitted_late = raw
+        .deadline
+        .zip(raw.work)
+        .and_then(|(deadline, work)| work.end().checked_sub(deadline))
+        .filter(|by| !by.is_zero());
+    let Some((presented, target)) = raw.presented.zip(raw.target) else {
+        return match submitted_late {
+            Some(by) => Outcome::SubmittedLate { by },
+            None => Outcome::Unknown,
+        };
+    };
+    if presented <= target.saturating_add(tolerance) {
+        return Outcome::OnTime;
+    }
+    let submitted_in_time =
+        raw.deadline.is_some() && raw.work.is_some() && submitted_late.is_none();
+    let cause = if submitted_late.is_some() {
+        LateCause::MissedDeadline
+    } else if before
+        .and_then(|before| before.presented)
+        .is_some_and(|shown| shown.saturating_add(tolerance) >= target)
+    {
+        LateCause::Backlog
+    } else if raw.gpu.is_some_and(|gpu| gpu.end() > target) {
+        LateCause::Gpu
+    } else if !submitted_in_time {
+        LateCause::Unknown
+    } else if raw.gpu.is_some() {
+        LateCause::Display
+    } else {
+        LateCause::AfterSubmit
+    };
+    Outcome::Late {
+        by: presented - target,
+        cause,
     }
 }
