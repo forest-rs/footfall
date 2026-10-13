@@ -471,7 +471,7 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
         return Ok(());
     }
     late.sort_by_key(|frame| core::cmp::Reverse(late_by(frame.outcome())));
-    println!("\n{HEADING}Latest frames{HEADING:#}");
+    println!("\n{HEADING}Worst misses{HEADING:#}");
     println!(
         "  {DIM}{:>7}  {:<14}  {:>10}  {:>10}  {:>16}{DIM:#}",
         "frame", "outcome", "CPU work", "GPU busy", "past deadline"
