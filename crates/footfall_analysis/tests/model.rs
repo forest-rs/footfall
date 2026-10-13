@@ -1652,6 +1652,11 @@ fn late_frames_say_what_made_them_late() {
     assert_eq!(deadline.support, Support::Observed);
     assert_eq!(deadline.submitted_late, Some(us(833)));
     assert!(!deadline.submit_reported, "judged by its end marker");
+    assert_eq!(
+        deadline.submitted,
+        footfall_core::TimingBasis::Observed,
+        "the runtime recorded the end marker itself"
+    );
     let gpu = why(4);
     assert_eq!(
         (gpu.support, gpu.gpu_late, gpu.submitted_late),
@@ -1993,4 +1998,46 @@ fn frame_points_say_how_their_times_were_known_and_what_the_scheduler_knew() {
         )),
         "how late rests on an estimated presentation"
     );
+}
+
+#[test]
+fn a_missed_deadline_shown_by_an_estimated_submission_is_inferred() {
+    use footfall_analysis::{LateCause, Support};
+    use footfall_core::FramePointKind::{Deadline, Presented, Submitted, Target};
+    use footfall_core::TimingBasis::{Estimated, Observed};
+    let mut recording = Recording::new(7);
+    recording.clock_sync(0, &HOST, 0);
+    // Two frames, each submitted 2 ms after its deadline and shown a
+    // refresh late; the first frame's submission time was estimated.
+    for (number, submitted) in [(1_u64, Estimated), (2, Observed)] {
+        let start = (number - 1) * 16_667;
+        recording.numbered_frame(number, start, start + 5_000);
+        let at = start + 5_000;
+        let point = |recording: &mut Recording, kind, time, basis| {
+            recording.frame_point_with(at, number, kind, &HOST, Some(time), basis, Args::none());
+        };
+        point(&mut recording, Deadline, start + 8_000, Observed);
+        point(&mut recording, Submitted, start + 10_000, submitted);
+        point(&mut recording, Target, start + 16_667, Observed);
+        point(&mut recording, Presented, start + 33_333, Observed);
+    }
+    let trace = Trace::from_snapshot(&recording.snapshot(60_000));
+    let pacing = trace.pacing(us(500));
+    let why = |number: u64| {
+        *pacing
+            .frame(number)
+            .and_then(|frame| frame.why())
+            .expect("a late frame")
+    };
+    let (estimated, observed) = (why(1), why(2));
+    assert_eq!(
+        (estimated.cause, estimated.support, estimated.submitted),
+        (LateCause::MissedDeadline, Support::Inferred, Estimated),
+        "the miss rests on an estimated submission"
+    );
+    assert_eq!(
+        (observed.cause, observed.support, observed.submitted),
+        (LateCause::MissedDeadline, Support::Observed, Observed)
+    );
+    assert_eq!(estimated.submitted_late, Some(us(2_000)));
 }

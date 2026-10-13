@@ -131,14 +131,18 @@ The cause is the leading explanation, not proof. `FramePacing::why` says
 what the trace shows: every condition that held (submitted after the
 deadline, GPU work finishing after the target, the frame before still
 waiting), whether the submission time was reported or read from the end
-marker, whether GPU work was recorded, how the presentation time was known,
-and how strongly the trace supports the cause:
+marker, whether GPU work was recorded, how the submission and presentation
+times were known, and how strongly the trace supports the cause:
 
 | `Support` | Meaning |
 |---|---|
-| `Observed` | The trace recorded the condition: a late submission, or recorded GPU work finishing after the target |
-| `Inferred` | It rests on something not observed: a queue read from the frame before's presentation, or an estimated presentation time |
+| `Observed` | The trace recorded the condition, from times that were not estimates: a late submission, or recorded GPU work finishing after the target |
+| `Inferred` | It rests on something not observed: a queue read from the frame before's presentation, or an estimated submission or presentation time |
 | `Unresolved` | The program's part looked in time, and what came after was not observed |
+
+Deadlines and targets are the scheduler's plans, taken as given. And an
+observed condition is not proof that it made the frame late, only the
+leading explanation.
 
 `OutcomeCounts::late_support` counts late frames by support, so an answer
 can say how much of it rests on inference. Only some drops are misses (`DropReason::is_miss`):
