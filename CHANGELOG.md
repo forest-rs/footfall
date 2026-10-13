@@ -24,10 +24,12 @@ The first release.
   records finished work in the timeline's clock with its frame and flow.
   Analysis places it on a track of its own and counts it toward its frame;
   the Chrome export draws each timeline as a track.
-- Frame points record a numbered frame's deadline, target, presentation, or
-  drop whenever the frame scheduler or display reports them, and
-  `Trace::pacing` says which frames were late, dropped, or not known, with
-  their CPU and GPU work.
+- Frame points record a numbered frame's deadline, predicted, target, and
+  expected display times, presentation, or drop and its reason whenever the
+  frame scheduler or display reports them. `Trace::pacing` says which
+  frames were late and why (missed deadline, backlog, GPU, display),
+  dropped, skipped, or not known, with their CPU and GPU work, how far off
+  each prediction was, and the work spent on frames never shown.
 - `scope!` for a scope that lasts to the end of the block; `context!` and
   `args!` for labels and per-instance arguments.
 - Instrumentation levels, and `--cfg footfall_compile_out` to compile every

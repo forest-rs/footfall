@@ -15,8 +15,11 @@
 //! against the CPU's; the renderer reads the GPU's timestamps back a frame
 //! later, the way real timestamp queries arrive, and syncs the GPU clock
 //! each frame so analysis can place the work. A pretend 60 Hz display
-//! reports when each frame was shown, against the target and deadline the
-//! renderer planned for it.
+//! shows one frame per refresh, in order, and reports when each frame was
+//! shown, against the target and deadline the renderer planned for it, the
+//! next refresh the platform predicted when the frame began, and the display
+//! time the compositor expected at submit. Now and then new input supersedes
+//! a frame after it was built, so it is never submitted.
 //!
 //! The instrumentation follows the guide: descriptors are `static`, each
 //! long-lived owner (the window, each pass, the glyph cache, each worker)
@@ -24,11 +27,11 @@
 //! and `frame_end_numbered`, and the work runs under the owner's handle.
 
 use footfall::{
-    ClockDesc, ClockReading, CounterDesc, EventDesc, FlowId, FramePoint, FramePointKind, LabelKey,
-    RegisteredContext, ResourceId, ResourceKindDesc, ScopeDesc, TickPeriod, TimelineDesc,
-    TimelineSpan, args, clock_sync, context, counter_add, flow_begin, flow_end, flow_step,
-    frame_begin_numbered, frame_end_numbered, frame_point, gauge_set, histogram_record,
-    message_with, resource_create, resource_drop, resource_update, timeline_span,
+    ClockDesc, ClockReading, CounterDesc, DropReason, EventDesc, FlowId, FramePoint,
+    FramePointKind, LabelKey, RegisteredContext, ResourceId, ResourceKindDesc, ScopeDesc,
+    TickPeriod, TimelineDesc, TimelineSpan, args, clock_sync, context, counter_add, flow_begin,
+    flow_end, flow_step, frame_begin_numbered, frame_end_numbered, frame_point, gauge_set,
+    histogram_record, message_with, resource_create, resource_drop, resource_update, timeline_span,
 };
 use footfall_memory::{CacheMetrics, CacheStats};
 use std::collections::VecDeque;
@@ -52,6 +55,8 @@ static SHAPE_TEXT: ScopeDesc = footfall::scope_desc!("shape_text", "demo::Render
 static UPLOAD_GLYPHS: ScopeDesc = footfall::scope_desc!("upload_glyphs", "demo::Renderer::text");
 static COMPOSITE: ScopeDesc = footfall::scope_desc!("composite", "demo::Renderer::frame");
 static SUBMIT: ScopeDesc = footfall::scope_desc!("submit", "demo::Renderer::submit");
+static WAIT_FOR_DRAWABLE: ScopeDesc =
+    footfall::scope_desc!("wait_for_drawable", "demo::Renderer::frame");
 static GPU_FRAME: ScopeDesc = footfall::scope_desc!("gpu_frame", "demo::Gpu::run");
 static GPU_SHADOWS: ScopeDesc = footfall::scope_desc!("shadows", "demo::Gpu::run");
 static GPU_OPAQUE: ScopeDesc = footfall::scope_desc!("opaque", "demo::Gpu::run");
@@ -66,6 +71,8 @@ static HOST_CLOCK: ClockDesc = ClockDesc::new("host");
 const REFRESH: Duration = Duration::from_nanos(16_666_667);
 /// How long after a frame starts the renderer plans to show it.
 const FRAME_BUDGET: Duration = Duration::from_millis(12);
+/// How long the compositor guesses a frame's GPU work takes.
+const GPU_ESTIMATE: Duration = Duration::from_micros(4_500);
 /// The pretend GPU's timestamp period: 125 ns per 3 ticks, 24 MHz.
 const GPU_PERIOD: TickPeriod = TickPeriod::new(125, 3);
 
@@ -172,6 +179,9 @@ impl Renderer {
         // The renderer's own frame number, so later observations of this
         // frame, such as when it was shown, can find it.
         frame_begin_numbered(self.frame, window);
+        // Like a swapchain, the display holds only so many frames: wait for
+        // one to be shown before building another.
+        self.gpu.wait_for_drawable(window);
         // Read back the GPU work that has finished, as timestamp queries
         // arrive a frame or more later, and sync the clocks.
         self.gpu.read_back(self.paint.handle());
@@ -186,7 +196,19 @@ impl Renderer {
             let invalidated = self.layout();
             let storm = invalidated.is_some();
             self.paint(invalidated);
-            self.submit(storm);
+            if self.frame % 150 == 33 {
+                // Input arrived after the frame was built: its content is
+                // stale, so the next frame replaces it.
+                message_with(
+                    &LOG,
+                    window,
+                    "frame superseded by new input",
+                    &args!("frame" => self.frame),
+                );
+                frame_point(&FramePoint::dropped(self.frame, DropReason::Superseded));
+            } else {
+                self.submit(storm);
+            }
             self.text();
             {
                 footfall::scope!(&COMPOSITE, self.composite.handle());
@@ -397,8 +419,13 @@ struct Gpu {
     /// When the queue next falls idle, in CPU time since `start`.
     idle_at: Duration,
     /// Submitted frames whose timestamps have not been read back: the
-    /// frame, its flow, and each pass with its begin and end ticks.
+    /// frame, its flow, each pass with its begin and end ticks, and when
+    /// the display shows it.
     in_flight: VecDeque<(u64, FlowId, Vec<GpuPass>, Duration)>,
+    /// When the display last showed a frame, which the next can't precede.
+    shown_at: Duration,
+    /// The display time the compositor last expected at submit.
+    expected_at: Duration,
 }
 
 /// One pass the pretend GPU ran: its scope and begin and end ticks.
@@ -410,6 +437,8 @@ impl Gpu {
             start: Instant::now(),
             idle_at: Duration::ZERO,
             in_flight: VecDeque::new(),
+            shown_at: Duration::ZERO,
+            expected_at: Duration::ZERO,
         }
     }
 
@@ -425,11 +454,17 @@ impl Gpu {
     }
 
     /// Records when frame `number` should be shown, and the latest it can
-    /// be submitted for that.
+    /// be submitted for that, and the platform's prediction: the next
+    /// refresh, as a display link reports it, which knows nothing of the
+    /// frames already queued.
     fn plan(&self, number: u64) {
-        let target = Self::next_refresh(self.start.elapsed() + FRAME_BUDGET);
+        let now = self.start.elapsed();
+        // No sooner than the refresh after the last frame it submitted,
+        // which the display shows first.
+        let target = Self::next_refresh(now + FRAME_BUDGET).max(self.expected_at + REFRESH);
         let deadline = target.saturating_sub(REFRESH / 4);
         for (kind, at) in [
+            (FramePointKind::Predicted, Self::next_refresh(now)),
             (FramePointKind::Target, target),
             (FramePointKind::Deadline, deadline),
         ] {
@@ -443,6 +478,16 @@ impl Gpu {
         }
     }
 
+    /// Blocks while the display has more than one frame queued to show,
+    /// as acquiring a swapchain image does.
+    fn wait_for_drawable(&self, context: footfall::ContextHandle) {
+        let free_at = self.shown_at.saturating_sub(REFRESH);
+        if let Some(wait) = free_at.checked_sub(self.start.elapsed()) {
+            footfall::scope!(&WAIT_FOR_DRAWABLE, context);
+            sleep(wait);
+        }
+    }
+
     /// Returns the GPU's timestamp at `at` CPU time since the start.
     fn ticks(at: Duration) -> u64 {
         // 20 ppm fast, 24 ticks per microsecond, from an arbitrary origin.
@@ -452,13 +497,30 @@ impl Gpu {
 
     fn submit(&mut self, frame: u64, flow: FlowId, passes: &[(&'static ScopeDesc, Duration)]) {
         let mut at = self.idle_at.max(self.start.elapsed());
+        // The compositor expects the frame at the first refresh after a
+        // typical frame's GPU work that the frames it has queued leave free,
+        // not knowing what this one holds.
+        let expected = Self::next_refresh(at + GPU_ESTIMATE).max(self.shown_at + REFRESH);
+        self.expected_at = expected;
+        frame_point(&FramePoint::at(
+            frame,
+            FramePointKind::Expected,
+            &HOST_CLOCK,
+            TickPeriod::NANOSECOND,
+            Self::host_ticks(expected),
+        ));
         let mut timed = Vec::with_capacity(passes.len());
         for (scope, length) in passes {
             timed.push((*scope, Self::ticks(at), Self::ticks(at + *length)));
             at += *length;
         }
         self.idle_at = at;
-        self.in_flight.push_back((frame, flow, timed, at));
+        // The display shows each frame at the first refresh after the GPU
+        // finishes it, one frame per refresh, so a late frame pushes the
+        // ones queued behind it back.
+        let shown = Self::next_refresh(at).max(self.shown_at + REFRESH);
+        self.shown_at = shown;
+        self.in_flight.push_back((frame, flow, timed, shown));
     }
 
     /// Reports the frames the GPU has finished, the whole frame before the
@@ -472,7 +534,7 @@ impl Gpu {
             TickPeriod::NANOSECOND,
         ));
         let done = Self::ticks(now);
-        while let Some((frame, flow, passes, finished)) = self.in_flight.front() {
+        while let Some((frame, flow, passes, shown)) = self.in_flight.front() {
             let (Some(first), Some(last)) = (passes.first(), passes.last()) else {
                 self.in_flight.pop_front();
                 continue;
@@ -490,14 +552,13 @@ impl Gpu {
             for (scope, begin, end) in passes {
                 timeline_span(&span(scope, *begin, *end));
             }
-            // The display shows the frame at the first refresh after the GPU
-            // finished it.
+            // The display reports when it showed the frame.
             frame_point(&FramePoint::at(
                 *frame,
                 FramePointKind::Presented,
                 &HOST_CLOCK,
                 TickPeriod::NANOSECOND,
-                Self::host_ticks(Self::next_refresh(*finished)),
+                Self::host_ticks(*shown),
             ));
             self.in_flight.pop_front();
         }

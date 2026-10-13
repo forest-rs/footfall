@@ -12,8 +12,8 @@
 //! sorted, nested by containment, and sent with their timestamps in order.
 
 use footfall_core::{
-    ClockId, ClockReading, FramePoint, FramePointKind, ScopeDesc, TickPeriod, TimelineId,
-    TimelineSpan,
+    ClockId, ClockReading, DropReason, FramePoint, FramePointKind, ScopeDesc, TickPeriod,
+    TimelineId, TimelineSpan,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
@@ -106,8 +106,8 @@ pub(crate) enum PointOutcome {
     /// The frame was shown this many nanoseconds after its target; negative
     /// when early.
     Lateness(i128),
-    /// The frame was dropped.
-    Dropped(u64),
+    /// The frame numbered this was dropped, for this reason.
+    Dropped(u64, DropReason),
 }
 
 impl Timelines {
@@ -250,10 +250,10 @@ impl Timelines {
     pub(crate) fn frame_point(&mut self, point: &FramePoint) -> PointOutcome {
         let number = point.number();
         match (point.kind(), point.time()) {
-            (FramePointKind::Dropped, _) => {
+            (FramePointKind::Dropped(reason), _) => {
                 self.targets.remove(&number);
                 self.presented.remove(&number);
-                PointOutcome::Dropped(number)
+                PointOutcome::Dropped(number, reason)
             }
             (FramePointKind::Target, Some(time)) => {
                 if let Some(presented) = self.presented.remove(&number) {

@@ -288,7 +288,7 @@ thread id, then a `u8` observation tag and its fields:
 | `9` | clock sync | clock |
 | `10` | clock pair | clock, clock |
 | `11` | timeline span | timeline id `u64`, timeline name `name` and kind `u8` (`0` GPU, `1` display, `2` other; written with the name), scope id `u64`, name `name`, location `location`, context id `u64`, begin `clock`, length in ticks `u64`, frame `u64` (the number plus one, or `0` for none), flow `u64` (the id plus one, or `0` for none), args |
-| `12` | frame point | frame number `u64`, kind `u8` (`0` deadline, `1` target, `2` presented, `3` dropped), time tag `u8` (`0` none, `1` present) and, when present, `clock` |
+| `12` | frame point | frame number `u64`, kind `u8` (`0` deadline, `1` target, `2` presented, `3` dropped, `4` predicted, `5` expected), for a dropped frame its reason `u8` (`0` unknown, `1` discarded, `2` superseded, `3` missed deadline, `4` surface unavailable, `5` output unavailable, `6` replaced), time tag `u8` (`0` none, `1` present) and, when present, `clock` |
 
 A counter sample is a counter's or gauge's value at a frame end, recorded
 for each one the frame updated; a counter's change over a frame is the
@@ -311,9 +311,10 @@ kind is written only the first time the timeline appears in a payload.
 
 A frame point is a time a frame scheduler or display knows about the frame
 the program numbered, recorded when it becomes known, often frames later:
-the frame's deadline, its target display time, when it was presented, or,
-with no time, that it was dropped. Its row's time is when it was
-recorded.
+the frame's deadline, the platform's predicted display time, its target
+display time, the display time expected at submit, when it was presented,
+or, usually with no time, that it was dropped and why. Its row's time is
+when it was recorded.
 
 `args` is a `u8` entry count, at most `footfall_core::ARGS_INLINE_CAPACITY`,
 followed by that many entries of key `string` and label value. Message text is

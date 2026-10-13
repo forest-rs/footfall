@@ -67,16 +67,42 @@ whole, wherever they ran; `Trace::frame_spans` lists them.
 
 `Trace::pacing(tolerance)` joins each numbered frame's CPU work, its GPU
 work, and the frame points a frame scheduler or display reported into a
-`FramePacing`: its deadline, target, and presentation, how long its GPU
-was busy, and an `Outcome`.
+`FramePacing`: its deadline, its predicted, target, and expected display
+times, when it was shown, how long its GPU was busy, and an `Outcome`.
 
 | Outcome | Meaning |
 |---|---|
 | `OnTime` | Shown no more than `tolerance` after its target |
-| `Late { by }` | Shown after its target |
-| `Dropped` | Never shown |
+| `Late { by, cause }` | Shown after its target, and why |
+| `Dropped { reason }` | Never shown, and why |
 | `SubmittedLate { by }` | Submitted past its deadline, with no presentation time to confirm it |
 | `Unknown` | Too little reported to tell |
+
+A late frame's `LateCause` is the first of these the trace shows, in order:
+
+| Cause | The frame |
+|---|---|
+| `MissedDeadline` | had its CPU work submitted after its deadline |
+| `Backlog` | was in time, but the frame before it was still being shown at this one's target |
+| `Gpu` | was in time, but its GPU work finished after its target |
+| `Display` | was submitted and rendered in time with nothing ahead of it: the compositor or display held it |
+| `AfterSubmit` | was in time with nothing ahead of it, but has no GPU work to tell the GPU from the display |
+| `Unknown` | has no deadline or CPU work to judge |
+
+So the first frame of a run of late frames carries the cause, and the ones
+behind it say `Backlog`. Only some drops are misses (`DropReason::is_miss`):
+a frame that missed its deadline or found no surface leaves the previous
+frame on screen, but one the program discarded or superseded, or that a
+later frame replaced, leaves nothing missing. `OutcomeCounts` counts those
+as `skipped` rather than `dropped`, and `Pacing::wasted` adds up the CPU and
+GPU work spent on every frame never shown.
+
+`Pacing::prediction_error` says how good each prediction of a frame's
+display time was: the platform's `Predicted` time, the scheduler's
+`Target`, and the `Expected` time at submit, each against when the frame
+was shown, as how far off and how many frames were shown early or late by
+more than the tolerance. A scheduler that plans against bad predictions
+misses frames it had time for.
 
 `Unknown` is not on time: without a target and a presentation time, a
 frame's pacing cannot be judged, and a trace with no presentation feedback

@@ -164,19 +164,73 @@ impl TimelineSpan {
 }
 
 /// What a [`FramePoint`] says about a frame.
+///
+/// A frame scheduler knows three times before a frame is shown, each later
+/// and better informed than the one before: the platform's
+/// [`Predicted`](Self::Predicted) time when the frame began, the scheduler's
+/// [`Target`](Self::Target) when it planned the frame, and the
+/// [`Expected`](Self::Expected) time when the frame was submitted. Comparing
+/// each with [`Presented`](Self::Presented) shows how far off it was.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub enum FramePointKind {
     /// The latest time the frame's work could be submitted and still be
     /// shown at its target.
     Deadline,
-    /// When the frame was meant to be shown.
+    /// When the frame was meant to be shown, as the frame scheduler planned
+    /// it.
     Target,
     /// When the frame was shown.
     Presented,
-    /// The frame was never shown: dropped, discarded, or replaced by a
-    /// newer one. It carries no time.
-    Dropped,
+    /// The frame was never shown, and why. It usually carries no time.
+    Dropped(DropReason),
+    /// When the platform predicted, as the frame began, that a frame begun
+    /// then would be shown, such as a display link's target timestamp.
+    Predicted,
+    /// When the frame was expected to be shown, as of submitting it, such
+    /// as the presentation time a compositor or swapchain reports at submit.
+    Expected,
+}
+
+/// Why a frame was never shown, as [`FramePointKind::Dropped`] carries it.
+///
+/// Only some drops are misses. A frame that missed its deadline, or found
+/// no surface to draw into, leaves the previous frame on screen for another
+/// refresh, which reads as a stutter. A frame the program discarded or
+/// superseded, or that a later frame replaced on its way to the display,
+/// left nothing missing on screen; it only cost the work spent on it.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum DropReason {
+    /// Why is not known.
+    Unknown,
+    /// The program chose not to show it, for no more specific reason.
+    Discarded,
+    /// Newer work replaced it before it was submitted, such as a frame
+    /// planned before input that made it stale.
+    Superseded,
+    /// It was still waiting to be submitted when its deadline passed.
+    MissedDeadline,
+    /// The surface, drawable, or swapchain image it needed was unavailable.
+    SurfaceUnavailable,
+    /// The display it was for was unavailable, hidden, or gone.
+    OutputUnavailable,
+    /// It was submitted, but a later frame replaced it before the display
+    /// showed it, as a mailbox swapchain does.
+    Replaced,
+}
+
+impl DropReason {
+    /// Returns `true` for a drop the user may see as a stutter: the frame
+    /// missed its deadline, found no surface, or was dropped for a reason
+    /// not known.
+    #[must_use]
+    pub const fn is_miss(self) -> bool {
+        matches!(
+            self,
+            Self::Unknown | Self::MissedDeadline | Self::SurfaceUnavailable
+        )
+    }
 }
 
 /// A time a frame scheduler or display knows about a frame the program
@@ -224,12 +278,12 @@ impl FramePoint {
         }
     }
 
-    /// Says the frame numbered `number` was never shown.
+    /// Says the frame numbered `number` was never shown, and why.
     #[must_use]
-    pub const fn dropped(number: u64) -> Self {
+    pub const fn dropped(number: u64, reason: DropReason) -> Self {
         Self {
             number,
-            kind: FramePointKind::Dropped,
+            kind: FramePointKind::Dropped(reason),
             time: None,
         }
     }

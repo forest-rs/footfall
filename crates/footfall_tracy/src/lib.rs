@@ -60,8 +60,8 @@ mod timeline;
 pub use timeline::TimelineCounts;
 
 use footfall_core::{
-    Args, Backend, ClockReading, Context, ContextHandle, CounterDesc, CounterDescId, EventDesc,
-    FramePoint, InstallBackendError, LabelValue, MarkerKind, MarkerPhase, ResourceId,
+    Args, Backend, ClockReading, Context, ContextHandle, CounterDesc, CounterDescId, DropReason,
+    EventDesc, FramePoint, InstallBackendError, LabelValue, MarkerKind, MarkerPhase, ResourceId,
     ResourceKindDesc, ScopeDesc, ScopeDescId, ScopeToken, SourceLocation, TimelineSpan, Unit,
     install_backend,
 };
@@ -523,9 +523,20 @@ impl Backend for TracyBackend {
                 )]
                 self.client.plot(plot, nanos as f64 / 1_000_000.0);
             }
-            PointOutcome::Dropped(number) => {
-                self.client
-                    .message(&format!("frame {number} dropped"), self.callstack_depth);
+            PointOutcome::Dropped(number, reason) => {
+                let why = match reason {
+                    DropReason::Discarded => "discarded",
+                    DropReason::Superseded => "superseded",
+                    DropReason::MissedDeadline => "missed its deadline",
+                    DropReason::SurfaceUnavailable => "no surface",
+                    DropReason::OutputUnavailable => "no display",
+                    DropReason::Replaced => "replaced",
+                    _ => "reason not known",
+                };
+                self.client.message(
+                    &format!("frame {number} dropped: {why}"),
+                    self.callstack_depth,
+                );
             }
         }
     }

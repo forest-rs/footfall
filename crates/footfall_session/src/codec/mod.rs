@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 
 use footfall_core::{
-    ClockId, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, FramePointKind,
+    ClockId, ContextId, CounterDescId, DropReason, EventDescId, FlowId, FlowPhase, FramePointKind,
     InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId,
     ScopeToken, TickPeriod, TimelineId, TimelineKind, Unit,
 };
@@ -1226,7 +1226,7 @@ pub(crate) fn decode_observation(
         }),
         12 => {
             let number = decode_u64(cursor)?;
-            let kind = decode_frame_point_kind(decode_u8(cursor)?)?;
+            let kind = decode_frame_point_kind(cursor)?;
             let time = if decode_bool(cursor, "frame point time tag")? {
                 Some(decode_clock(cursor, names)?)
             } else {
@@ -1321,8 +1321,9 @@ fn decode_timeline(
     .with_args(args))
 }
 
-/// Writes a frame point: the frame's number, the point's kind, and a
-/// presence tag followed by the clock reading when it has a time.
+/// Writes a frame point: the frame's number, the point's kind (followed by
+/// the reason for a dropped frame), and a presence tag followed by the clock
+/// reading when it has a time.
 fn encode_frame_point(
     bytes: &mut Vec<u8>,
     names: &mut NameWriter,
@@ -1331,16 +1332,30 @@ fn encode_frame_point(
     time: Option<&OwnedClockTicks>,
 ) -> io::Result<()> {
     encode_u64(bytes, number);
-    encode_u8(
-        bytes,
-        match kind {
-            FramePointKind::Deadline => 0,
-            FramePointKind::Target => 1,
-            FramePointKind::Presented => 2,
-            FramePointKind::Dropped => 3,
-            _ => return Err(unsupported("frame point kind")),
-        },
-    );
+    match kind {
+        FramePointKind::Deadline => encode_u8(bytes, 0),
+        FramePointKind::Target => encode_u8(bytes, 1),
+        FramePointKind::Presented => encode_u8(bytes, 2),
+        FramePointKind::Dropped(reason) => {
+            encode_u8(bytes, 3);
+            encode_u8(
+                bytes,
+                match reason {
+                    DropReason::Unknown => 0,
+                    DropReason::Discarded => 1,
+                    DropReason::Superseded => 2,
+                    DropReason::MissedDeadline => 3,
+                    DropReason::SurfaceUnavailable => 4,
+                    DropReason::OutputUnavailable => 5,
+                    DropReason::Replaced => 6,
+                    _ => return Err(unsupported("drop reason")),
+                },
+            );
+        }
+        FramePointKind::Predicted => encode_u8(bytes, 4),
+        FramePointKind::Expected => encode_u8(bytes, 5),
+        _ => return Err(unsupported("frame point kind")),
+    }
     match time {
         None => encode_u8(bytes, 0),
         Some(time) => {
@@ -1351,13 +1366,29 @@ fn encode_frame_point(
     Ok(())
 }
 
-fn decode_frame_point_kind(value: u8) -> io::Result<FramePointKind> {
-    match value {
+fn decode_frame_point_kind(cursor: &mut Cursor<'_>) -> io::Result<FramePointKind> {
+    match decode_u8(cursor)? {
         0 => Ok(FramePointKind::Deadline),
         1 => Ok(FramePointKind::Target),
         2 => Ok(FramePointKind::Presented),
-        3 => Ok(FramePointKind::Dropped),
-        _ => Err(io::Error::new(
+        3 => Ok(FramePointKind::Dropped(match decode_u8(cursor)? {
+            0 => DropReason::Unknown,
+            1 => DropReason::Discarded,
+            2 => DropReason::Superseded,
+            3 => DropReason::MissedDeadline,
+            4 => DropReason::SurfaceUnavailable,
+            5 => DropReason::OutputUnavailable,
+            6 => DropReason::Replaced,
+            value => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unknown drop reason: {value}"),
+                ));
+            }
+        })),
+        4 => Ok(FramePointKind::Predicted),
+        5 => Ok(FramePointKind::Expected),
+        value => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("unknown frame point kind: {value}"),
         )),

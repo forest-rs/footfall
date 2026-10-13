@@ -209,11 +209,14 @@ works on the next frame.
 Whether a frame was on time is reported by the frame scheduler and display,
 in their clock, often frames after the frame's work. A frame point records
 one such time against the frame's number as it becomes known: its
-deadline, its target, when it was presented, or that it was dropped.
-Analysis converts the points through the clock conversion when pacing is
-asked for, joins them with the numbered frame's CPU markers and its GPU
-timeline spans, and gives each frame an outcome that separates late from
-dropped from not known.
+deadline, the platform's predicted display time, the scheduler's target,
+the display time expected at submit, when it was presented, or that it was
+dropped and why. Analysis converts the points through the clock conversion
+when pacing is asked for, joins them with the numbered frame's CPU markers
+and its GPU timeline spans, and gives each frame an outcome that separates
+late from dropped from not known. A late frame carries its cause, judged
+from its deadline, its GPU work, and the frame before it; a drop separates
+misses from frames the program chose not to show.
 
 ## Invariants
 

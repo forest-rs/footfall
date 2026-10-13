@@ -555,7 +555,9 @@ fn frame_points_match_their_golden_fixture() {
                 1,
                 OwnedObservation::FramePoint {
                     number: 8,
-                    kind: footfall_core::FramePointKind::Dropped,
+                    kind: footfall_core::FramePointKind::Dropped(
+                        footfall_core::DropReason::Superseded,
+                    ),
                     time: None,
                 },
             ),
@@ -563,14 +565,63 @@ fn frame_points_match_their_golden_fixture() {
     );
     let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
     // Tag `0c`; frame 7, target `01`, time `01`, clock `00` "host" at
-    // 1,000 ticks of 1/1 ns; then frame 8, dropped `03`, no time `00`.
+    // 1,000 ticks of 1/1 ns; then frame 8, dropped `03` as superseded `02`,
+    // no time `00`.
     assert_eq!(
         to_hex(&encoded),
         "01000000000602\
          0000010c070101\
          0004686f7374e8070101\
-         0a02010c080300"
+         0a02010c08030200"
     );
+    assert_eq!(
+        decode_envelope(&encoded).expect("decoding should succeed"),
+        envelope
+    );
+}
+
+/// Every frame point kind and drop reason survives the wire.
+#[test]
+fn every_frame_point_kind_round_trips() {
+    use footfall_core::{DropReason, FramePointKind};
+    let reasons = [
+        DropReason::Unknown,
+        DropReason::Discarded,
+        DropReason::Superseded,
+        DropReason::MissedDeadline,
+        DropReason::SurfaceUnavailable,
+        DropReason::OutputUnavailable,
+        DropReason::Replaced,
+    ];
+    let kinds = [
+        FramePointKind::Deadline,
+        FramePointKind::Target,
+        FramePointKind::Presented,
+        FramePointKind::Predicted,
+        FramePointKind::Expected,
+    ]
+    .into_iter()
+    .chain(reasons.into_iter().map(FramePointKind::Dropped));
+    let events = kinds
+        .enumerate()
+        .map(|(index, kind)| {
+            OwnedTimedObservation::new(
+                index as u64,
+                0,
+                1,
+                OwnedObservation::FramePoint {
+                    number: index as u64,
+                    kind,
+                    time: None,
+                },
+            )
+        })
+        .collect();
+    let envelope = OwnedSessionEnvelope::new(
+        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+        OwnedSessionPayload::Events(events),
+    );
+    let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
     assert_eq!(
         decode_envelope(&encoded).expect("decoding should succeed"),
         envelope
