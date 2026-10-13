@@ -180,8 +180,9 @@ frame reported neither a presentation nor a drop, a frame number is
 missing, or events were lost, the interval is left out and counted in
 `interval_breaks` rather than guessed. Frames still waiting for their
 reports when the trace ends are not a break, since no presentation after
-them is left out. `Pacing` also gives stutters
-(intervals at least half again the median), how late the late frames were,
+them is left out. `Pacing` also gives stutters (intervals at least half
+again the median of their own stream's, a heuristic for a frame held an
+extra refresh), how late the late frames were,
 and latency from each frame's begin marker to its presentation. A frame's
 `work` is the time between its markers, waits included, and its latency
 starts at its begin marker, not at the input it answers.

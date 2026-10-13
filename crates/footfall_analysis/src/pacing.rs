@@ -326,7 +326,8 @@ impl FramePacing {
 pub struct Pacing {
     frames: Vec<FramePacing>,
     tolerance: Duration,
-    intervals: Vec<Duration>,
+    /// Each presentation interval, with the stream it belongs to.
+    intervals: Vec<(FrameStream, Duration)>,
     interval_breaks: u64,
     gaps: Vec<TimeRange>,
 }
@@ -534,6 +535,10 @@ impl Pacing {
     /// from one presentation to the next, in frame order. It is steady at the
     /// refresh interval when pacing is smooth.
     ///
+    /// The intervals are pooled over every stream. Windows shown at
+    /// different rates mix here; [`in_stream`](Self::in_stream) gives one
+    /// window's cadence.
+    ///
     /// A frame known never to have been shown, dropped or skipped, leaves
     /// the frame before it on screen, so the interval runs on to the next
     /// presentation and shows the stall. Where the trace cannot say what was
@@ -541,7 +546,7 @@ impl Pacing {
     /// [`interval_breaks`](Self::interval_breaks).
     #[must_use]
     pub fn intervals(&self) -> DurationStats {
-        DurationStats::of(self.intervals.iter().copied())
+        DurationStats::of(self.intervals.iter().map(|(_, interval)| *interval))
     }
 
     /// Returns how many times the run of presentations broke because the
@@ -556,22 +561,30 @@ impl Pacing {
         self.interval_breaks
     }
 
-    fn intervals_iter(&self) -> impl Iterator<Item = Duration> + '_ {
-        self.intervals.iter().copied()
-    }
-
     /// Returns how many presentation intervals were at least half again as
-    /// long as the median: a frame left on screen for an extra refresh,
-    /// which reads as a stutter.
+    /// long as the median interval of their own stream: a frame left on
+    /// screen for an extra refresh, which reads as a stutter.
+    ///
+    /// It is a heuristic for long intervals, not a measure of what a person
+    /// saw. Each stream is held to its own median, so windows shown at
+    /// different rates do not make each other's intervals look long, but a
+    /// deliberate change of rate within a stream, such as a variable
+    /// refresh rate slowing down, counts too.
     #[must_use]
     pub fn stutters(&self) -> usize {
-        let median = self.intervals().median();
-        if median.is_zero() {
-            return 0;
+        let mut count = 0;
+        // The intervals are in frame order, so each stream's are together.
+        for run in self.intervals.chunk_by(|a, b| a.0 == b.0) {
+            let median = DurationStats::of(run.iter().map(|(_, interval)| *interval)).median();
+            if median.is_zero() {
+                continue;
+            }
+            count += run
+                .iter()
+                .filter(|(_, interval)| *interval * 2 >= median * 3)
+                .count();
         }
-        self.intervals_iter()
-            .filter(|interval| *interval * 2 >= median * 3)
-            .count()
+        count
     }
 
     /// Returns the time from each frame's begin marker to its presentation;
@@ -888,7 +901,7 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
 
 /// Returns how long each presented frame stayed on screen, and how many
 /// times the trace could not say; see [`Pacing::intervals`].
-fn intervals(frames: &[FramePacing], gaps: &[TimeRange]) -> (Vec<Duration>, u64) {
+fn intervals(frames: &[FramePacing], gaps: &[TimeRange]) -> (Vec<(FrameStream, Duration)>, u64) {
     let mut intervals = Vec::new();
     let mut breaks = 0;
     // The frame examined last, and when the frame on screen was shown.
@@ -915,7 +928,7 @@ fn intervals(frames: &[FramePacing], gaps: &[TimeRange]) -> (Vec<Duration>, u64)
                     if gaps.iter().any(|gap| gap.overlaps(since, at)) {
                         breaks += 1;
                     } else {
-                        intervals.push(at.saturating_sub(since));
+                        intervals.push((frame.number.stream(), at.saturating_sub(since)));
                     }
                 } else if broken {
                     breaks += 1;

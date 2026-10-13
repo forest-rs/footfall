@@ -502,13 +502,24 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> 
             format::count(support.unresolved),
         );
     }
-    let intervals = pacing.intervals();
-    if intervals.count() > 0 {
+    // Each stream's cadence on its own: windows can run at different rates.
+    let streams = pacing.streams();
+    for stream in &streams {
+        let one = pacing.in_stream(*stream);
+        let intervals = one.intervals();
+        if intervals.count() == 0 {
+            continue;
+        }
+        let which = if streams.len() > 1 {
+            format!("stream {stream}: ")
+        } else {
+            String::new()
+        };
         println!(
-            "  on screen for {} each {DIM}(median){DIM:#}, p99 {} · {} stutters",
+            "  {which}on screen for {} each {DIM}(median){DIM:#}, p99 {} · {} stutters {DIM}(1.5× the median or longer){DIM:#}",
             format::duration(intervals.median()),
             format::duration(intervals.p99()),
-            pacing.stutters(),
+            one.stutters(),
         );
     }
     let basis = pacing.presentation_basis();

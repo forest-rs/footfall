@@ -84,6 +84,25 @@ pub(crate) fn document(path: &Path, trace: &Trace, pacing: &Pacing) -> Json {
                 ("stats", stats(&pacing.intervals())),
                 ("breaks", Json::from(pacing.interval_breaks())),
                 ("stutters", Json::from(pacing.stutters() as u64)),
+                (
+                    "streams",
+                    Json::Array(
+                        pacing
+                            .streams()
+                            .into_iter()
+                            .map(|stream| {
+                                let one = pacing.in_stream(stream);
+                                Json::object([
+                                    ("stream", Json::from(stream.id())),
+                                    ("generation", Json::from(stream.generation())),
+                                    ("stats", stats(&one.intervals())),
+                                    ("breaks", Json::from(one.interval_breaks())),
+                                    ("stutters", Json::from(one.stutters() as u64)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
             ]),
         ),
         ("lateness", stats(&pacing.lateness())),
@@ -360,6 +379,7 @@ mod tests {
             r#""presentation_basis":{"observed":1,"estimated":1,"unknown":0}"#,
             r#""label":"2","stream":0,"generation":0,"number":2"#,
             r#""deadlines":{"met":0,"missed":0}"#,
+            r#""streams":[{"stream":0,"generation":0,"stats":{"count":1"#,
             r#""outcome":"late","by_ns":8000000,"missed":true,"why":{"cause":"#,
             r#""met_deadline":null,"submitted_late_ns":null"#,
             r#""deadline":{"at_ns":"#,
