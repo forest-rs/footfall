@@ -685,11 +685,16 @@ pub struct BasisCounts {
 pub enum Support {
     /// The trace recorded the condition itself: the frame was submitted
     /// after its deadline, or its recorded GPU work finished after its
-    /// target, and its presentation time was not an estimate.
+    /// target, and neither the times that show it nor the presentation
+    /// time was an estimate. Deadlines and targets are plans, not
+    /// observations; they are taken as given.
+    ///
+    /// The condition was observed; that it is what made the frame late
+    /// is still the leading explanation, not proof.
     Observed,
     /// It follows from what was recorded, but rests on something that was
     /// not: a queue read from the frame before's presentation, or a
-    /// presentation time that was estimated.
+    /// submission or presentation time that was estimated.
     Inferred,
     /// The trace stops short of an answer: the program's part looked in
     /// time, and what happened after it was not observed.
@@ -714,6 +719,11 @@ pub struct Why {
     /// [`Submitted`](FramePointKind::Submitted) point rather than the frame's
     /// end marker.
     pub submit_reported: bool,
+    /// How the submission time was known: the
+    /// [`Submitted`](FramePointKind::Submitted) point's basis, or
+    /// [`Observed`](TimingBasis::Observed) for the frame's end marker, which
+    /// the runtime recorded as it happened.
+    pub submitted: TimingBasis,
     /// How long after its target its recorded GPU work finished, when it
     /// did.
     pub gpu_late: Option<Duration>,
@@ -1019,8 +1029,16 @@ fn outcome(
         (LateCause::AfterSubmit, Support::Unresolved)
     };
     let presented_basis = raw.basis(FramePointKind::Presented);
-    // Lateness measured against an estimated presentation is an estimate.
-    let support = if support == Support::Observed && presented_basis == TimingBasis::Estimated {
+    let submitted_basis = if raw.submitted.is_some() {
+        raw.basis(FramePointKind::Submitted)
+    } else {
+        TimingBasis::Observed
+    };
+    // A condition shown by an estimated time, and lateness measured against
+    // an estimated presentation, are inferred, not observed.
+    let estimated = presented_basis == TimingBasis::Estimated
+        || (cause == LateCause::MissedDeadline && submitted_basis == TimingBasis::Estimated);
+    let support = if support == Support::Observed && estimated {
         Support::Inferred
     } else {
         support
@@ -1030,6 +1048,7 @@ fn outcome(
         support,
         submitted_late,
         submit_reported: raw.submitted.is_some(),
+        submitted: submitted_basis,
         gpu_late,
         gpu_recorded: raw.gpu.is_some(),
         behind_previous,

@@ -684,6 +684,9 @@ fn also(why: &Why) -> String {
     if why.cause != LateCause::Backlog && why.behind_previous {
         also.push(String::from("queued"));
     }
+    if why.submit_reported && why.submitted == TimingBasis::Estimated {
+        also.push(String::from("submitted ~est."));
+    }
     if why.presented == TimingBasis::Estimated {
         also.push(String::from("shown ~est."));
     }

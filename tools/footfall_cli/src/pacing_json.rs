@@ -233,6 +233,7 @@ fn why(why: &Why) -> Json {
         ("support", Json::from(snake(why.support))),
         ("submitted_late_ns", Json::nanos_or_null(why.submitted_late)),
         ("submit_reported", Json::from(why.submit_reported)),
+        ("submitted_basis", Json::from(basis(why.submitted))),
         ("gpu_late_ns", Json::nanos_or_null(why.gpu_late)),
         ("gpu_recorded", Json::from(why.gpu_recorded)),
         ("behind_previous", Json::from(why.behind_previous)),
