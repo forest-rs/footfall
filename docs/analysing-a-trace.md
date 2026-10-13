@@ -45,7 +45,11 @@ following a restarting producer starts a new trace.
 
 A trace following a live session grows until the tool calls
 `forget_before`, which drops what ended earlier; answers then count the
-forgotten time as unobserved.
+forgotten time as unobserved. That covers frame points too: a frame's
+points go together once all were recorded earlier and its markers and GPU
+work are gone, so feedback that arrives after a frame's work keeps the
+frame's target with it. Clocks keep their last reading before the cut, so
+the times after it convert as they did.
 
 ## GPU Work
 

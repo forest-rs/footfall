@@ -59,12 +59,12 @@ pub struct Trace {
     timelines: BTreeMap<TimelineId, Track>,
     /// Frame points, by the frame's number: the kind, the time read from
     /// another clock, and when the point was recorded.
-    frame_points: BTreeMap<u64, Vec<(FramePointKind, Option<OwnedClockTicks>)>>,
+    frame_points: BTreeMap<u64, Vec<HeldPoint>>,
     /// Placed timeline spans reported with a frame number, by that number.
     frame_spans: HashMap<u64, Vec<SpanId>>,
     /// Timeline spans whose clock has no path to the runtime's yet, with
-    /// their event's sequence number and reporting thread.
-    unplaced: Vec<(u64, u64, Box<OwnedTimelineWork>)>,
+    /// their event's sequence number, reporting thread, and time.
+    unplaced: Vec<(u64, u64, Duration, Box<OwnedTimelineWork>)>,
     contexts: BTreeMap<ContextId, OwnedContextSnapshot>,
     span_index: HashMap<SpanId, (Lane, u32, Duration)>,
     begun: HashMap<ScopeToken, Begun>,
@@ -113,6 +113,10 @@ struct OpenMark {
     thread_id: u64,
     begin: Duration,
 }
+
+/// A frame point as a trace holds it: its kind, the time it gives in
+/// another clock's ticks, and when it was recorded.
+pub(crate) type HeldPoint = (FramePointKind, Option<OwnedClockTicks>, Duration);
 
 /// Which track a span is on.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -691,13 +695,13 @@ impl Trace {
             }
             OwnedObservation::TimelineSpan { span } => {
                 self.unplaced
-                    .push((event.sequence(), thread_id, span.clone()));
+                    .push((event.sequence(), thread_id, at, span.clone()));
             }
             OwnedObservation::FramePoint { number, kind, time } => {
                 self.frame_points
                     .entry(*number)
                     .or_default()
-                    .push((*kind, time.clone()));
+                    .push((*kind, time.clone(), at));
             }
             _ => {}
         }
@@ -708,13 +712,13 @@ impl Trace {
     fn place_timeline_spans(&mut self, pushed: &mut Pushed) {
         let waiting = core::mem::take(&mut self.unplaced);
         let mut placed = BTreeMap::<TimelineId, Vec<Span>>::new();
-        for (sequence, thread_id, work) in waiting {
+        for (sequence, thread_id, at, work) in waiting {
             match self.convert(sequence, thread_id, &work) {
                 Some(span) => {
                     pushed.spans.push(span.id);
                     placed.entry(work.timeline_id()).or_default().push(span);
                 }
-                None => self.unplaced.push((sequence, thread_id, work)),
+                None => self.unplaced.push((sequence, thread_id, at, work)),
             }
         }
         for (timeline_id, spans) in placed {
@@ -904,8 +908,10 @@ impl Trace {
     }
 
     /// Forgets what ended before `before`: spans, frames, samples,
-    /// messages, flow steps, dropped resources, and gaps, so a trace that
-    /// follows a live session keeps a bounded history.
+    /// messages, flow steps, dropped resources, gaps, frame points, timeline
+    /// spans still waiting for their clock, and clock readings no longer
+    /// needed, so a trace that follows a live session keeps a bounded
+    /// history.
     ///
     /// Queries then treat the time before it as unobserved. Open spans and
     /// live resources are kept, however old.
@@ -951,6 +957,19 @@ impl Trace {
             .collect();
         self.unmatched_ends.retain(|at| *at >= before);
         self.gaps.retain(|gap| gap.range.end() > before);
+        // A frame's points go together, once all were recorded before
+        // `before` and its markers and timeline spans are gone; feedback
+        // that arrives later keeps the frame's earlier points with it.
+        let numbered = &self.numbered;
+        let frame_spans = &self.frame_spans;
+        self.frame_points.retain(|number, points| {
+            points.iter().any(|(_, _, at)| *at >= before)
+                || numbered.contains_key(&(0, *number))
+                || frame_spans.contains_key(number)
+        });
+        self.unplaced.retain(|(_, _, at, _)| *at >= before);
+        self.clocks
+            .forget_before(u64::try_from(before.as_nanos()).unwrap_or(u64::MAX));
     }
 
     /// Returns the runtime instance the trace holds, or `None` before its
@@ -1082,9 +1101,7 @@ impl Trace {
             .filter_map(|id| self.span(*id))
     }
 
-    pub(crate) const fn frame_points(
-        &self,
-    ) -> &BTreeMap<u64, Vec<(FramePointKind, Option<OwnedClockTicks>)>> {
+    pub(crate) const fn frame_points(&self) -> &BTreeMap<u64, Vec<HeldPoint>> {
         &self.frame_points
     }
 

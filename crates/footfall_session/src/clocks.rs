@@ -30,8 +30,9 @@ struct History {
     period: TickPeriod,
     /// Ticks and runtime nanoseconds, by ticks.
     syncs: Vec<(u64, u64)>,
-    /// Ticks, the other clock, and its ticks at the same moment, by ticks.
-    pairs: Vec<(u64, ClockId, u64)>,
+    /// Ticks, the other clock, its ticks at the same moment, and when the
+    /// pair was recorded in runtime nanoseconds, by ticks.
+    pairs: Vec<(u64, ClockId, u64, u64)>,
 }
 
 /// A time converted to the producer's timeline, as [`Clocks::to_runtime`]
@@ -136,9 +137,10 @@ impl Clocks {
                 insert_sorted(&mut history.syncs, (clock.ticks(), event.at_nanos()));
             }
             OwnedObservation::ClockPair { first, second } => {
-                let entry = (first.ticks(), second.clock_id(), second.ticks());
+                let at = event.at_nanos();
+                let entry = (first.ticks(), second.clock_id(), second.ticks(), at);
                 insert_sorted(&mut self.history(first).pairs, entry);
-                let entry = (second.ticks(), first.clock_id(), first.ticks());
+                let entry = (second.ticks(), first.clock_id(), first.ticks(), at);
                 insert_sorted(&mut self.history(second).pairs, entry);
             }
             _ => {}
@@ -184,6 +186,36 @@ impl Clocks {
             .map(|(id, _)| *id)
     }
 
+    /// Forgets the syncs and pairs recorded before `before_nanos`, so clocks
+    /// that follow a live session keep a bounded history.
+    ///
+    /// Each clock keeps its last sync, and its last pair with each other
+    /// clock, recorded before `before_nanos`, so times read after it convert
+    /// as they did before.
+    pub fn forget_before(&mut self, before_nanos: u64) {
+        for history in self.clocks.values_mut() {
+            let anchor = history
+                .syncs
+                .iter()
+                .map(|(_, at)| *at)
+                .filter(|at| *at < before_nanos)
+                .max();
+            if let Some(anchor) = anchor {
+                history.syncs.retain(|(_, at)| *at >= anchor);
+            }
+            let mut anchors = BTreeMap::<ClockId, u64>::new();
+            for (_, other, _, at) in &history.pairs {
+                if *at < before_nanos {
+                    let anchor = anchors.entry(*other).or_insert(*at);
+                    *anchor = (*anchor).max(*at);
+                }
+            }
+            history
+                .pairs
+                .retain(|(_, other, _, at)| anchors.get(other).is_none_or(|anchor| at >= anchor));
+        }
+    }
+
     /// Converts `ticks` read from `clock` to nanoseconds since the producing
     /// runtime was created.
     ///
@@ -199,10 +231,10 @@ impl Clocks {
         if !history.syncs.is_empty() {
             return Some(direct(history, ticks));
         }
-        let (pair_ticks, other, other_ticks) = history
+        let (pair_ticks, other, other_ticks, _) = history
             .pairs
             .iter()
-            .filter(|(_, other, _)| {
+            .filter(|(_, other, ..)| {
                 self.clocks
                     .get(other)
                     .is_some_and(|other| !other.syncs.is_empty())
@@ -291,6 +323,7 @@ mod tests {
     use super::Clocks;
     use crate::{OwnedClockTicks, OwnedObservation, OwnedTimedObservation};
     use alloc::string::String;
+    use alloc::vec::Vec;
     use footfall_core::{ClockId, TickPeriod};
 
     const HOST: ClockId = ClockId::new(1);
@@ -361,5 +394,41 @@ mod tests {
         assert_eq!(converted.nanos(), 5_012_000);
         assert_eq!(converted.via(), Some(HOST));
         assert_eq!(converted.distance(), 12_000);
+    }
+    #[test]
+    fn forgetting_keeps_what_later_times_need() {
+        let pair = |at_nanos, gpu_ticks, host_ticks| {
+            OwnedTimedObservation::new(
+                at_nanos,
+                1,
+                1,
+                OwnedObservation::ClockPair {
+                    first: ticks(GPU, gpu_ticks, TickPeriod::NANOSECOND),
+                    second: ticks(HOST, host_ticks, HOST_PERIOD),
+                },
+            )
+        };
+        let mut clocks = Clocks::new();
+        // A host sync each second, 1 µs of drift each, and a GPU pair
+        // each second.
+        for second in 0..4_u64 {
+            let at = second * 1_000_000_000;
+            clocks.observe(&sync(at + second * 1_000, 24_000_000 * second));
+            clocks.observe(&pair(at, 7_000 + at, 24_000_000 * second));
+        }
+        let later = [2_500_000_000_u64, 3_200_000_000];
+        let host = |clocks: &Clocks, nanos: u64| clocks.to_runtime(HOST, nanos * 24 / 1_000);
+        let before: Vec<_> = later.iter().map(|at| host(&clocks, *at)).collect();
+        let gpu_before = clocks.to_runtime(GPU, 7_000 + 2_600_000_000);
+
+        clocks.forget_before(2_500_000_000);
+        assert_eq!(
+            clocks.clock(HOST).map(|info| (info.syncs(), info.pairs())),
+            Some((2, 2)),
+            "the syncs and pairs at 2 s, the last before, and 3 s"
+        );
+        let after: Vec<_> = later.iter().map(|at| host(&clocks, *at)).collect();
+        assert_eq!(before, after);
+        assert_eq!(clocks.to_runtime(GPU, 7_000 + 2_600_000_000), gpu_before);
     }
 }

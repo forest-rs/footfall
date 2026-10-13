@@ -19,7 +19,8 @@ The first release.
   pair correctly and later observations can find a frame by number.
 - Clock syncs and pairs relate other clocks, such as a GPU's or a frame
   scheduler's host clock, to the runtime's, and `Clocks` converts their
-  times, following drift between syncs.
+  times, following drift between syncs. `Clocks::forget_before` bounds
+  their history for live tools.
 - Timelines that are not CPU threads, such as GPU queues: `timeline_span`
   records finished work in the timeline's clock with its frame and flow.
   Analysis places it on a track of its own and counts it toward its frame;
