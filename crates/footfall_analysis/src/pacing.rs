@@ -34,6 +34,7 @@ pub struct FramePacing {
     submitted: Option<Duration>,
     sampled: Option<Duration>,
     dropped: Option<DropReason>,
+    unplaced_points: u64,
     /// The bases and args the points that had them came with.
     details: Vec<(FramePointKind, TimingBasis, Vec<OwnedArgEntry>)>,
     outcome: Outcome,
@@ -204,6 +205,14 @@ impl FramePacing {
         self.dropped
     }
 
+    /// Returns how many of the frame's points could not be converted to the
+    /// trace's time, because their clock has no sync or pair leading to the
+    /// runtime's, and so were left out of its times.
+    #[must_use]
+    pub const fn unplaced_points(&self) -> u64 {
+        self.unplaced_points
+    }
+
     /// Returns the time of the frame's point of `kind`: its
     /// [`Predicted`](FramePointKind::Predicted),
     /// [`Target`](FramePointKind::Target),
@@ -317,7 +326,6 @@ impl FramePacing {
 pub struct Pacing {
     frames: Vec<FramePacing>,
     tolerance: Duration,
-    unplaced_points: u64,
     intervals: Vec<Duration>,
     interval_breaks: u64,
     gaps: Vec<TimeRange>,
@@ -366,15 +374,9 @@ impl Pacing {
             .cloned()
             .collect();
         let (intervals, interval_breaks) = intervals(&frames, &self.gaps);
-        let unplaced_points = if frames.len() == self.frames.len() {
-            self.unplaced_points
-        } else {
-            0
-        };
         Self {
             frames,
             tolerance: self.tolerance,
-            unplaced_points,
             intervals,
             interval_breaks,
             gaps: self.gaps.clone(),
@@ -579,12 +581,13 @@ impl Pacing {
         DurationStats::of(self.frames.iter().filter_map(FramePacing::latency))
     }
 
-    /// Returns how many frame points could not be converted to the trace's
-    /// time, because their clock has no sync or pair leading to the
-    /// runtime's, and so were left out.
+    /// Returns how many of the frames' points could not be converted to the
+    /// trace's time, because their clock has no sync or pair leading to the
+    /// runtime's, and so were left out; see
+    /// [`FramePacing::unplaced_points`].
     #[must_use]
-    pub const fn unplaced_points(&self) -> u64 {
-        self.unplaced_points
+    pub fn unplaced_points(&self) -> u64 {
+        self.frames.iter().map(FramePacing::unplaced_points).sum()
     }
 }
 
@@ -784,7 +787,6 @@ pub struct WastedWork {
 pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
     let mut numbers: BTreeSet<FrameNumber> = trace.numbered_frames().collect();
     numbers.extend(trace.frame_points().keys().copied());
-    let mut unplaced_points = 0_u64;
     let mut frames: Vec<FramePacing> = numbers
         .into_iter()
         .map(|number| {
@@ -803,6 +805,7 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
                 submitted: None,
                 sampled: None,
                 dropped: None,
+                unplaced_points: 0,
                 details: Vec::new(),
                 outcome: Outcome::Unknown,
                 why: None,
@@ -817,7 +820,7 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
                     Some(time) => match trace.clocks().to_runtime(time.clock_id(), time.ticks()) {
                         Some(converted) => Some(nanos(converted.nanos())),
                         None => {
-                            unplaced_points += 1;
+                            raw.unplaced_points += 1;
                             continue;
                         }
                     },
@@ -877,7 +880,6 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
     Pacing {
         frames,
         tolerance,
-        unplaced_points,
         intervals,
         interval_breaks,
         gaps,

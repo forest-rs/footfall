@@ -67,7 +67,9 @@ The document holds:
   such as `superseded`, is not); `why`, for a late frame; whether its
   work `met_deadline`, by its `submitted` point or else the end of its
   `work`, and `submitted_late_ns`, how long after; its CPU `work`
-  and `gpu` ranges, `gpu_busy_ns`, and `latency_ns`; and `points`, each
+  and `gpu` ranges, `gpu_busy_ns`, and `latency_ns`; `unplaced_points`,
+  how many of its points had a time that could not be placed; and
+  `points`, each
   frame point recorded for it by kind (`predicted`, `deadline`, `target`,
   `sampled`, `submitted`, `expected`, `presented`, and `dropped` with its
   `reason`), with its `at_ns`, `basis` (`observed`, `estimated`, or
