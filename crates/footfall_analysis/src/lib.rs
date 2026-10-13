@@ -86,7 +86,7 @@ pub use query::{
 pub use signal::{CounterSample, CounterSeries, Flow, FlowStep, Message, Resource};
 pub use span::{OpenSpan, Placement, Span, SpanId, Track, TrackKind, Zone};
 pub use time::{Selection, TimeRange};
-pub use trace::{Continuity, PushError, Pushed, Trace};
+pub use trace::{CapturedTrace, Continuity, PushError, Pushed, Trace};
 
 pub use footfall_session::{
     OwnedArgEntry, OwnedLabelValue, OwnedObservation, OwnedSnapshot, OwnedSourceLocation,
