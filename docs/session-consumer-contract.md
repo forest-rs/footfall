@@ -243,13 +243,14 @@ that split a change into more work and slower work, and with every answer a
 statement of what it covers. A tool built on it needs little more than
 layout; the [analysis guide](analysing-a-trace.md) shows how.
 
-Two examples show the range:
+Two consumers show the range:
 
-- [`attach`](../examples/src/bin/attach.rs) follows a session and prints each
-  window's frames in about a hundred lines;
-- [`footfall_top`](../examples/src/bin/footfall_top/main.rs) is a live
-  terminal view: frame times against a budget, where the time goes, counters
-  per frame, messages, and losses, live or from a capture file.
+- the [`attach`](../examples/src/bin/attach.rs) example follows a session and
+  prints each window's frames in about a hundred lines;
+- the [`footfall` command](../tools/footfall_cli/README.md) records sessions,
+  analyzes captures, and has a live terminal view, `footfall top`: frame
+  times against a budget, where the time goes, counters per frame, messages,
+  and losses, live or from a capture file.
 
 A tool in another language reads the [wire format](session-wire-format.md)
 directly. Keep tools outside the instrumented process and talk to it through

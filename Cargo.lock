@@ -708,6 +708,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "footfall_cli"
+version = "0.1.0"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "clap",
+ "footfall",
+ "footfall_examples",
+ "ratatui",
+ "tokio",
+]
+
+[[package]]
 name = "footfall_core"
 version = "0.1.0"
 
@@ -721,7 +734,6 @@ dependencies = [
  "footfall",
  "footfall_fanout",
  "footfall_memory",
- "ratatui",
  "tokio",
  "tracing",
  "tracing-subscriber",

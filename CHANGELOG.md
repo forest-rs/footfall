@@ -76,3 +76,11 @@ The first release.
   and pairs, and frame points a plot of how late each frame was shown.
 - `footfall_fanout`: one backend that feeds two.
 - `footfall_memory`: scratch-buffer and cache metrics built on counters.
+
+### Tools
+
+- `footfall_cli`, the `footfall` command: `top` watches a running session
+  live or replays a capture, `record` saves a session to a capture file,
+  `analyze` summarizes a capture, explains its slow frames and its frame
+  pacing, compares two runs, or shows one span, and `export` writes a
+  Chrome trace.

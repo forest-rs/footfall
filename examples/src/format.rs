@@ -28,18 +28,6 @@ pub fn as_micros(duration: core::time::Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
-/// Formats a signed change in microseconds: `+850 µs`, `-12.4 ms`.
-#[must_use]
-pub fn change_micros(micros: f64) -> String {
-    let sign = if micros < 0.0 { '-' } else { '+' };
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "a duration in microseconds, rounded for display"
-    )]
-    let magnitude = micros.abs().round() as u64;
-    format!("{sign}{}", self::micros(magnitude))
-}
-
 /// Formats a byte count: `512 B`, `4.0 KiB`, `1.25 MiB`.
 #[must_use]
 pub fn bytes(bytes: u64) -> String {

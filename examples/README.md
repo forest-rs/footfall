@@ -8,9 +8,7 @@ crate; run one with `cargo run -p footfall_examples --bin <name>`, and add
 |---|---|
 | [`quickstart`](src/bin/quickstart.rs) | Instrument a loop, read the capture back, summarize it, and write a trace for Perfetto. Start here. |
 | [`demo_app`](src/bin/demo_app.rs) | A fake renderer with worker threads, varying costs, and the occasional slow frame, serving its capture to local tools until Ctrl-C. |
-| [`footfall_top`](src/bin/footfall_top/main.rs) | A live terminal view of a running session: frame times, where the time goes, counters per frame, messages, and losses. Also replays capture files. |
 | [`attach`](src/bin/attach.rs) | The smallest useful tool: find a session, subscribe, and print each window's frames. Read this one for the client API. |
-| [`footfall_capture`](src/bin/footfall_capture.rs) | Record a session to a capture file, then summarize it, see its frame pacing, ask why its slow or late frames were slow, compare runs, or export it as one Chrome trace. |
 | [`tracing_bridge`](src/bin/tracing_bridge.rs) | Plain `tracing` spans and events, captured by Footfall without changing them. |
 | [`tracy_live`](src/bin/tracy_live.rs) | The demo renderer shown live in Tracy 0.14, with Footfall capturing the same emissions. |
 
@@ -38,14 +36,14 @@ Wrote footfall-quickstart.json; open it at https://ui.perfetto.dev.
 ```
 
 To see a live session, start the demo in one terminal and watch it from
-another:
+another with the [`footfall` command](../tools/footfall_cli/README.md):
 
 ```sh
 cargo run -p footfall_examples --bin demo_app
-cargo run -p footfall_examples --bin footfall_top
+cargo run -p footfall_cli -- top
 ```
 
-`footfall_top` shows the frame-time chart against a 16.7 ms budget, the
+`footfall top` shows the frame-time chart against a 16.7 ms budget, the
 scopes that took the most time, how each counter moved per frame, the
 renderer's messages, and whether anything was lost. The demo has a font
 change every few seconds that blows the frame budget; watch for the red bar
@@ -54,12 +52,12 @@ and the message that explains it.
 Record a session and look at it later:
 
 ```sh
-cargo run -p footfall_examples --bin footfall_capture -- record demo.ffcap
-cargo run -p footfall_examples --bin footfall_capture -- info demo.ffcap
-cargo run -p footfall_examples --bin footfall_capture -- slow demo.ffcap --by-arg nodes
-cargo run -p footfall_examples --bin footfall_capture -- pacing demo.ffcap
-cargo run -p footfall_examples --bin footfall_capture -- export demo.ffcap
-cargo run -p footfall_examples --bin footfall_top -- --file demo.ffcap
+cargo run -p footfall_cli -- record demo.ffcap
+cargo run -p footfall_cli -- analyze summary demo.ffcap
+cargo run -p footfall_cli -- analyze slow demo.ffcap --by-arg nodes
+cargo run -p footfall_cli -- analyze pacing demo.ffcap
+cargo run -p footfall_cli -- export demo.ffcap
+cargo run -p footfall_cli -- top --file demo.ffcap
 ```
 
 Producers and tools find each other through a per-user state directory. Set

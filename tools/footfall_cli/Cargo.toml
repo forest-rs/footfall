@@ -1,0 +1,33 @@
+[package]
+name = "footfall_cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
+description = "The footfall command: record running sessions, watch them live, and ask why frames were slow or late."
+
+[[bin]]
+name = "footfall"
+path = "src/main.rs"
+
+[dependencies]
+anstream = "1.0.0"
+anstyle = "1.0.14"
+clap = { features = ["derive"], version = "4.6.7" }
+footfall = { features = ["analysis", "export", "session", "std", "wtransport"], workspace = true }
+ratatui = "0.30.2"
+tokio = { features = ["macros", "rt-multi-thread", "signal", "sync", "time"], version = "1.51.1" }
+
+[dev-dependencies]
+footfall = { features = ["runtime"], workspace = true }
+# For the demo workload in tests; not published, so left out of the package.
+footfall_examples = { path = "../../examples" }
+
+[lints]
+workspace = true

@@ -8,7 +8,7 @@
 //! from frame to frame, and every so often something goes wrong the way it
 //! does in real programs: a font change invalidates layout, a shader
 //! compiles in the middle of a frame, or an asset streams in. That gives a
-//! trace viewer or `footfall_top` something worth looking at.
+//! trace viewer or `footfall top` something worth looking at.
 //!
 //! It also pretends to have a GPU. Each frame submits work that runs on the
 //! `graphics` timeline, timed by a 24 MHz GPU clock that runs a little fast

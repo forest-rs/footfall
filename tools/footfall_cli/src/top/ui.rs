@@ -3,9 +3,9 @@
 
 //! Drawing the view.
 
-use crate::app::{App, Status};
-use footfall_examples::format;
-use footfall_examples::report::FrameStats;
+use super::app::{App, Status};
+use crate::format;
+use crate::report::FrameStats;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize as _};
@@ -57,7 +57,7 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
         (Status::Ended(reason), _) => (reason.clone(), SLOW),
     };
     let mut title = vec![
-        Span::from("footfall_top").bold().fg(ACCENT),
+        Span::from("footfall top").bold().fg(ACCENT),
         Span::from("  "),
     ];
     if let Some(about) = &app.about {
@@ -183,7 +183,7 @@ fn draw_scopes(frame: &mut Frame<'_>, area: Rect, app: &App) {
     .header(header)
     .block(block(format!(
         "Scopes · last {} s · by {sort} time",
-        crate::app::SCOPE_SPAN.as_secs()
+        super::app::SCOPE_SPAN.as_secs()
     )));
     frame.render_widget(table, area);
 }

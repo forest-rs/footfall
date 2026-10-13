@@ -4,11 +4,11 @@
 //! What the view knows: the producer, recent frames and scopes, counters per
 //! frame, messages, and losses, kept up to date one window at a time.
 
-use crate::{Key, Update};
+use super::{Key, Update};
+use crate::format;
 use footfall::analysis::{Continuity, GroupBy, OutcomeCounts, TimeRange, Trace};
 use footfall::session::{CounterKind, Drops, OwnedObservation, OwnedSnapshot};
 use footfall::{CounterDescId, MarkerKind, Unit};
-use footfall_examples::format;
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 

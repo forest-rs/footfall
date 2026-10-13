@@ -13,6 +13,7 @@ members = [
     "crates/footfall_tracing",
     "crates/footfall_tracy",
     "examples",
+    "tools/footfall_cli",
 ]
 resolver = "2"
 

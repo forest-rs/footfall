@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 publish = false
-description = "Runnable examples for Footfall: instrumenting, serving, attaching, recording, and exporting."
+description = "Runnable examples for Footfall: instrumenting, serving, attaching, and showing a capture live in Tracy."
 
 [dependencies]
 anstream = "1.0.0"
@@ -26,7 +26,6 @@ footfall = { features = [
 ], workspace = true }
 footfall_fanout.workspace = true
 footfall_memory = { features = ["std"], workspace = true }
-ratatui = "0.30.2"
 tokio = { features = ["macros", "rt-multi-thread", "signal", "sync", "time"], version = "1.51.1" }
 tracing = "0.1.41"
 tracing-subscriber = { default-features = false, features = ["registry", "std"], version = "0.3.20" }

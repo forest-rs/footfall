@@ -1,20 +1,27 @@
 // Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Record a running session to a capture file, and work with it later:
-//! summarize it, ask why its slow frames were slow, compare it with another
-//! run, or export it as one Chrome trace.
+//! The `footfall` command: watch a running session live, record it to a
+//! capture file, and work with the capture later: summarize it, ask why its
+//! slow frames were slow, see its frame pacing, compare it with another run,
+//! or export it as one Chrome trace.
 //!
 //! ```sh
-//! cargo run -p footfall_examples --bin footfall_capture -- record demo.ffcap
-//! cargo run -p footfall_examples --bin footfall_capture -- info demo.ffcap
-//! cargo run -p footfall_examples --bin footfall_capture -- slow demo.ffcap
-//! cargo run -p footfall_examples --bin footfall_capture -- pacing demo.ffcap
-//! cargo run -p footfall_examples --bin footfall_capture -- slow demo.ffcap --by-arg nodes
-//! cargo run -p footfall_examples --bin footfall_capture -- compare before.ffcap after.ffcap
-//! cargo run -p footfall_examples --bin footfall_capture -- span demo.ffcap 13909
-//! cargo run -p footfall_examples --bin footfall_capture -- export demo.ffcap
+//! footfall top
+//! footfall record demo.ffcap
+//! footfall analyze summary demo.ffcap
+//! footfall analyze slow demo.ffcap --by-arg nodes
+//! footfall analyze pacing demo.ffcap
+//! footfall analyze compare before.ffcap after.ffcap
+//! footfall analyze span demo.ffcap 13909
+//! footfall export demo.ffcap
+//! footfall top --file demo.ffcap
 //! ```
+
+mod format;
+mod report;
+mod style;
+mod top;
 
 use anstream::{eprintln, println};
 use clap::{Parser, Subcommand};
@@ -25,14 +32,14 @@ use footfall::session::OwnedSnapshot;
 use footfall::session::capture::{CaptureReader, CaptureWriter};
 use footfall::wtransport::{ClientError, SessionClient};
 use footfall::{DropReason, FramePointKind};
-use footfall_examples::style::{BAD, DIM, GOOD, HEADING, HINT, NAME, WARN};
-use footfall_examples::{format, report};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use style::{BAD, DIM, GOOD, HEADING, HINT, NAME, WARN};
 
-/// Record Footfall sessions to capture files, and summarize or export them.
+/// Watch Footfall sessions live, record them to capture files, and
+/// summarize, compare, or export the captures.
 #[derive(Debug, Parser)]
 struct Args {
     #[command(subcommand)]
@@ -41,6 +48,10 @@ struct Args {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Watch a running session live in the terminal, or replay a capture
+    /// file: frame times against a budget, where the time goes, counters per
+    /// frame, messages, and losses.
+    Top(top::Args),
     /// Subscribe to a running session and save every window until Ctrl-C or
     /// until the producer stops.
     Record {
@@ -53,8 +64,26 @@ enum Command {
         #[arg(long, default_value_t = 500)]
         interval_ms: u64,
     },
+    /// Ask a capture questions: summarize it, why its slow frames were slow,
+    /// how its frames were paced, how it differs from another run, or what
+    /// one span did.
+    #[command(subcommand)]
+    Analyze(Analysis),
+    /// Join a capture's windows into one Chrome trace for Perfetto.
+    Export {
+        /// The capture file to read.
+        file: PathBuf,
+        /// Where to write the trace; defaults to the capture's name with `.json`.
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+    },
+}
+
+/// The questions `footfall analyze` answers about captures.
+#[derive(Debug, Subcommand)]
+enum Analysis {
     /// Summarize a capture: frames, where the time went, counters, losses.
-    Info {
+    Summary {
         /// The capture file to read.
         file: PathBuf,
         /// Frame budget in milliseconds.
@@ -112,19 +141,15 @@ enum Command {
         /// The span's id: the number after `span@`.
         id: u64,
     },
-    /// Join a capture's windows into one Chrome trace for Perfetto.
-    Export {
-        /// The capture file to read.
-        file: PathBuf,
-        /// Where to write the trace; defaults to the capture's name with `.json`.
-        #[arg(long, short)]
-        output: Option<PathBuf>,
-    },
 }
 
 #[tokio::main]
 async fn main() {
     let result = match Args::parse().command {
+        Command::Top(args) => {
+            top::run(args).await;
+            Ok(())
+        }
         Command::Record {
             file,
             session,
@@ -137,24 +162,7 @@ async fn main() {
             )
             .await
         }
-        Command::Info { file, budget_ms } => info(&file, budget_ms),
-        Command::Slow {
-            file,
-            budget_ms,
-            top,
-            by_arg,
-        } => slow(&file, budget_ms, top, by_arg.as_deref()),
-        Command::Compare {
-            baseline,
-            candidate,
-            top,
-        } => compare(&baseline, &candidate, top),
-        Command::Pacing {
-            file,
-            tolerance_ms,
-            top,
-        } => pacing(&file, tolerance_ms, top),
-        Command::Span { file, id } => span(&file, SpanId::new(id)),
+        Command::Analyze(analysis) => analyze(analysis),
         Command::Export { file, output } => {
             let output = output.unwrap_or_else(|| file.with_extension("json"));
             export(&file, &output)
@@ -163,6 +171,30 @@ async fn main() {
     if let Err(error) = result {
         eprintln!("{BAD}{error}{BAD:#}");
         std::process::exit(1);
+    }
+}
+
+/// Answers one `footfall analyze` question.
+fn analyze(analysis: Analysis) -> Result<()> {
+    match analysis {
+        Analysis::Summary { file, budget_ms } => summary(&file, budget_ms),
+        Analysis::Slow {
+            file,
+            budget_ms,
+            top,
+            by_arg,
+        } => slow(&file, budget_ms, top, by_arg.as_deref()),
+        Analysis::Compare {
+            baseline,
+            candidate,
+            top,
+        } => compare(&baseline, &candidate, top),
+        Analysis::Pacing {
+            file,
+            tolerance_ms,
+            top,
+        } => pacing(&file, tolerance_ms, top),
+        Analysis::Span { file, id } => span(&file, SpanId::new(id)),
     }
 }
 
@@ -221,7 +253,7 @@ async fn record(path: &Path, session: Option<&str>, interval: Duration) -> Resul
         format::bytes(bytes)
     );
     println!(
-        "summarize it with {HINT}footfall_capture info {}{HINT:#}",
+        "summarize it with {HINT}footfall analyze summary {}{HINT:#}",
         path.display()
     );
     Ok(())
@@ -262,7 +294,7 @@ fn read_joined(path: &Path) -> Result<OwnedSnapshot> {
     joined.ok_or_else(|| format!("{} holds no snapshots", path.display()).into())
 }
 
-fn info(path: &Path, budget_ms: f64) -> Result<()> {
+fn summary(path: &Path, budget_ms: f64) -> Result<()> {
     let snapshot = read_joined(path)?;
     let metadata = snapshot.metadata();
     let capture = metadata.capture();
