@@ -8,7 +8,7 @@ use crate::format;
 use crate::style::{BAD, DIM, GOOD, HEADING, NAME, WARN};
 use anstream::println;
 use core::time::Duration;
-use footfall::analysis::{Basis, Caveat, Comparison, Frame, GroupBy, SpanTable, Trace};
+use footfall::analysis::{Basis, Frame, GroupBy, SpanTable, Trace};
 use footfall::session::OwnedSnapshot;
 use std::collections::BTreeMap;
 
@@ -101,86 +101,6 @@ pub fn spans_by_label(trace: &Trace, key: &str) {
             format::duration(total),
             parts.join(", ")
         );
-    }
-}
-
-/// Prints a comparison: each scope's time per unit on both sides, how much
-/// of the change came from more calls and how much from slower calls, and
-/// how much of it could be noise.
-pub fn comparison(comparison: &Comparison, baseline: &str, candidate: &str, limit: usize) {
-    let rows = comparison.rows();
-    if rows.is_empty() {
-        println!("  {DIM}no completed scopes on either side{DIM:#}");
-        return;
-    }
-    let names: Vec<_> = rows.iter().take(limit).map(|row| row.describe()).collect();
-    let width = names.iter().map(String::len).max().unwrap_or(0).max(5);
-    println!(
-        "  {DIM}{:width$}  {:>10}  {:>10}  {:>10}  {:>14}  {:>14}  {:>9}{DIM:#}",
-        "scope", baseline, candidate, "change", "from calls", "from cost", "±"
-    );
-    for (name, row) in names.iter().zip(rows) {
-        let calls = |measure: &footfall::analysis::Measure| measure.count_per_unit();
-        let noise = row.standard_error_micros();
-        let change = row.change_micros();
-        // A change within two standard errors could be noise.
-        let style = match noise {
-            Some(noise) if change.abs() <= 2.0 * noise => DIM,
-            _ if change > 0.0 => BAD,
-            _ => GOOD,
-        };
-        println!(
-            "  {NAME}{name:width$}{NAME:#}  {:>10}  {:>10}  {style}{:>10}{style:#}  {:>14}  {:>14}  {:>9}",
-            format::change_micros(row.baseline().micros_per_unit()).trim_start_matches('+'),
-            format::change_micros(row.candidate().micros_per_unit()).trim_start_matches('+'),
-            format::change_micros(change),
-            format!(
-                "{} ({:.1}→{:.1})",
-                format::change_micros(row.volume_micros()),
-                calls(row.baseline()),
-                calls(row.candidate())
-            ),
-            format::change_micros(row.cost_micros()),
-            noise.map_or_else(
-                || String::from("?"),
-                |noise| format::change_micros(noise)
-                    .trim_start_matches('+')
-                    .to_owned()
-            ),
-        );
-    }
-    println!(
-        "  {DIM}per unit: {} {baseline}, {} {candidate}; spans {} each unit{DIM:#}",
-        comparison.baseline().units(),
-        comparison.candidate().units(),
-        comparison.selection().describe(),
-    );
-    for caveat in comparison.caveats() {
-        let note = match caveat {
-            Caveat::FewUnits => String::from("too few units on a side to estimate noise"),
-            Caveat::DifferentInstances => {
-                String::from("different runs: scopes matched by name, not id")
-            }
-            Caveat::DifferentProducers {
-                baseline,
-                candidate,
-            } => {
-                format!("different producer versions: {baseline} and {candidate}")
-            }
-            Caveat::DifferentCapture => String::from("captured with different settings"),
-            Caveat::Incomplete => String::from("a side is incomplete; see below"),
-            other => format!("{other:?}"),
-        };
-        println!("  {WARN}caution:{WARN:#} {note}");
-    }
-    for (label, side) in [
-        (baseline, comparison.baseline()),
-        (candidate, comparison.candidate()),
-    ] {
-        if !side.basis().is_complete() {
-            println!("  {DIM}{label}:{DIM:#}");
-            basis(side.basis());
-        }
     }
 }
 

@@ -64,16 +64,17 @@ lists the features for applications and tools.
 ## See it
 
 The [examples](examples/README.md) include a fake renderer that serves its
-capture, and `footfall_top`, a live terminal view built entirely on the
+capture, and the [`footfall` command](tools/footfall_cli/README.md) watches
+it live, records it, and asks the recording questions, all through the
 public API:
 
 ```sh
 cargo run -p footfall_examples --bin demo_app        # in one terminal
-cargo run -p footfall_examples --bin footfall_top    # in another
+cargo run -p footfall_cli -- top                     # in another
 ```
 
 ```text
-footfall_top  demo_app  pid 63470 · session main · level trace  ● live
+footfall top  demo_app  pid 63470 · session main · level trace  ● live
 last 240 frames  mean 12.8 ms · p95 14.7 ms · max 46.3 ms · 2 over budget  (budget 16.7 ms)
 https://127.0.0.1:43091/footfall/session · main
 ╭ Frame times · newest on the right · red over budget ─────────────────────────────────────────────╮

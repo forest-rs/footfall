@@ -6,12 +6,6 @@
 //! goes, how counters move per frame, recent messages, and whether anything
 //! is being lost.
 //!
-//! ```sh
-//! cargo run -p footfall_examples --bin demo_app        # in one terminal
-//! cargo run -p footfall_examples --bin footfall_top    # in another
-//! cargo run -p footfall_examples --bin footfall_top -- --file demo.ffcap
-//! ```
-//!
 //! Everything it shows comes from the public API: `SessionClient` to find
 //! and subscribe to sessions, and `footfall::analysis` trackers to turn each
 //! window into frames and scopes.
@@ -20,7 +14,6 @@ mod app;
 mod ui;
 
 use app::App;
-use clap::Parser;
 use footfall::session::OwnedSnapshot;
 use footfall::session::capture::CaptureReader;
 use footfall::wtransport::{ClientError, LocalSession, SessionClient};
@@ -28,9 +21,9 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-/// Watch a running Footfall session live, or replay a capture file.
-#[derive(Debug, Parser)]
-struct Args {
+/// The options of `footfall top`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct Args {
     /// The session to watch; needed only when several are running.
     #[arg(long)]
     session: Option<String>,
@@ -54,9 +47,8 @@ pub(crate) enum Update {
     Ended(String),
 }
 
-#[tokio::main]
-async fn main() {
-    let args = Args::parse();
+/// Runs the view until the person quits.
+pub(crate) async fn run(args: Args) {
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -122,10 +114,7 @@ async fn choose_session(requested: Option<&str>) -> LocalSession {
     }
     match discovery.sessions() {
         [only] => only.clone(),
-        [] => fail(
-            "no Footfall sessions are running; start one with \
-             `cargo run -p footfall_examples --bin demo_app`",
-        ),
+        [] => fail("no Footfall sessions are running"),
         sessions => {
             let ids: Vec<_> = sessions
                 .iter()
@@ -247,8 +236,8 @@ fn read_keys() -> mpsc::Receiver<Key> {
 fn fail(message: &str) -> ! {
     anstream::eprintln!(
         "{}{message}{}",
-        footfall_examples::style::BAD,
-        footfall_examples::style::BAD.render_reset()
+        crate::style::BAD,
+        crate::style::BAD.render_reset()
     );
     std::process::exit(1);
 }

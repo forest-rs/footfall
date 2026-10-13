@@ -6,7 +6,7 @@
 //! It renders frames on a pool of worker threads with realistic, varying
 //! costs and the occasional hitch, streams assets with ordinary `tracing`
 //! spans, and serves everything over local WebTransport until Ctrl-C. Attach
-//! to it with `footfall_top`, `attach`, or `footfall_capture record`.
+//! to it with `footfall top`, `footfall record`, or the `attach` example.
 //!
 //! ```sh
 //! cargo run -p footfall_examples --bin demo_app
@@ -141,14 +141,12 @@ fn print_banner(args: &Args, server: &LocalSessionServer, runtime: &Runtime) {
     );
     println!("  {DIM}serving{DIM:#}  {}", server.url());
     println!();
-    println!(
-        "  {DIM}watch it live{DIM:#}   {HINT}cargo run -p footfall_examples --bin footfall_top{HINT:#}"
-    );
+    println!("  {DIM}watch it live{DIM:#}   {HINT}cargo run -p footfall_cli -- top{HINT:#}");
     println!(
         "  {DIM}follow frames{DIM:#}   {HINT}cargo run -p footfall_examples --bin attach{HINT:#}"
     );
     println!(
-        "  {DIM}record it{DIM:#}       {HINT}cargo run -p footfall_examples --bin footfall_capture -- record demo.ffcap{HINT:#}"
+        "  {DIM}record it{DIM:#}       {HINT}cargo run -p footfall_cli -- record demo.ffcap{HINT:#}"
     );
     println!();
     println!("{DIM}press Ctrl-C to stop{DIM:#}");

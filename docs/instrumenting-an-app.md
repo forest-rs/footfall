@@ -424,16 +424,15 @@ to the application's own targets: the QUIC stack behind the session server
 traces every packet, and an unfiltered layer captures the work of serving the
 capture.
 
-The examples are the reference shape:
+The reference shapes:
 
-- [demo_app](../examples/src/bin/demo_app.rs) instruments a renderer and
-  serves it
-- [attach](../examples/src/bin/attach.rs) is a minimal tool that follows a
-  session
-- [footfall_top](../examples/src/bin/footfall_top/main.rs) is a full live
-  view
+- the [demo_app](../examples/src/bin/demo_app.rs) example instruments a
+  renderer and serves it
+- the [attach](../examples/src/bin/attach.rs) example is a minimal tool that
+  follows a session
+- the [`footfall` command](../tools/footfall_cli/README.md) records, watches,
+  and analyzes sessions
 
 ## Limits
 
-- `footfall_top` is an example of a consumer UI, not a supported tool
 - the local attach path is intentionally localhost-first

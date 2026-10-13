@@ -14,6 +14,7 @@ env:
   RUST_MIN_VER_PKGS: >-
     -p footfall
     -p footfall_analysis
+    -p footfall_cli
     -p footfall_core
     -p footfall_export
     -p footfall_fanout
@@ -27,6 +28,7 @@ env:
   RUST_STD_ONLY_PKGS: >-
     --exclude footfall_analysis
     --exclude footfall_benchmarks
+    --exclude footfall_cli
     --exclude footfall_export
     --exclude footfall_fanout
     --exclude footfall_runtime
@@ -38,12 +40,14 @@ env:
   # List of packages that don't support wasip1
   RUST_NO_WASIP1_PKGS: >-
     --exclude footfall_benchmarks
+    --exclude footfall_cli
     --exclude footfall_session_wtransport
     --exclude footfall_tracy
     --exclude footfall_examples
   # List of packages that don't support wasm32
   RUST_NO_WASM_PKGS: >-
     --exclude footfall_benchmarks
+    --exclude footfall_cli
     --exclude footfall_session_wtransport
     --exclude footfall_tracy
     --exclude footfall_examples

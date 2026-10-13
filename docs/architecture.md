@@ -251,7 +251,8 @@ misses from frames the program chose not to show.
 - Allocator interception; memory observation starts from memory the program
   already owns.
 - A bundled viewer. Footfall exports to existing tools and gives other
-  tools a stable session protocol; `footfall_top` is an example of one.
+  tools a stable session protocol; the `footfall` command's live view is one
+  such tool.
 
 ## History
 
