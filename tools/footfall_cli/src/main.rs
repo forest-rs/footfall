@@ -19,6 +19,8 @@
 //! ```
 
 mod format;
+mod json;
+mod pacing_json;
 mod report;
 mod style;
 mod top;
@@ -121,6 +123,10 @@ enum Analysis {
         /// How many late frames and scopes to show.
         #[arg(long, default_value_t = 8)]
         top: usize,
+        /// Print the judgment as one JSON document, every frame included,
+        /// for other programs to read.
+        #[arg(long)]
+        json: bool,
     },
     /// Compare two captures of the same workload frame by frame: which
     /// scopes changed, and whether they ran more often or each ran slower.
@@ -194,7 +200,8 @@ fn analyze(analysis: Analysis) -> Result<()> {
             file,
             tolerance_ms,
             top,
-        } => pacing(&file, tolerance_ms, top),
+            json,
+        } => pacing(&file, tolerance_ms, top, json),
         Analysis::Span { file, id } => span(&file, SpanId::new(id)),
     }
 }
@@ -422,9 +429,13 @@ fn slow(path: &Path, budget_ms: f64, top: usize, by_arg: Option<&str>) -> Result
     Ok(())
 }
 
-fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
+fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> {
     let trace = read_trace(path)?;
     let pacing = trace.pacing(Duration::from_secs_f64(tolerance_ms / 1000.0));
+    if json {
+        println!("{}", pacing_json::document(path, &trace, &pacing));
+        return Ok(());
+    }
     let counts = pacing.counts();
     println!(
         "{HEADING}Frame pacing{HEADING:#} {DIM}· {} numbered frames · on time within {}{DIM:#}",
