@@ -1560,3 +1560,57 @@ fn late_frames_say_what_made_them_late() {
         "only frame 3 has markers, and neither has GPU work"
     );
 }
+
+#[test]
+fn forgetting_covers_frame_points_waiting_work_and_old_clock_readings() {
+    use footfall_core::FramePointKind::{Presented, Target};
+    let mut recording = Recording::new(7);
+    recording.clock_sync(0, &HOST, 0);
+    recording.clock_sync(10, &HOST, 10_000);
+    // Frame 1 is over by 50 µs: its work and its feedback.
+    recording.numbered_frame(1, 0, 5);
+    recording.frame_point(5, 1, Target, &HOST, Some(16));
+    recording.frame_point(20, 1, Presented, &HOST, Some(16));
+    // Frame 2's work is over by then, but its feedback comes after.
+    recording.numbered_frame(2, 16, 30);
+    recording.frame_point(30, 2, Target, &HOST, Some(33));
+    recording.frame_point(60, 2, Presented, &HOST, Some(34));
+    // Work waiting for a clock that never syncs.
+    recording.timeline_span(
+        10,
+        &TimelineSpan::new(
+            &GRAPHICS,
+            &SHADOWS,
+            footfall_core::ContextHandle::ROOT,
+            &LOST_CLOCK,
+            TickPeriod::NANOSECOND,
+            0,
+            1_000,
+        ),
+    );
+    recording.clock_sync(70, &HOST, 70_000);
+    let mut trace = Trace::from_snapshot(&recording.snapshot(100));
+    assert_eq!(trace.unplaced_spans(), 1);
+
+    trace.forget_before(us(50));
+    let pacing = trace.pacing(us(1));
+    let numbers: Vec<_> = pacing.frames().iter().map(|frame| frame.number()).collect();
+    assert_eq!(
+        numbers,
+        [2],
+        "frame 1 is forgotten; frame 2 keeps its target"
+    );
+    assert_eq!(
+        pacing
+            .frame(2)
+            .map(|frame| (frame.target(), frame.presented())),
+        Some((Some(us(33)), Some(us(34))))
+    );
+    assert_eq!(trace.unplaced_spans(), 0);
+    let host = trace.clocks().find("host").expect("still known");
+    assert_eq!(
+        trace.clocks().clock(host).map(|clock| clock.syncs()),
+        Some(2),
+        "the sync at 10 µs, the last before, and the one at 70 µs"
+    );
+}

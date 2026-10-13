@@ -553,7 +553,7 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
                 presented: None,
                 dropped: None,
             };
-            for (kind, time) in trace.frame_points().get(&number).into_iter().flatten() {
+            for (kind, time, _) in trace.frame_points().get(&number).into_iter().flatten() {
                 let at = match time {
                     Some(time) => match trace.clocks().to_runtime(time.clock_id(), time.ticks()) {
                         Some(converted) => Some(nanos(converted.nanos())),
