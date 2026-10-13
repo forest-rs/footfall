@@ -495,8 +495,12 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> 
         .collect();
         println!("  late: {}", named.join(" · "));
         let support = counts.late_support;
+        let unstated = match support.observed_unstated {
+            0 => String::new(),
+            n => format!(" ({} on times with no stated basis)", format::count(n)),
+        };
         println!(
-            "  {DIM}how sure: {} observed · {} inferred · {} unresolved{DIM:#}",
+            "  {DIM}how sure: {} observed{unstated} · {} inferred · {} unresolved{DIM:#}",
             format::count(support.observed),
             format::count(support.inferred),
             format::count(support.unresolved),

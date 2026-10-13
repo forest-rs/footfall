@@ -1683,6 +1683,11 @@ fn late_frames_say_what_made_them_late() {
         (support.observed, support.inferred, support.unresolved),
         (2, 1, 2)
     );
+    assert_eq!(
+        support.observed_unstated, 2,
+        "both rest on presentation times recorded without a basis"
+    );
+    assert!(why(2).unstated_basis() && why(4).unstated_basis());
     assert!(
         !Outcome::Dropped {
             reason: DropReason::Superseded
@@ -2040,4 +2045,9 @@ fn a_missed_deadline_shown_by_an_estimated_submission_is_inferred() {
         (LateCause::MissedDeadline, Support::Observed, Observed)
     );
     assert_eq!(estimated.submitted_late, Some(us(2_000)));
+    assert!(
+        !observed.unstated_basis(),
+        "every time it rests on was stated"
+    );
+    assert_eq!(pacing.counts().late_support.observed_unstated, 0);
 }

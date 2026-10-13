@@ -255,6 +255,7 @@ fn late_causes(causes: LateCauseCounts) -> Json {
 fn late_support(support: SupportCounts) -> Json {
     Json::object([
         ("observed", Json::from(support.observed)),
+        ("observed_unstated", Json::from(support.observed_unstated)),
         ("inferred", Json::from(support.inferred)),
         ("unresolved", Json::from(support.unresolved)),
     ])
