@@ -10,7 +10,7 @@ use crate::time::{Selection, TimeRange, merge_ranges};
 use crate::trace::Trace;
 use core::fmt;
 use core::time::Duration;
-use footfall_core::{ContextId, TimelineId};
+use footfall_core::{ContextId, FrameNumber, TimelineId};
 use footfall_session::{OwnedArgEntry, OwnedLabelValue};
 use std::collections::BTreeMap;
 
@@ -51,7 +51,7 @@ pub struct SpanQuery<'t> {
     ranges: Option<Vec<TimeRange>>,
     /// The program's numbers of the frames selected, by which timeline
     /// spans reported with a frame number are selected.
-    frame_numbers: Vec<u64>,
+    frame_numbers: Vec<FrameNumber>,
     selection: Selection,
     name: Option<String>,
     tracks: Tracks,
@@ -519,7 +519,7 @@ impl<'t> SpanQuery<'t> {
 
     /// Selects the frame covering `range`, numbered `number` by the program
     /// when it has a number, as [`in_frames`](Self::in_frames) does.
-    pub(crate) fn in_frame_range(mut self, range: TimeRange, number: Option<u64>) -> Self {
+    pub(crate) fn in_frame_range(mut self, range: TimeRange, number: Option<FrameNumber>) -> Self {
         self.ranges.get_or_insert_with(Vec::new).push(range);
         self.frame_numbers.extend(number);
         self

@@ -12,8 +12,9 @@ use crate::time::{TimeRange, nanos};
 use core::fmt;
 use core::time::Duration;
 use footfall_core::{
-    ClockId, ContextId, CounterDescId, FlowId, FlowPhase, FramePointKind, InstrumentationLevel,
-    MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, TimelineId,
+    ClockId, ContextId, CounterDescId, FlowId, FlowPhase, FrameNumber, FramePointKind,
+    InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId,
+    ScopeToken, TimelineId,
 };
 use footfall_runtime::{CounterKind, Drops, SnapshotMetadata};
 use footfall_session::{
@@ -59,9 +60,9 @@ pub struct Trace {
     timelines: BTreeMap<TimelineId, Track>,
     /// Frame points, by the frame's number: the kind, the time read from
     /// another clock, and when the point was recorded.
-    frame_points: BTreeMap<u64, Vec<HeldPoint>>,
+    frame_points: BTreeMap<FrameNumber, Vec<HeldPoint>>,
     /// Placed timeline spans reported with a frame number, by that number.
-    frame_spans: HashMap<u64, Vec<SpanId>>,
+    frame_spans: HashMap<FrameNumber, Vec<SpanId>>,
     /// Timeline spans whose clock has no path to the runtime's yet, with
     /// their event's sequence number, reporting thread, and time.
     unplaced: Vec<(u64, u64, Duration, Box<OwnedTimelineWork>)>,
@@ -78,7 +79,7 @@ pub struct Trace {
     marks: [Vec<Frame>; 3],
     open_marks: [Vec<OpenMark>; 3],
     /// Completed marks with a program number, by kind and number.
-    numbered: HashMap<(usize, u64), FrameId>,
+    numbered: HashMap<(usize, FrameNumber), FrameId>,
     series: BTreeMap<(CounterDescId, ContextId), CounterSeries>,
     /// Whether every event since the runtime began has been seen without a
     /// gap, so a counter's first sample is its whole change.
@@ -113,7 +114,7 @@ struct Begun {
 #[derive(Clone, Copy, Debug)]
 struct OpenMark {
     id: FrameId,
-    number: Option<u64>,
+    number: Option<FrameNumber>,
     context_id: ContextId,
     thread_id: u64,
     begin: Duration,
@@ -1209,19 +1210,19 @@ impl Trace {
 
     /// Returns the spans on timelines reported as part of the frame the
     /// program numbered `number`, such as that frame's GPU passes.
-    pub fn frame_spans(&self, number: u64) -> impl Iterator<Item = &Span> {
+    pub fn frame_spans(&self, number: impl Into<FrameNumber>) -> impl Iterator<Item = &Span> {
         self.frame_spans
-            .get(&number)
+            .get(&number.into())
             .into_iter()
             .flatten()
             .filter_map(|id| self.span(*id))
     }
 
-    pub(crate) const fn frame_points(&self) -> &BTreeMap<u64, Vec<HeldPoint>> {
+    pub(crate) const fn frame_points(&self) -> &BTreeMap<FrameNumber, Vec<HeldPoint>> {
         &self.frame_points
     }
 
-    pub(crate) fn numbered_frames(&self) -> impl Iterator<Item = u64> + '_ {
+    pub(crate) fn numbered_frames(&self) -> impl Iterator<Item = FrameNumber> + '_ {
         self.numbered
             .keys()
             .filter(|(index, _)| *index == 0)
@@ -1343,18 +1344,23 @@ impl Trace {
         self.marks.iter().flatten().find(|frame| frame.id == id)
     }
 
-    /// Returns the frame the program numbered `number`.
+    /// Returns the frame the program numbered `number`: a plain `u64` for
+    /// the default frame stream, or a [`FrameNumber`].
     #[must_use]
-    pub fn frame_numbered(&self, number: u64) -> Option<&Frame> {
+    pub fn frame_numbered(&self, number: impl Into<FrameNumber>) -> Option<&Frame> {
         self.numbered_mark(MarkerKind::Frame, number)
     }
 
     /// Returns the frame, pass, or transaction of `kind` the program
     /// numbered `number`.
     #[must_use]
-    pub fn numbered_mark(&self, kind: MarkerKind, number: u64) -> Option<&Frame> {
+    pub fn numbered_mark(
+        &self,
+        kind: MarkerKind,
+        number: impl Into<FrameNumber>,
+    ) -> Option<&Frame> {
         let index = mark_index(kind)?;
-        let id = *self.numbered.get(&(index, number))?;
+        let id = *self.numbered.get(&(index, number.into()))?;
         let marks = &self.marks[index];
         marks
             .binary_search_by_key(&id, |frame| frame.id)

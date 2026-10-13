@@ -47,8 +47,8 @@
 
 use footfall_core::{
     Args, Backend, ClockId, ClockReading, Context, ContextHandle, ContextId, CounterDesc,
-    CounterDescId, EventDesc, EventDescId, FlowId, FlowPhase, FramePoint, FramePointKind,
-    InstallBackendError, InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId,
+    CounterDescId, EventDesc, EventDescId, FlowId, FlowPhase, FrameNumber, FramePoint,
+    FramePointKind, InstallBackendError, InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId,
     ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, ScopeToken, SourceLocation,
     TickPeriod, TimelineId, TimelineKind, TimelineSpan, Unit, install_backend, set_max_level,
 };
@@ -715,7 +715,7 @@ impl Runtime {
         &self,
         kind: MarkerKind,
         phase: MarkerPhase,
-        number: Option<u64>,
+        number: Option<FrameNumber>,
         context: ContextHandle,
     ) {
         if !self.level().captures_markers() {
@@ -2205,8 +2205,9 @@ pub enum Observation {
         kind: MarkerKind,
         /// Marker phase.
         phase: MarkerPhase,
-        /// The program's own number for the unit of work, when it gave one.
-        number: Option<u64>,
+        /// The program's own number for the unit of work, in its frame
+        /// stream, when it gave one.
+        number: Option<FrameNumber>,
         /// Canonical semantic context id.
         context_id: ContextId,
     },
@@ -2278,8 +2279,8 @@ pub enum Observation {
     /// A time a frame scheduler or display knows about a numbered frame;
     /// see [`footfall_core::frame_point`].
     FramePoint {
-        /// The program's number for the frame.
-        number: u64,
+        /// The program's number for the frame, in its stream.
+        number: FrameNumber,
         /// What the point says about the frame.
         kind: FramePointKind,
         /// When, as a reading of another clock; `None` for a dropped frame.
@@ -2300,7 +2301,7 @@ pub struct TimelineWork {
     context_id: ContextId,
     begin: ClockTicks,
     end: u64,
-    frame: Option<u64>,
+    frame: Option<FrameNumber>,
     flow: Option<FlowId>,
     args: Args,
 }
@@ -2386,7 +2387,7 @@ impl TimelineWork {
 
     /// Returns the program's number for the frame the work belongs to.
     #[must_use]
-    pub const fn frame(&self) -> Option<u64> {
+    pub const fn frame(&self) -> Option<FrameNumber> {
         self.frame
     }
 
@@ -2990,7 +2991,7 @@ impl Backend for Runtime {
         &self,
         kind: MarkerKind,
         phase: MarkerPhase,
-        number: u64,
+        number: FrameNumber,
         context: ContextHandle,
     ) {
         self.marker(kind, phase, Some(number), context);
@@ -3989,14 +3990,21 @@ mod tests {
     fn numbered_markers_keep_their_number_and_sample_counters() {
         static UPLOADS: CounterDesc = CounterDesc::bytes("uploads");
         let runtime = Runtime::default();
+        // Frame 41 of the program's second window.
+        let frame = footfall_core::FrameStream::new(2).frame(41);
         runtime.numbered_marker(
             MarkerKind::Frame,
             MarkerPhase::Begin,
-            41,
+            frame,
             ContextHandle::ROOT,
         );
         runtime.counter_add(&UPLOADS, ContextHandle::ROOT, 10);
-        runtime.numbered_marker(MarkerKind::Frame, MarkerPhase::End, 41, ContextHandle::ROOT);
+        runtime.numbered_marker(
+            MarkerKind::Frame,
+            MarkerPhase::End,
+            frame,
+            ContextHandle::ROOT,
+        );
         let snapshot = runtime.snapshot();
         let numbers: Vec<_> = snapshot
             .events
@@ -4006,7 +4014,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(numbers, [Some(41), Some(41)]);
+        assert_eq!(numbers, [Some(frame), Some(frame)]);
         assert!(
             snapshot
                 .events

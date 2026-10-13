@@ -22,9 +22,9 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 
 use footfall_core::{
-    ClockId, ContextId, CounterDescId, DropReason, EventDescId, FlowId, FlowPhase, FramePointKind,
-    InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId,
-    ScopeToken, TickPeriod, TimelineId, TimelineKind, Unit,
+    ClockId, ContextId, CounterDescId, DropReason, EventDescId, FlowId, FlowPhase, FrameNumber,
+    FramePointKind, FrameStream, InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId,
+    ResourceKindId, ScopeDescId, ScopeToken, TickPeriod, TimelineId, TimelineKind, Unit,
 };
 use footfall_runtime::CounterKind;
 
@@ -812,7 +812,7 @@ pub(crate) fn encode_borrowed_observation(
             encode_u8(bytes, 5);
             encode_u8(bytes, encode_marker_kind(*kind)?);
             encode_u8(bytes, encode_marker_phase(*phase));
-            encode_marker_number(bytes, *number)?;
+            encode_frame(bytes, *number)?;
             encode_u64(bytes, context_id.get());
         }
         footfall_runtime::Observation::Flow {
@@ -1082,7 +1082,7 @@ pub(crate) fn encode_observation(
             encode_u8(bytes, 5);
             encode_u8(bytes, encode_marker_kind(*kind)?);
             encode_u8(bytes, encode_marker_phase(*phase));
-            encode_marker_number(bytes, *number)?;
+            encode_frame(bytes, *number)?;
             encode_u64(bytes, context_id.get());
         }
         OwnedObservation::Flow {
@@ -1191,7 +1191,7 @@ pub(crate) fn decode_observation(
         5 => Ok(OwnedObservation::FrameMarker {
             kind: decode_marker_kind(decode_u8(cursor)?)?,
             phase: decode_marker_phase(decode_u8(cursor)?)?,
-            number: decode_marker_number(cursor)?,
+            number: decode_frame(cursor)?,
             context_id: ContextId::new(decode_u64(cursor)?),
         }),
         6 => Ok(OwnedObservation::Flow {
@@ -1225,7 +1225,9 @@ pub(crate) fn decode_observation(
             span: Box::new(decode_timeline(cursor, names)?),
         }),
         12 => {
-            let number = decode_u64(cursor)?;
+            let number = decode_frame(cursor)?.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "a frame point needs a frame")
+            })?;
             let kind = decode_frame_point_kind(cursor)?;
             let time = if decode_bool(cursor, "frame point time tag")? {
                 Some(decode_clock(cursor, names)?)
@@ -1262,8 +1264,8 @@ fn encode_clock(
 /// Writes finished work on a timeline: the timeline's id, with its name and
 /// kind the first time; the scope's id, with its name and location the
 /// first time; the context; the clock reading the work began at; how many
-/// ticks it lasted; the frame and flow, each one more than its value or `0`
-/// for none; and the args.
+/// ticks it lasted; the frame, as a numbered marker writes it; the flow, one
+/// more than its value or `0` for none; and the args.
 fn encode_timeline(
     bytes: &mut Vec<u8>,
     names: &mut NameWriter,
@@ -1285,7 +1287,7 @@ fn encode_timeline(
     encode_u64(bytes, work.context_id().get());
     encode_owned_clock(bytes, names, work.begin())?;
     encode_u64(bytes, work.end().saturating_sub(work.begin().ticks()));
-    encode_marker_number(bytes, work.frame())?;
+    encode_frame(bytes, work.frame())?;
     encode_marker_number(bytes, work.flow().map(FlowId::get))?;
     encode_args(bytes, work.args())
 }
@@ -1302,7 +1304,7 @@ fn decode_timeline(
     let context_id = ContextId::new(decode_u64(cursor)?);
     let begin = decode_clock(cursor, names)?;
     let end = begin.ticks().saturating_add(decode_u64(cursor)?);
-    let frame = decode_marker_number(cursor)?;
+    let frame = decode_frame(cursor)?;
     let flow = decode_marker_number(cursor)?.map(FlowId::new);
     let args = decode_args(cursor)?;
     Ok(OwnedTimelineWork::new(
@@ -1321,17 +1323,18 @@ fn decode_timeline(
     .with_args(args))
 }
 
-/// Writes a frame point: the frame's number, the point's kind (followed by
+/// Writes a frame point: the frame, as a numbered marker writes it, the
+/// point's kind (followed by
 /// the reason for a dropped frame), and a presence tag followed by the clock
 /// reading when it has a time.
 fn encode_frame_point(
     bytes: &mut Vec<u8>,
     names: &mut NameWriter,
-    number: u64,
+    number: FrameNumber,
     kind: FramePointKind,
     time: Option<&OwnedClockTicks>,
 ) -> io::Result<()> {
-    encode_u64(bytes, number);
+    encode_frame(bytes, Some(number))?;
     match kind {
         FramePointKind::Deadline => encode_u8(bytes, 0),
         FramePointKind::Target => encode_u8(bytes, 1),
@@ -1534,6 +1537,38 @@ fn encode_marker_number(bytes: &mut Vec<u8>, number: Option<u64>) -> io::Result<
 
 fn decode_marker_number(cursor: &mut Cursor<'_>) -> io::Result<Option<u64>> {
     Ok(decode_u64(cursor)?.checked_sub(1))
+}
+
+/// Writes a numbered frame: its number as [`encode_marker_number`] writes
+/// it, `0` for none, then for a numbered one its stream's id and generation.
+fn encode_frame(bytes: &mut Vec<u8>, frame: Option<FrameNumber>) -> io::Result<()> {
+    encode_marker_number(bytes, frame.map(FrameNumber::number))?;
+    if let Some(frame) = frame {
+        encode_u64(bytes, u64::from(frame.stream().id()));
+        encode_u64(bytes, u64::from(frame.stream().generation()));
+    }
+    Ok(())
+}
+
+fn decode_frame(cursor: &mut Cursor<'_>) -> io::Result<Option<FrameNumber>> {
+    let Some(number) = decode_marker_number(cursor)? else {
+        return Ok(None);
+    };
+    let part = |cursor: &mut Cursor<'_>, what: &str| {
+        u32::try_from(decode_u64(cursor)?).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("frame stream {what} out of range"),
+            )
+        })
+    };
+    let id = part(cursor, "id")?;
+    let generation = part(cursor, "generation")?;
+    Ok(Some(
+        FrameStream::new(id)
+            .with_generation(generation)
+            .frame(number),
+    ))
 }
 
 pub(crate) fn encode_marker_kind(kind: MarkerKind) -> io::Result<u8> {

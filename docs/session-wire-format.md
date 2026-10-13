@@ -281,14 +281,14 @@ thread id, then a `u8` observation tag and its fields:
 | `2` | resource create | kind id `u64`, kind name `name`, resource id `u64`, context id `u64`, size `u64` |
 | `3` | resource update | kind id `u64`, kind name `name`, resource id `u64`, context id `u64`, size `u64` |
 | `4` | resource drop | kind id `u64`, kind name `name`, resource id `u64`, context id `u64` |
-| `5` | marker | kind `u8` (`0` frame, `1` transaction, `2` pass), phase `u8` (`0` begin, `1` end), number `u64` (the program's number plus one, or `0` for none), context id `u64` |
+| `5` | marker | kind `u8` (`0` frame, `1` transaction, `2` pass), phase `u8` (`0` begin, `1` end), frame `frame`, context id `u64` |
 | `6` | flow | flow id `u64`, phase `u8` (`0` begin, `1` step, `2` end), context id `u64` |
 | `7` | message | descriptor id `u64`, name `name`, context id `u64`, text `string`, args |
 | `8` | counter sample | descriptor id `u64`, name `name`, unit `u8`, context id `u64`, kind `u8`, value `u64` |
 | `9` | clock sync | clock |
 | `10` | clock pair | clock, clock |
-| `11` | timeline span | timeline id `u64`, timeline name `name` and kind `u8` (`0` GPU, `1` display, `2` other; written with the name), scope id `u64`, name `name`, location `location`, context id `u64`, begin `clock`, length in ticks `u64`, frame `u64` (the number plus one, or `0` for none), flow `u64` (the id plus one, or `0` for none), args |
-| `12` | frame point | frame number `u64`, kind `u8` (`0` deadline, `1` target, `2` presented, `3` dropped, `4` predicted, `5` expected), for a dropped frame its reason `u8` (`0` unknown, `1` discarded, `2` superseded, `3` missed deadline, `4` surface unavailable, `5` output unavailable, `6` replaced), time tag `u8` (`0` none, `1` present) and, when present, `clock` |
+| `11` | timeline span | timeline id `u64`, timeline name `name` and kind `u8` (`0` GPU, `1` display, `2` other; written with the name), scope id `u64`, name `name`, location `location`, context id `u64`, begin `clock`, length in ticks `u64`, frame `frame`, flow `u64` (the id plus one, or `0` for none), args |
+| `12` | frame point | frame `frame` (never none), kind `u8` (`0` deadline, `1` target, `2` presented, `3` dropped, `4` predicted, `5` expected), for a dropped frame its reason `u8` (`0` unknown, `1` discarded, `2` superseded, `3` missed deadline, `4` surface unavailable, `5` output unavailable, `6` replaced), time tag `u8` (`0` none, `1` present) and, when present, `clock` |
 
 A counter sample is a counter's or gauge's value at a frame end, recorded
 for each one the frame updated; a counter's change over a frame is the
@@ -308,6 +308,12 @@ begin is a reading of the clock its times are in, and it ends that many
 ticks later; consumers convert both through the producer's clock syncs and
 pairs. Its row's time is when it was recorded. Like a name, a timeline's
 kind is written only the first time the timeline appears in a payload.
+
+A `frame` is the program's number for a frame, transaction, or pass: a `u64`
+one more than the number, or `0` for none, followed for a numbered one by
+its frame stream's id and generation as `u64` each. Frame numbers are
+unique within a stream, such as one window's frames; plain numbers belong
+to stream `0` generation `0`.
 
 A frame point is a time a frame scheduler or display knows about the frame
 the program numbered, recorded when it becomes known, often frames later:

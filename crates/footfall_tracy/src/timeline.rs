@@ -12,8 +12,8 @@
 //! sorted, nested by containment, and sent with their timestamps in order.
 
 use footfall_core::{
-    ClockId, ClockReading, DropReason, FramePoint, FramePointKind, ScopeDesc, TickPeriod,
-    TimelineId, TimelineSpan,
+    ClockId, ClockReading, DropReason, FrameNumber, FramePoint, FramePointKind, ScopeDesc,
+    TickPeriod, TimelineId, TimelineSpan,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
@@ -95,8 +95,8 @@ pub(crate) struct Timelines {
     /// so each is named once.
     reported: HashSet<TimelineId>,
     counts: TimelineCounts,
-    targets: BTreeMap<u64, ClockReading>,
-    presented: BTreeMap<u64, ClockReading>,
+    targets: BTreeMap<FrameNumber, ClockReading>,
+    presented: BTreeMap<FrameNumber, ClockReading>,
 }
 
 /// What a frame point produced for Tracy.
@@ -107,7 +107,7 @@ pub(crate) enum PointOutcome {
     /// when early.
     Lateness(i128),
     /// The frame numbered this was dropped, for this reason.
-    Dropped(u64, DropReason),
+    Dropped(FrameNumber, DropReason),
 }
 
 impl Timelines {
@@ -451,9 +451,13 @@ fn to_i64(ticks: u64) -> i64 {
     i64::try_from(ticks).unwrap_or(i64::MAX)
 }
 
-/// Keeps a frame's time until the other arrives, forgetting the oldest
-/// frames beyond [`MAX_FRAMES_WAITING`].
-fn keep(waiting: &mut BTreeMap<u64, ClockReading>, number: u64, time: ClockReading) {
+/// Keeps a frame's time until the other arrives, forgetting the
+/// lowest-numbered frames beyond [`MAX_FRAMES_WAITING`].
+fn keep(
+    waiting: &mut BTreeMap<FrameNumber, ClockReading>,
+    number: FrameNumber,
+    time: ClockReading,
+) {
     waiting.insert(number, time);
     while waiting.len() > MAX_FRAMES_WAITING {
         waiting.pop_first();

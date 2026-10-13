@@ -585,7 +585,7 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
             .map_or_else(|| String::from("-"), format::duration);
         println!(
             "  {:>7}  {BAD}{outcome:<14}{BAD:#}  {why:<14}  {:>12}  {:>10}  {:>14}",
-            frame.number(),
+            frame.number().to_string(),
             frame
                 .work()
                 .map_or_else(|| String::from("-"), |work| format::duration(work.length())),

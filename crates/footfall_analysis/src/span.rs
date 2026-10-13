@@ -6,7 +6,9 @@
 use crate::time::TimeRange;
 use core::fmt;
 use core::time::Duration;
-use footfall_core::{ClockId, ContextId, ScopeDescId, ScopeToken, TimelineId, TimelineKind};
+use footfall_core::{
+    ClockId, ContextId, FrameNumber, ScopeDescId, ScopeToken, TimelineId, TimelineKind,
+};
 use footfall_session::{OwnedArgEntry, OwnedLabelValue, OwnedSourceLocation};
 use std::sync::Arc;
 
@@ -63,7 +65,7 @@ pub struct Span {
     pub(crate) interrupted: bool,
     pub(crate) args: Vec<OwnedArgEntry>,
     pub(crate) timeline: Option<TimelineId>,
-    pub(crate) frame: Option<u64>,
+    pub(crate) frame: Option<FrameNumber>,
     pub(crate) placement: Option<Placement>,
 }
 
@@ -165,7 +167,7 @@ impl Span {
     /// Returns the program's number for the frame the span belongs to, when
     /// it was reported with one, as timeline spans are.
     #[must_use]
-    pub const fn frame_number(&self) -> Option<u64> {
+    pub const fn frame_number(&self) -> Option<FrameNumber> {
         self.frame
     }
 
