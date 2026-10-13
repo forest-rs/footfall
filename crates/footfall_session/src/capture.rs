@@ -37,7 +37,9 @@
 //! let mut recorder = CaptureRecorder::new(&runtime, Vec::new())?;
 //! // Each frame, or every few: write what was recorded since the last write.
 //! recorder.write()?;
-//! let bytes = recorder.finish()?;
+//! let finished = recorder.finish()?;
+//! assert_eq!(finished.missed(), 0);
+//! let bytes = finished.into_inner();
 //!
 //! let joined = CaptureReader::new(bytes.as_slice())?.join()?;
 //! assert_eq!(joined.snapshot().metadata().instance_id(), runtime.instance_id());
@@ -197,10 +199,53 @@ impl<'a, W: Write> CaptureRecorder<'a, W> {
     }
 
     /// Writes what was recorded since the last write, flushes the capture,
-    /// and returns the underlying writer.
-    pub fn finish(mut self) -> io::Result<W> {
+    /// and returns the underlying writer with the capture's totals, this
+    /// last write included.
+    pub fn finish(mut self) -> io::Result<FinishedCapture<W>> {
         self.write()?;
-        self.writer.finish()
+        Ok(FinishedCapture {
+            inner: self.writer.finish()?,
+            snapshots: self.snapshots,
+            events: self.events,
+            missed: self.missed,
+        })
+    }
+}
+
+/// A capture a [`CaptureRecorder`] finished: the underlying writer, and
+/// what was written to it.
+#[derive(Debug)]
+pub struct FinishedCapture<W> {
+    inner: W,
+    snapshots: u64,
+    events: u64,
+    missed: u64,
+}
+
+impl<W> FinishedCapture<W> {
+    /// Returns how many snapshots were written.
+    #[must_use]
+    pub const fn snapshots(&self) -> u64 {
+        self.snapshots
+    }
+
+    /// Returns how many events were written.
+    #[must_use]
+    pub const fn events(&self) -> u64 {
+        self.events
+    }
+
+    /// Returns how many events the runtime evicted before they could be
+    /// written.
+    #[must_use]
+    pub const fn missed(&self) -> u64 {
+        self.missed
+    }
+
+    /// Returns the underlying writer.
+    #[must_use]
+    pub fn into_inner(self) -> W {
+        self.inner
     }
 }
 
@@ -536,7 +581,14 @@ mod tests {
             (recorder.snapshots(), recorder.events(), recorder.missed()),
             (3, 7, 2)
         );
-        let bytes = recorder.finish().expect("capture finishes");
+        mark(&runtime);
+        let finished = recorder.finish().expect("capture finishes");
+        assert_eq!(
+            (finished.snapshots(), finished.events(), finished.missed()),
+            (4, 8, 2),
+            "the totals count the last write, which finishing makes"
+        );
+        let bytes = finished.into_inner();
 
         let joined = CaptureReader::new(bytes.as_slice())
             .expect("header reads")
@@ -544,10 +596,10 @@ mod tests {
             .expect("the capture joins");
         assert!(joined.complete());
         let snapshot = joined.snapshot();
-        assert_eq!(snapshot.events().len(), 7, "each event once");
+        assert_eq!(snapshot.events().len(), 8, "each event once");
         assert_eq!(
             (snapshot.window().since(), snapshot.window().next()),
-            (0, 9)
+            (0, 10)
         );
         assert_eq!(
             snapshot.window().missed(),

@@ -199,7 +199,8 @@ fn record(runtime: &Runtime, frames: impl Iterator<Item = u64>) -> std::io::Resu
             }
         }
     }
-    recorder.finish()?;
+    let finished = recorder.finish()?;
+    eprintln!("wrote {} events to run.ffcap", finished.events());
     Ok(())
 }
 ```
