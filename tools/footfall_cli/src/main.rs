@@ -459,9 +459,11 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
         return Ok(());
     }
     let style = if counts.missed() == 0 { GOOD } else { BAD };
+    let early = if counts.early == 0 { DIM } else { WARN };
     println!(
-        "  {GOOD}{} on time{GOOD:#} · {style}{} late · {} dropped · {} submitted late{style:#} · {DIM}{} skipped · {} unknown{DIM:#}",
+        "  {GOOD}{} on time{GOOD:#} · {early}{} early{early:#} · {style}{} late · {} dropped · {} submitted late{style:#} · {DIM}{} skipped · {} unknown{DIM:#}",
         format::count(counts.on_time),
+        format::count(counts.early),
         format::count(counts.late),
         format::count(counts.dropped),
         format::count(counts.submitted_late),
@@ -490,16 +492,25 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
     let intervals = pacing.intervals();
     if intervals.count() > 0 {
         println!(
-            "  shown every {} {DIM}(median){DIM:#}, p99 {} · {} stutters",
+            "  on screen for {} each {DIM}(median){DIM:#}, p99 {} · {} stutters",
             format::duration(intervals.median()),
             format::duration(intervals.p99()),
             pacing.stutters(),
         );
     }
+    if pacing.interval_breaks() > 0 {
+        let times = match pacing.interval_breaks() {
+            1 => String::from("once"),
+            breaks => format!("{} times", format::count(breaks)),
+        };
+        println!(
+            "  {DIM}the trace could not say what was on screen {times}; those intervals are left out{DIM:#}"
+        );
+    }
     let latency = pacing.latency();
     if latency.count() > 0 {
         println!(
-            "  from start of work to shown: median {}, p99 {}",
+            "  from frame begin to shown: median {}, p99 {}",
             format::duration(latency.median()),
             format::duration(latency.p99()),
         );
@@ -547,8 +558,8 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
     late.sort_by_key(|frame| core::cmp::Reverse(late_by(frame.outcome())));
     println!("\n{HEADING}Worst misses{HEADING:#}");
     println!(
-        "  {DIM}{:>7}  {:<14}  {:<14}  {:>10}  {:>10}  {:>14}{DIM:#}",
-        "frame", "outcome", "why", "CPU work", "GPU busy", "past deadline"
+        "  {DIM}{:>7}  {:<14}  {:<14}  {:>12}  {:>10}  {:>14}{DIM:#}",
+        "frame", "outcome", "why", "begin to end", "GPU busy", "past deadline"
     );
     for frame in late.iter().take(top) {
         let (outcome, why) = match frame.outcome() {
@@ -573,7 +584,7 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
             .and_then(|(deadline, work)| work.end().checked_sub(deadline))
             .map_or_else(|| String::from("-"), format::duration);
         println!(
-            "  {:>7}  {BAD}{outcome:<14}{BAD:#}  {why:<14}  {:>10}  {:>10}  {:>14}",
+            "  {:>7}  {BAD}{outcome:<14}{BAD:#}  {why:<14}  {:>12}  {:>10}  {:>14}",
             frame.number(),
             frame
                 .work()

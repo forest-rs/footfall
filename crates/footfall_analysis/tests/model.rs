@@ -1361,6 +1361,50 @@ fn pacing_says_which_frames_were_shown_on_time_and_why_not() {
 }
 
 #[test]
+fn presentation_intervals_run_across_drops_and_break_where_unknown() {
+    use footfall_analysis::Outcome;
+    use footfall_core::DropReason;
+    use footfall_core::FramePointKind::{Dropped, Presented, Target};
+    let mut recording = Recording::new(7);
+    recording.clock_sync(0, &HOST, 0);
+    let shown = |recording: &mut Recording, number, at| {
+        recording.frame_point(at, number, Presented, &HOST, Some(at));
+    };
+    shown(&mut recording, 1, 16_667);
+    // Frame 2 was superseded, so frame 1 stayed up for two refreshes.
+    recording.frame_point(20_000, 2, Dropped(DropReason::Superseded), &HOST, None);
+    shown(&mut recording, 3, 50_000);
+    shown(&mut recording, 4, 66_667);
+    // Nothing was reported for frame 5: what was on screen is not known.
+    recording.numbered_frame(5, 70_000, 75_000);
+    shown(&mut recording, 6, 100_000);
+    shown(&mut recording, 7, 116_667);
+    // Frame 8 is missing from the trace altogether.
+    shown(&mut recording, 9, 150_000);
+    shown(&mut recording, 10, 166_667);
+    // Frame 11 was meant for 200 ms and shown a refresh early.
+    recording.frame_point(170_000, 11, Target, &HOST, Some(200_000));
+    shown(&mut recording, 11, 183_333);
+    let trace = Trace::from_snapshot(&recording.snapshot(250_000));
+
+    let pacing = trace.pacing(us(1_000));
+    let intervals = pacing.intervals();
+    assert_eq!(
+        (intervals.count(), intervals.median(), intervals.max()),
+        (5, us(16_667), us(33_333)),
+        "1 to 3 across the drop, 3 to 4, 6 to 7, 9 to 10, and 10 to 11"
+    );
+    assert_eq!(pacing.interval_breaks(), 2, "at frame 5 and at frame 8");
+    assert_eq!(pacing.stutters(), 1);
+    assert_eq!(
+        pacing.frame(11).map(|frame| frame.outcome()),
+        Some(Outcome::Early { by: us(16_667) })
+    );
+    assert!(!Outcome::Early { by: us(1) }.missed());
+    assert_eq!(pacing.counts().early, 1);
+}
+
+#[test]
 fn late_frames_say_what_made_them_late() {
     use footfall_analysis::{LateCause, Outcome};
     use footfall_core::DropReason;

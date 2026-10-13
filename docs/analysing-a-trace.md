@@ -72,7 +72,8 @@ times, when it was shown, how long its GPU was busy, and an `Outcome`.
 
 | Outcome | Meaning |
 |---|---|
-| `OnTime` | Shown no more than `tolerance` after its target |
+| `OnTime` | Shown within `tolerance` of its target, either way |
+| `Early { by }` | Shown more than `tolerance` before its target: on screen sooner than the time it was made for |
 | `Late { by, cause }` | Shown after its target, and why |
 | `Dropped { reason }` | Never shown, and why |
 | `SubmittedLate { by }` | Submitted past its deadline, with no presentation time to confirm it |
@@ -109,10 +110,22 @@ misses frames it had time for.
 
 `Unknown` is not on time: without a target and a presentation time, a
 frame's pacing cannot be judged, and a trace with no presentation feedback
-says so rather than counting every frame as fine. `Pacing` adds the
-presentation intervals, stutters (intervals at least half again the
-median), latency from the start of work to presentation, and how late the
-late frames were. `frame_ids` turns an outcome into frames to compare:
+says so rather than counting every frame as fine. An early frame is not a
+miss, but it is not fine either: an animation drawn for its target shows
+the wrong moment.
+
+`Pacing::intervals` is how long each presented frame stayed on screen,
+from one presentation to the next. A frame known never to have been shown
+leaves the one before it on screen, so the interval runs across it and
+shows the stall. Where the trace cannot say what was on screen, because a
+frame reported neither a presentation nor a drop, a frame number is
+missing, or events were lost, the interval is left out and counted in
+`interval_breaks` rather than guessed. `Pacing` also gives stutters
+(intervals at least half again the median), how late the late frames were,
+and latency from each frame's begin marker to its presentation. A frame's
+`work` is the time between its markers, waits included, and its latency
+starts at its begin marker, not at the input it answers.
+`frame_ids` turns an outcome into frames to compare:
 
 ```rust
 use footfall::analysis::{Comparison, FrameId, GroupBy, Outcome, Population, Selection, Trace};

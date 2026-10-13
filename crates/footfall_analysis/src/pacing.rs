@@ -37,9 +37,16 @@ pub struct FramePacing {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub enum Outcome {
-    /// Shown at its target, within the tolerance.
+    /// Shown at its target, within the tolerance either way.
     OnTime,
-    /// Shown after its target.
+    /// Shown more than the tolerance before its target: on screen sooner
+    /// than the time it was made for, such as an animation drawn for its
+    /// target and shown a refresh early.
+    Early {
+        /// How much sooner than its target.
+        by: Duration,
+    },
+    /// Shown more than the tolerance after its target.
     Late {
         /// How much later than its target.
         by: Duration,
@@ -67,7 +74,7 @@ impl Outcome {
     /// Returns `true` for a frame shown late, submitted late, or dropped for
     /// a reason that is a miss, such as missing its deadline. A frame the
     /// program discarded or superseded, or that a later frame replaced, is
-    /// not a miss.
+    /// not a miss, and neither is one shown early.
     #[must_use]
     pub const fn missed(self) -> bool {
         match self {
@@ -115,7 +122,8 @@ impl FramePacing {
         self.frame
     }
 
-    /// Returns when the frame's CPU work ran, between its markers.
+    /// Returns the time between the frame's markers: its CPU work, and any
+    /// waiting the program did between them, such as for a drawable.
     #[must_use]
     pub const fn work(&self) -> Option<TimeRange> {
         self.work
@@ -202,8 +210,11 @@ impl FramePacing {
         self.outcome
     }
 
-    /// Returns the time from the start of the frame's CPU work to its
-    /// presentation: what a user waits.
+    /// Returns the time from the frame's begin marker to its presentation.
+    ///
+    /// This is how long the frame took to reach the screen once the program
+    /// started it, not how long a person waited for a response: input that
+    /// arrived before the frame began waited longer.
     #[must_use]
     pub fn latency(&self) -> Option<Duration> {
         Some(self.presented?.saturating_sub(self.work?.start()))
@@ -217,6 +228,8 @@ pub struct Pacing {
     frames: Vec<FramePacing>,
     tolerance: Duration,
     unplaced_points: u64,
+    intervals: Vec<Duration>,
+    interval_breaks: u64,
 }
 
 impl Pacing {
@@ -235,20 +248,22 @@ impl Pacing {
             .map(|index| &self.frames[index])
     }
 
-    /// Returns how late a frame could be shown and still count as on time.
+    /// Returns how far from its target a frame could be shown, either way,
+    /// and still count as on time.
     #[must_use]
     pub const fn tolerance(&self) -> Duration {
         self.tolerance
     }
 
-    /// Returns how many frames had each outcome: on time, late (and why),
-    /// dropped, skipped, submitted late, and unknown.
+    /// Returns how many frames had each outcome: on time, early, late (and
+    /// why), dropped, skipped, submitted late, and unknown.
     #[must_use]
     pub fn counts(&self) -> OutcomeCounts {
         let mut counts = OutcomeCounts::default();
         for frame in &self.frames {
             match frame.outcome {
                 Outcome::OnTime => counts.on_time += 1,
+                Outcome::Early { .. } => counts.early += 1,
                 Outcome::Late { cause, .. } => {
                     counts.late += 1;
                     let causes = &mut counts.late_causes;
@@ -341,18 +356,32 @@ impl Pacing {
         }))
     }
 
-    /// Returns the time between consecutive frames' presentations, in frame
-    /// order: steady at the refresh interval when pacing is smooth.
+    /// Returns how long each presented frame stayed on screen: the time
+    /// from one presentation to the next, in frame order. It is steady at the
+    /// refresh interval when pacing is smooth.
+    ///
+    /// A frame known never to have been shown, dropped or skipped, leaves
+    /// the frame before it on screen, so the interval runs on to the next
+    /// presentation and shows the stall. Where the trace cannot say what was
+    /// on screen, the interval is left out rather than guessed; see
+    /// [`interval_breaks`](Self::interval_breaks).
     #[must_use]
     pub fn intervals(&self) -> DurationStats {
-        DurationStats::of(self.intervals_iter())
+        DurationStats::of(self.intervals.iter().copied())
+    }
+
+    /// Returns how many times the run of presentations broke because the
+    /// trace could not say what was on screen: a frame with neither a
+    /// presentation nor a drop reported, a frame number missing from the
+    /// trace, or events lost between two presentations. The interval across
+    /// each break is left out of [`intervals`](Self::intervals).
+    #[must_use]
+    pub const fn interval_breaks(&self) -> u64 {
+        self.interval_breaks
     }
 
     fn intervals_iter(&self) -> impl Iterator<Item = Duration> + '_ {
-        self.frames
-            .windows(2)
-            .filter(|pair| pair[1].number == pair[0].number + 1)
-            .filter_map(|pair| Some(pair[1].presented?.saturating_sub(pair[0].presented?)))
+        self.intervals.iter().copied()
     }
 
     /// Returns how many presentation intervals were at least half again as
@@ -369,8 +398,8 @@ impl Pacing {
             .count()
     }
 
-    /// Returns the time from the start of each frame's CPU work to its
-    /// presentation.
+    /// Returns the time from each frame's begin marker to its presentation;
+    /// see [`FramePacing::latency`].
     #[must_use]
     pub fn latency(&self) -> DurationStats {
         DurationStats::of(self.frames.iter().filter_map(FramePacing::latency))
@@ -390,6 +419,8 @@ impl Pacing {
 pub struct OutcomeCounts {
     /// Frames shown at their targets.
     pub on_time: u64,
+    /// Frames shown before their targets.
+    pub early: u64,
     /// Frames shown after their targets.
     pub late: u64,
     /// The late frames, by what made them late.
@@ -409,7 +440,13 @@ impl OutcomeCounts {
     /// Returns how many frames were counted.
     #[must_use]
     pub const fn total(&self) -> u64 {
-        self.on_time + self.late + self.dropped + self.skipped + self.submitted_late + self.unknown
+        self.on_time
+            + self.early
+            + self.late
+            + self.dropped
+            + self.skipped
+            + self.submitted_late
+            + self.unknown
     }
 
     /// Returns how many frames were missed: late, submitted late, or
@@ -469,7 +506,8 @@ pub struct WastedWork {
     pub frames: u64,
     /// How many of them the trace holds the markers of.
     pub cpu_frames: u64,
-    /// The time between their markers, over the `cpu_frames` frames.
+    /// The time between their markers, over the `cpu_frames` frames; see
+    /// [`FramePacing::work`].
     pub cpu: Duration,
     /// How many of them had GPU work recorded.
     pub gpu_frames: u64,
@@ -563,7 +601,7 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
             raw
         })
         .collect();
-    let frames = raws
+    let frames: Vec<FramePacing> = raws
         .iter()
         .enumerate()
         .map(|(index, raw)| {
@@ -589,11 +627,51 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
             }
         })
         .collect();
+    let gaps: Vec<TimeRange> = trace.gaps().iter().map(crate::Gap::range).collect();
+    let (intervals, interval_breaks) = intervals(&frames, &gaps);
     Pacing {
         frames,
         tolerance,
         unplaced_points,
+        intervals,
+        interval_breaks,
     }
+}
+
+/// Returns how long each presented frame stayed on screen, and how many
+/// times the trace could not say; see [`Pacing::intervals`].
+fn intervals(frames: &[FramePacing], gaps: &[TimeRange]) -> (Vec<Duration>, u64) {
+    let mut intervals = Vec::new();
+    let mut breaks = 0;
+    // The frame examined last, and when the frame on screen was shown.
+    let mut before: Option<u64> = None;
+    let mut shown: Option<Duration> = None;
+    for frame in frames {
+        if before.is_some_and(|number| frame.number != number + 1) && shown.take().is_some() {
+            breaks += 1;
+        }
+        before = Some(frame.number);
+        match (frame.presented, frame.dropped) {
+            (Some(at), _) => {
+                if let Some(since) = shown {
+                    if gaps.iter().any(|gap| gap.overlaps(since, at)) {
+                        breaks += 1;
+                    } else {
+                        intervals.push(at.saturating_sub(since));
+                    }
+                }
+                shown = Some(at);
+            }
+            // Never shown: the frame before stays on screen.
+            (None, Some(_)) => {}
+            (None, None) => {
+                if shown.take().is_some() {
+                    breaks += 1;
+                }
+            }
+        }
+    }
+    (intervals, breaks)
 }
 
 /// Returns the time covered by at least one of the ranges on each timeline,
@@ -637,6 +715,11 @@ fn outcome(raw: &Raw, before: Option<&Raw>, tolerance: Duration) -> Outcome {
             None => Outcome::Unknown,
         };
     };
+    if presented.saturating_add(tolerance) < target {
+        return Outcome::Early {
+            by: target - presented,
+        };
+    }
     if presented <= target.saturating_add(tolerance) {
         return Outcome::OnTime;
     }
