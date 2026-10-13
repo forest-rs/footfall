@@ -61,6 +61,14 @@ and an answer's `Basis` counts converted spans, how far the farthest lay
 from a clock reading, and spans that could not be placed because their
 clock was never synced.
 
+Spans nest whatever order they are read back in, and a span placed past its
+clock's last reading, at the clock's nominal rate, moves when the next
+reading arrives; `Pushed::moved_spans` lists the spans a snapshot moved.
+So a trace built from a live session's windows ends up the same as one
+built from a single snapshot of the same events, provided each clock's
+readings arrive in tick order. `Converted::settled` says whether a
+conversion can still change.
+
 Queries cover every track unless narrowed: `on_threads` for the CPU,
 `on_timelines` or `on_timeline` for GPU work. A frame's GPU work usually
 runs while the CPU works on the next frame, so spans reported with a frame

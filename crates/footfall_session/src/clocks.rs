@@ -43,6 +43,7 @@ pub struct Converted {
     via: Option<ClockId>,
     between_syncs: bool,
     distance: u64,
+    settled: bool,
 }
 
 impl Converted {
@@ -74,6 +75,19 @@ impl Converted {
     #[must_use]
     pub const fn distance(&self) -> u64 {
         self.distance
+    }
+
+    /// Returns `true` when readings recorded later cannot change the
+    /// conversion: its clock, and any clock it went through, already has a
+    /// reading at or after the time. Otherwise the time lies past every
+    /// reading, extended at the nominal tick period, and the next reading
+    /// will place it better.
+    ///
+    /// This assumes each clock's readings are recorded in tick order, as a
+    /// clock read in passing is.
+    #[must_use]
+    pub const fn settled(&self) -> bool {
+        self.settled
     }
 }
 
@@ -231,16 +245,16 @@ impl Clocks {
         if !history.syncs.is_empty() {
             return Some(direct(history, ticks));
         }
-        let (pair_ticks, other, other_ticks, _) = history
-            .pairs
-            .iter()
-            .filter(|(_, other, ..)| {
-                self.clocks
-                    .get(other)
-                    .is_some_and(|other| !other.syncs.is_empty())
-            })
+        let usable = history.pairs.iter().filter(|(_, other, ..)| {
+            self.clocks
+                .get(other)
+                .is_some_and(|other| !other.syncs.is_empty())
+        });
+        let (pair_ticks, other, other_ticks, _) = usable
+            .clone()
             .min_by_key(|(pair_ticks, ..)| pair_ticks.abs_diff(ticks))
             .copied()?;
+        let paired_past = usable.map(|(pair_ticks, ..)| *pair_ticks).max() >= Some(ticks);
         let target = self.clocks.get(&other)?;
         let offset = signed_nanos(history.period, ticks, pair_ticks);
         let other_offset = nanos_to_ticks(target.period, offset);
@@ -250,6 +264,7 @@ impl Clocks {
             distance: converted
                 .distance
                 .max(u64::try_from(offset.unsigned_abs()).unwrap_or(u64::MAX)),
+            settled: converted.settled && paired_past,
             ..converted
         })
     }
@@ -280,6 +295,7 @@ fn direct(history: &History, ticks: u64) -> Converted {
             via: None,
             between_syncs: true,
             distance,
+            settled: true,
         };
     }
     let (sync_ticks, sync_nanos) = if after == 0 {
@@ -293,6 +309,8 @@ fn direct(history: &History, ticks: u64) -> Converted {
         via: None,
         between_syncs: false,
         distance: u64::try_from(offset.unsigned_abs()).unwrap_or(u64::MAX),
+        // Before the first sync, or at the last, later syncs come after it.
+        settled: after == 0 || offset == 0,
     }
 }
 
@@ -368,6 +386,10 @@ mod tests {
         assert_eq!(before.nanos(), 0, "1 ms before is the runtime's start");
         assert!(!before.between_syncs());
         assert_eq!(before.distance(), 1_000_000);
+        assert!(before.settled(), "later syncs come after it");
+        assert!(middle.settled());
+        let beyond = clocks.to_runtime(HOST, 48_000_024).expect("synced");
+        assert!(!beyond.settled(), "the next sync will place it better");
         assert!(clocks.to_runtime(GPU, 0).is_none(), "never recorded");
     }
 
@@ -394,6 +416,7 @@ mod tests {
         assert_eq!(converted.nanos(), 5_012_000);
         assert_eq!(converted.via(), Some(HOST));
         assert_eq!(converted.distance(), 12_000);
+        assert!(!converted.settled(), "past the pair and the sync");
     }
     #[test]
     fn forgetting_keeps_what_later_times_need() {

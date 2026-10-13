@@ -12,8 +12,8 @@ use crate::time::{TimeRange, nanos};
 use core::fmt;
 use core::time::Duration;
 use footfall_core::{
-    ContextId, CounterDescId, FlowId, FlowPhase, FramePointKind, InstrumentationLevel, MarkerKind,
-    MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, TimelineId,
+    ClockId, ContextId, CounterDescId, FlowId, FlowPhase, FramePointKind, InstrumentationLevel,
+    MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, TimelineId,
 };
 use footfall_runtime::{CounterKind, Drops, SnapshotMetadata};
 use footfall_session::{
@@ -65,6 +65,11 @@ pub struct Trace {
     /// Timeline spans whose clock has no path to the runtime's yet, with
     /// their event's sequence number, reporting thread, and time.
     unplaced: Vec<(u64, u64, Duration, Box<OwnedTimelineWork>)>,
+    /// Placed timeline spans whose times lie past their clock's last
+    /// reading, to convert again when more readings arrive; as `unplaced`.
+    provisional: Vec<(u64, u64, Duration, Box<OwnedTimelineWork>)>,
+    /// The clocks with readings since timeline spans were last placed.
+    recalibrated: HashSet<ClockId>,
     contexts: BTreeMap<ContextId, OwnedContextSnapshot>,
     span_index: HashMap<SpanId, (Lane, u32, Duration)>,
     begun: HashMap<ScopeToken, Begun>,
@@ -146,6 +151,7 @@ pub enum Continuity {
 pub struct Pushed {
     continuity: Continuity,
     spans: Vec<SpanId>,
+    moved: Vec<SpanId>,
     frames: Vec<FrameId>,
 }
 
@@ -161,6 +167,15 @@ impl Pushed {
     #[must_use]
     pub fn spans(&self) -> &[SpanId] {
         &self.spans
+    }
+
+    /// Returns the timeline spans placed by earlier snapshots that moved
+    /// because this one brought new readings of their clocks. They were
+    /// placed past their clock's last reading at the time, at its nominal
+    /// tick period, and the readings place them better.
+    #[must_use]
+    pub fn moved_spans(&self) -> &[SpanId] {
+        &self.moved
     }
 
     /// Returns the frames, passes, and transactions that ended in the
@@ -291,6 +306,7 @@ impl Trace {
                 Continuity::Continuous
             },
             spans: Vec::new(),
+            moved: Vec::new(),
             frames: Vec::new(),
         };
         let mut pending = new_gaps.iter().peekable();
@@ -303,6 +319,16 @@ impl Trace {
                 collecting = None;
             }
             self.clocks.observe(event);
+            match event.observation() {
+                OwnedObservation::ClockSync { clock } => {
+                    self.recalibrated.insert(clock.clock_id());
+                }
+                OwnedObservation::ClockPair { first, second } => {
+                    self.recalibrated.insert(first.clock_id());
+                    self.recalibrated.insert(second.clock_id());
+                }
+                _ => {}
+            }
             self.ingest(event, at, &mut pushed, &mut collecting);
             self.last_event_at = self.last_event_at.max(at);
         }
@@ -708,44 +734,85 @@ impl Trace {
     }
 
     /// Places the timeline spans whose clock now leads to the runtime's,
-    /// then nests each timeline's new spans with the spans already there.
+    /// moves the ones placed past their clock's last reading when new
+    /// readings arrived, then nests each timeline's new and moved spans with
+    /// the spans already there.
+    ///
+    /// So the same observations place the same way whether they arrived in
+    /// one snapshot or many, as long as each clock's readings arrive in tick
+    /// order.
     fn place_timeline_spans(&mut self, pushed: &mut Pushed) {
-        let waiting = core::mem::take(&mut self.unplaced);
-        let mut placed = BTreeMap::<TimelineId, Vec<Span>>::new();
-        for (sequence, thread_id, at, work) in waiting {
+        // Each timeline's spans to nest, and the earliest begin, new or old,
+        // among them.
+        let mut placed = BTreeMap::<TimelineId, (Duration, Vec<Span>)>::new();
+        let recalibrated = core::mem::take(&mut self.recalibrated);
+        if !recalibrated.is_empty() {
+            for (sequence, thread_id, at, work) in core::mem::take(&mut self.provisional) {
+                // Only new readings of its clock, or of the clock it was
+                // converted through, can move it.
+                let via = self
+                    .span(SpanId::new(sequence))
+                    .and_then(|span| span.placement)
+                    .and_then(|placement| placement.via);
+                if !recalibrated.contains(&work.begin().clock_id())
+                    && via.is_none_or(|via| !recalibrated.contains(&via))
+                {
+                    self.provisional.push((sequence, thread_id, at, work));
+                    continue;
+                }
+                let Some((span, settled)) = self.convert(sequence, thread_id, &work) else {
+                    continue;
+                };
+                let old = self.span(span.id).map(|old| (old.begin, old.end));
+                if let Some((old_begin, old_end)) = old
+                    && (old_begin, old_end) != (span.begin, span.end)
+                {
+                    if let Some(flow) = work.flow() {
+                        self.move_flow_step(flow, span.id, span.begin);
+                    }
+                    pushed.moved.push(span.id);
+                    let (from, spans) = placed
+                        .entry(work.timeline_id())
+                        .or_insert((old_begin, Vec::new()));
+                    *from = (*from).min(old_begin).min(span.begin);
+                    spans.push(span);
+                }
+                if !settled {
+                    self.provisional.push((sequence, thread_id, at, work));
+                }
+            }
+        }
+        for (sequence, thread_id, at, work) in core::mem::take(&mut self.unplaced) {
             match self.convert(sequence, thread_id, &work) {
-                Some(span) => {
+                Some((span, settled)) => {
+                    self.register(sequence, thread_id, &work, span.begin);
                     pushed.spans.push(span.id);
-                    placed.entry(work.timeline_id()).or_default().push(span);
+                    let (from, spans) = placed
+                        .entry(work.timeline_id())
+                        .or_insert((span.begin, Vec::new()));
+                    *from = (*from).min(span.begin);
+                    spans.push(span);
+                    if !settled {
+                        self.provisional.push((sequence, thread_id, at, work));
+                    }
                 }
                 None => self.unplaced.push((sequence, thread_id, at, work)),
             }
         }
-        for (timeline_id, spans) in placed {
-            self.nest(timeline_id, spans);
+        for (timeline_id, (from, spans)) in placed {
+            self.nest(timeline_id, from, spans);
         }
     }
 
-    /// Converts a timeline span's times to the runtime's clock, and records
-    /// its frame and flow, leaving its nesting to [`nest`](Self::nest).
-    /// Returns `None` while its clock does not yet lead to the runtime's.
-    fn convert(&mut self, sequence: u64, thread_id: u64, work: &OwnedTimelineWork) -> Option<Span> {
-        let clock = work.begin().clock_id();
-        let begin = self.clocks.to_runtime(clock, work.begin().ticks())?;
-        let end = self.clocks.to_runtime(clock, work.end())?;
-        let begin_at = nanos(begin.nanos());
-        let end_at = nanos(end.nanos()).max(begin_at);
+    /// Records a newly placed timeline span's frame and flow.
+    fn register(
+        &mut self,
+        sequence: u64,
+        thread_id: u64,
+        work: &OwnedTimelineWork,
+        begin_at: Duration,
+    ) {
         let id = SpanId::new(sequence);
-        let name = self.intern(work.name());
-        let timeline_id = work.timeline_id();
-        self.timelines.entry(timeline_id).or_insert_with(|| {
-            let mut track = Track::new(TrackKind::Timeline {
-                id: timeline_id,
-                kind: work.timeline_kind(),
-            });
-            track.name = Some(work.timeline_name().to_owned());
-            track
-        });
         if let Some(number) = work.frame() {
             self.frame_spans.entry(number).or_default().push(id);
         }
@@ -770,7 +837,49 @@ impl Trace {
                 steps.partition_point(|held| (held.at, held.sequence) <= (step.at, step.sequence));
             steps.insert(at, step);
         }
-        Some(Span {
+    }
+
+    /// Moves a flow's step through a timeline span to the span's new begin.
+    fn move_flow_step(&mut self, flow: FlowId, id: SpanId, begin_at: Duration) {
+        let Some(flow) = self.flows.get_mut(&flow) else {
+            return;
+        };
+        for step in &mut flow.steps {
+            if step.span == Some(id) {
+                step.at = begin_at;
+            }
+        }
+        flow.steps.sort_by_key(|step| (step.at, step.sequence));
+    }
+
+    /// Converts a timeline span's times to the runtime's clock, as a span
+    /// that [`nest`](Self::nest) places, and says whether later clock
+    /// readings could still move it. Returns `None` while its clock does not
+    /// yet lead to the runtime's.
+    fn convert(
+        &mut self,
+        sequence: u64,
+        thread_id: u64,
+        work: &OwnedTimelineWork,
+    ) -> Option<(Span, bool)> {
+        let clock = work.begin().clock_id();
+        let begin = self.clocks.to_runtime(clock, work.begin().ticks())?;
+        let end = self.clocks.to_runtime(clock, work.end())?;
+        let begin_at = nanos(begin.nanos());
+        let end_at = nanos(end.nanos()).max(begin_at);
+        let id = SpanId::new(sequence);
+        let name = self.intern(work.name());
+        let timeline_id = work.timeline_id();
+        self.timelines.entry(timeline_id).or_insert_with(|| {
+            let mut track = Track::new(TrackKind::Timeline {
+                id: timeline_id,
+                kind: work.timeline_kind(),
+            });
+            track.name = Some(work.timeline_name().to_owned());
+            track
+        });
+        let settled = begin.settled() && end.settled();
+        let span = Span {
             id,
             end_sequence: sequence,
             token: ScopeToken::INVALID,
@@ -793,37 +902,43 @@ impl Trace {
                 distance: nanos(begin.distance().max(end.distance())),
                 via: begin.via(),
             }),
-        })
+        };
+        Some((span, settled))
     }
 
-    /// Puts new spans on a timeline's track, each inside the deepest span
-    /// that contains it, whatever order they were reported in.
+    /// Puts new and moved spans on a timeline's track, each inside the
+    /// deepest span that contains it, whatever order they were reported in.
     ///
     /// Timelines report work when it is read back, often a child before the
-    /// span around it. So the spans already on the track that begin no
-    /// earlier than the earliest new one come off and are nested again with
-    /// the new ones; a new span can only contain spans that begin no earlier
-    /// than it does. Spans that begin earlier stay where they are.
-    fn nest(&mut self, timeline_id: TimelineId, mut spans: Vec<Span>) {
-        let Some(from) = spans.iter().map(|span| span.begin).min() else {
-            return;
-        };
+    /// span around it. So the spans already on the track that begin at or
+    /// after `from`, the earliest begin among the new spans and the moved
+    /// spans' old and new places, come off and are nested again with them; a
+    /// new span can only contain spans that begin no earlier than it does.
+    /// Spans that begin earlier stay where they are.
+    fn nest(&mut self, timeline_id: TimelineId, from: Duration, mut spans: Vec<Span>) {
         let Some(track) = self.timelines.get_mut(&timeline_id) else {
             return;
         };
+        let mut taken = Vec::new();
         for row in &mut track.rows {
-            spans.extend(row.take_from(from));
+            taken.extend(row.take_from(from));
         }
-        for span in &mut spans {
+        for span in &mut taken {
             // A parent that stays loses the time of the child taken from it;
             // the child gives it back if it nests there again.
-            if let Some(parent) = span.parent.take()
+            if let Some(parent) = span.parent
                 && let Some((_, depth, begin)) = self.span_index.get(&parent).copied()
                 && begin < from
                 && let Some(outer) = track.row_mut(depth).find_mut(begin, parent)
             {
                 outer.child_time = outer.child_time.saturating_sub(span.duration());
             }
+        }
+        // A moved span replaces its old place.
+        let moved: HashSet<SpanId> = spans.iter().map(|span| span.id).collect();
+        spans.extend(taken.into_iter().filter(|span| !moved.contains(&span.id)));
+        for span in &mut spans {
+            span.parent = None;
             span.depth = 0;
             span.child_time = Duration::ZERO;
         }
@@ -968,6 +1083,7 @@ impl Trace {
                 || frame_spans.contains_key(number)
         });
         self.unplaced.retain(|(_, _, at, _)| *at >= before);
+        self.provisional.retain(|(_, _, at, _)| *at >= before);
         self.clocks
             .forget_before(u64::try_from(before.as_nanos()).unwrap_or(u64::MAX));
     }
