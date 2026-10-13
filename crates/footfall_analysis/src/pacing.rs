@@ -503,7 +503,9 @@ impl Pacing {
     /// trace could not say what was on screen: a frame with neither a
     /// presentation nor a drop reported, a frame number missing from the
     /// trace, or events lost between two presentations. The interval across
-    /// each break is left out of [`intervals`](Self::intervals).
+    /// each break is left out of [`intervals`](Self::intervals). Frames
+    /// still waiting for their reports when the trace ends are not a break:
+    /// no presentation after them is left out.
     #[must_use]
     pub const fn interval_breaks(&self) -> u64 {
         self.interval_breaks
@@ -829,14 +831,19 @@ fn intervals(frames: &[FramePacing], gaps: &[TimeRange]) -> (Vec<Duration>, u64)
     // The frame examined last, and when the frame on screen was shown.
     let mut before: Option<FrameNumber> = None;
     let mut shown: Option<Duration> = None;
+    // Whether what was on screen stopped being known. It is a break once a
+    // later presentation shows an interval was left out: frames still in
+    // flight when the trace ends leave nothing out.
+    let mut broken = false;
     for frame in frames {
         if before.is_some_and(|number| number.stream() != frame.number.stream()) {
             // Another stream's frames, such as another window's.
             shown = None;
+            broken = false;
         } else if before.is_some_and(|number| frame.number.previous() != Some(number))
             && shown.take().is_some()
         {
-            breaks += 1;
+            broken = true;
         }
         before = Some(frame.number);
         match (frame.presented, frame.dropped) {
@@ -847,14 +854,17 @@ fn intervals(frames: &[FramePacing], gaps: &[TimeRange]) -> (Vec<Duration>, u64)
                     } else {
                         intervals.push(at.saturating_sub(since));
                     }
+                } else if broken {
+                    breaks += 1;
                 }
+                broken = false;
                 shown = Some(at);
             }
             // Never shown: the frame before stays on screen.
             (None, Some(_)) => {}
             (None, None) => {
                 if shown.take().is_some() {
-                    breaks += 1;
+                    broken = true;
                 }
             }
         }
