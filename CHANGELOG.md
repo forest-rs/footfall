@@ -66,7 +66,10 @@ The first release.
   capture files. `CaptureRecorder` records a program's own runtime to a
   capture as it runs and says what it wrote when it finishes, and
   `CaptureReader::join` reads a whole capture as one snapshot, saying what
-  it could not join.
+  it could not join. Captures stay readable by later releases at the same
+  protocol major version, or fail with an `IncompatibleVersion` naming the
+  version that wrote them; captures recorded by real programs are tested
+  with every change.
 - `footfall_session_wtransport`: serve runtimes to local tools, which find
   every producer without configuration, then fetch snapshots or subscribe
   to windows of changes. Graceful shutdown delivers everything recorded.

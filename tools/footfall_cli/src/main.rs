@@ -275,8 +275,15 @@ async fn record(path: &Path, session: Option<&str>, interval: Duration) -> Resul
 
 /// Reads every window of a capture joined into one snapshot, warning about
 /// what could not be joined.
+/// Opens the capture at `path`, naming it in any error.
+fn open_capture(path: &Path) -> Result<CaptureReader<File>> {
+    File::open(path)
+        .and_then(CaptureReader::new)
+        .map_err(|error| format!("{}: {error}", path.display()).into())
+}
+
 fn read_joined(path: &Path) -> Result<OwnedSnapshot> {
-    let joined = CaptureReader::new(File::open(path)?)?
+    let joined = open_capture(path)?
         .join()
         .map_err(|error| format!("{}: {error}", path.display()))?;
     warn_incomplete(path, joined.truncated().is_some(), joined.skipped());
@@ -354,7 +361,7 @@ fn summary(path: &Path, budget_ms: Option<f64>) -> Result<()> {
 /// Reads every window of a capture into a trace of its first runtime
 /// instance, warning about what could not be added.
 fn read_trace(path: &Path) -> Result<Trace> {
-    let captured = Trace::from_capture(CaptureReader::new(File::open(path)?)?)
+    let captured = Trace::from_capture(open_capture(path)?)
         .map_err(|error| format!("{}: {error}", path.display()))?;
     warn_incomplete(path, captured.truncated().is_some(), captured.skipped());
     Ok(captured.into_trace())

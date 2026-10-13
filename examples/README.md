@@ -8,6 +8,7 @@ crate; run one with `cargo run -p footfall_examples --bin <name>`, and add
 |---|---|
 | [`quickstart`](src/bin/quickstart.rs) | Instrument a loop, read the capture back, summarize it, and write a trace for Perfetto. Start here. |
 | [`demo_app`](src/bin/demo_app.rs) | A fake renderer with worker threads, varying costs, and the occasional slow frame, serving its capture to local tools until Ctrl-C. |
+| [`record_demo`](src/bin/record_demo.rs) | The fake renderer, recorded to a capture file in-process with `CaptureRecorder`, for a fixed number of frames. |
 | [`attach`](src/bin/attach.rs) | The smallest useful tool: find a session, subscribe, and print each window's frames. Read this one for the client API. |
 | [`tracing_bridge`](src/bin/tracing_bridge.rs) | Plain `tracing` spans and events, captured by Footfall without changing them. |
 | [`tracy_live`](src/bin/tracy_live.rs) | The demo renderer shown live in Tracy 0.14, with Footfall capturing the same emissions. |

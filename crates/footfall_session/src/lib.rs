@@ -146,6 +146,78 @@ impl ProtocolVersion {
     }
 }
 
+/// Data produced at a protocol version this crate cannot decode.
+///
+/// Capture readers and the codec return it inside the [`std::io::Error`]
+/// they fail with, of kind `InvalidData`, so a tool can tell a capture from
+/// an incompatible Footfall apart from a damaged one, and say which version
+/// would read it:
+///
+/// ```
+/// use footfall_session::IncompatibleVersion;
+/// use footfall_session::capture::CaptureReader;
+///
+/// // A capture header from a protocol 2.0 producer.
+/// let bytes = b"FFALLCAP\x02\x00\x00\x00";
+/// let Err(error) = CaptureReader::new(&bytes[..]) else {
+///     panic!("this reader speaks 1.0");
+/// };
+/// let incompatible = IncompatibleVersion::of(&error).expect("not damaged");
+/// assert_eq!(incompatible.produced().major(), 2);
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IncompatibleVersion {
+    produced: ProtocolVersion,
+    supported: ProtocolVersion,
+}
+
+impl IncompatibleVersion {
+    /// Returns the version the data was produced at.
+    #[must_use]
+    pub const fn produced(&self) -> ProtocolVersion {
+        self.produced
+    }
+
+    /// Returns the version this crate speaks, [`PROTOCOL_VERSION`].
+    #[must_use]
+    pub const fn supported(&self) -> ProtocolVersion {
+        self.supported
+    }
+
+    /// Returns the incompatibility `error` reports, if that is why it
+    /// failed.
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub fn of(error: &std::io::Error) -> Option<&Self> {
+        error.get_ref()?.downcast_ref()
+    }
+
+    /// The error for data produced at `produced`.
+    #[cfg(feature = "std")]
+    pub(crate) fn error(produced: ProtocolVersion) -> std::io::Error {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            Self {
+                produced,
+                supported: PROTOCOL_VERSION,
+            },
+        )
+    }
+}
+
+impl core::fmt::Display for IncompatibleVersion {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            formatter,
+            "produced at session protocol {}, which this reader ({}) cannot decode; \
+             a Footfall that speaks {} can",
+            self.produced, self.supported, self.produced
+        )
+    }
+}
+
+impl core::error::Error for IncompatibleVersion {}
+
 #[cfg(test)]
 mod tests {
     use super::ProtocolVersion;
