@@ -55,10 +55,11 @@ The document holds:
   runtime instance (hex), and the producer's Footfall version.
 - `tolerance_ns`, `counts` (with `late_causes` and `late_support`),
   `deadlines` (how many frames were submitted by their deadlines, `met`,
-  and after, `missed`), `presentation_basis`, `intervals` (with `breaks` and `stutters`),
-  `lateness`, `latency`, `prediction_error` for the `predicted`, `target`,
-  and `expected` times, `wasted`, and `unplaced_points`: the figures the
-  text report prints.
+  and after, `missed`), `presentation_basis`, `intervals` (with `breaks`
+  and `stutters`, and the same for each frame stream in `streams`, since
+  windows can run at different rates), `lateness`, `latency`,
+  `prediction_error` for the `predicted`, `target`, and `expected` times,
+  `wasted`, and `unplaced_points`: the figures the text report prints.
 - `frames`, every numbered frame in order: its `label` as the text report
   writes it, `stream`, `generation`, and `number`; `frame_id`, the
   sequence of its begin marker, when it has one; `outcome` (`on_time`,

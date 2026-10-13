@@ -1777,10 +1777,11 @@ fn frame_streams_keep_each_windows_frames_apart() {
     let mut recording = Recording::new(7);
     recording.clock_sync(0, &HOST, 0);
     // Both windows number their frames from 1: the main window at 60 Hz,
-    // the tools window at 30 Hz, each shown on time.
+    // the tools window at 30 Hz, each shown on time. The main window shows
+    // more frames, so pooled together its intervals would be the median.
     let mut ids = Vec::new();
-    for (stream, period, start) in [(main, 16_667, 0), (tools, 33_333, 100_000)] {
-        for number in 1..=3_u64 {
+    for (stream, period, start, frames) in [(main, 16_667, 0, 5), (tools, 33_333, 100_000, 3)] {
+        for number in 1..=frames {
             let frame = stream.frame(number);
             let begin = start + (number - 1) * period;
             let mark = |recording: &mut Recording, at, phase| {
@@ -1812,7 +1813,7 @@ fn frame_streams_keep_each_windows_frames_apart() {
     );
     assert_eq!(
         trace.frame_numbered(tools.frame(1)).map(|frame| frame.id()),
-        Some(FrameId::new(ids[3]))
+        Some(FrameId::new(ids[5]))
     );
     assert!(
         trace.frame_numbered(1).is_none(),
@@ -1820,9 +1821,9 @@ fn frame_streams_keep_each_windows_frames_apart() {
     );
 
     let pacing = trace.pacing(us(1_000));
-    assert_eq!(pacing.frames().len(), 6);
+    assert_eq!(pacing.frames().len(), 8);
     assert_eq!(pacing.streams(), [main, tools]);
-    assert_eq!(pacing.counts().on_time, 6);
+    assert_eq!(pacing.counts().on_time, 8);
     assert_eq!(
         pacing
             .frame(tools.frame(2))
@@ -1836,7 +1837,7 @@ fn frame_streams_keep_each_windows_frames_apart() {
             main_only.intervals().count(),
             main_only.intervals().median()
         ),
-        (2, us(16_667))
+        (4, us(16_667))
     );
     let tools_only = pacing.in_stream(tools);
     assert_eq!(
@@ -1846,6 +1847,12 @@ fn frame_streams_keep_each_windows_frames_apart() {
         ),
         (2, us(33_333))
     );
+    assert_eq!(
+        pacing.stutters(),
+        0,
+        "each window is steady at its own rate, though 33 ms is twice the pooled median"
+    );
+    assert_eq!(pacing.intervals().median(), us(16_667));
     assert_eq!(
         (
             pacing.unplaced_points(),
