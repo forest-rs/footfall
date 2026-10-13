@@ -15,6 +15,8 @@ description = "The footfall command: record running sessions, watch them live, a
 [[bin]]
 name = "footfall"
 path = "src/main.rs"
+# Its docs would overwrite the `footfall` library's.
+doc = false
 
 [dependencies]
 anstream = "1.0.0"
