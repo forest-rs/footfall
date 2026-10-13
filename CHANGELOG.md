@@ -94,6 +94,6 @@ The first release.
 
 - `footfall_cli`, the `footfall` command: `top` watches a running session
   live or replays a capture, `record` saves a session to a capture file,
-  `analyze` summarizes a capture, explains its slow frames and its frame
-  pacing, compares two runs, or shows one span, and `export` writes a
-  Chrome trace.
+  `analyze` summarizes a capture (scopes, timelines, counters, and
+  histograms), explains its slow frames and its frame pacing, compares two
+  runs, or shows one span, and `export` writes a Chrome trace.

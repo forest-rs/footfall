@@ -56,6 +56,15 @@ pub(crate) fn bytes(bytes: u64) -> String {
 
 /// Formats a count with thousands separators: `1,234,567`.
 #[must_use]
+/// `1 frame`, `2 frames`, `1,000 frames`.
+pub(crate) fn frames(frames: u64) -> String {
+    if frames == 1 {
+        String::from("1 frame")
+    } else {
+        format!("{} frames", count(frames))
+    }
+}
+
 pub(crate) fn count(count: u64) -> String {
     let digits = count.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);

@@ -186,6 +186,43 @@ pub(crate) fn counters(snapshot: &OwnedSnapshot, limit: usize) {
     }
 }
 
+/// Prints each histogram's samples: how many, their mean, and their range,
+/// most samples first.
+pub(crate) fn histograms(snapshot: &OwnedSnapshot, limit: usize) {
+    println!("{HEADING}Histograms{HEADING:#}");
+    // Name to unit, count, sum, min, and max, across contexts.
+    let mut totals = BTreeMap::<&str, (footfall::Unit, u64, u64, u64, u64)>::new();
+    for histogram in snapshot.histograms().iter().filter(|h| h.count() > 0) {
+        let entry = totals
+            .entry(histogram.name())
+            .or_insert((histogram.unit(), 0, 0, u64::MAX, 0));
+        entry.1 += histogram.count();
+        entry.2 = entry.2.saturating_add(histogram.sum());
+        entry.3 = entry.3.min(histogram.min());
+        entry.4 = entry.4.max(histogram.max());
+    }
+    if totals.is_empty() {
+        println!("  {DIM}no histograms{DIM:#}");
+        return;
+    }
+    let mut rows: Vec<_> = totals.into_iter().collect();
+    rows.sort_by_key(|(_, (_, count, ..))| core::cmp::Reverse(*count));
+    let width = rows.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+    println!(
+        "  {DIM}{:width$}  {:>8}  {:>10}  {:>10}  {:>10}{DIM:#}",
+        "name", "samples", "mean", "min", "max"
+    );
+    for (name, (unit, count, sum, min, max)) in rows.into_iter().take(limit) {
+        println!(
+            "  {NAME}{name:width$}{NAME:#}  {:>8}  {:>10}  {:>10}  {:>10}",
+            format::count(count),
+            format::value(unit, sum / count),
+            format::value(unit, min),
+            format::value(unit, max),
+        );
+    }
+}
+
 /// Prints what the snapshot could not hold, or that nothing was lost.
 pub(crate) fn losses(snapshot: &OwnedSnapshot) {
     let drops = snapshot.drops();
