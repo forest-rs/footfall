@@ -19,18 +19,51 @@
 //! - counters and gauges become Tracy plots
 //! - frame, pass, and transaction markers become Tracy frames
 //! - resources become Tracy messages
+//! - timelines, such as GPU queues, become Tracy GPU contexts, each its own
+//!   row, with their spans as GPU zones; see [Timelines](#timelines)
+//! - a frame's target and presented [frame points](footfall_core::FramePoint)
+//!   become a `frame lateness (ms)` plot, and dropped frames messages
 //!
 //! Flow events are currently ignored by this backend because Tracy does not expose a strong native
 //! equivalent to Perfetto-style causal links.
+//!
+//! # Timelines
+//!
+//! Each timeline and clock becomes one Tracy GPU context, named after the
+//! timeline and made when its first span can be placed: when its clock has a
+//! [`clock_sync`](footfall_core::clock_sync), or a
+//! [`clock_pair`](footfall_core::clock_pair) with a clock that has one.
+//! Spans before that are left out, and Tracy shows a message saying so. Every
+//! later sync re-syncs the context, which keeps it in step with a clock that
+//! drifts.
+//!
+//! Tracy builds a GPU context's zones from the order they begin and end, but
+//! Footfall reports spans only once they have finished. So the backend holds
+//! a timeline's spans until the CPU frame they were reported in ends, then
+//! sends them nested by containment, in any order they were reported. A
+//! program that ends no frames can call [`TracyBackend::flush_timelines`].
+//! [`TracyBackend::timeline_counts`] says what happened to every span.
+//!
+//! Some things Tracy cannot show. Tracy stamps each zone with the CPU time it
+//! was sent, so its CPU-to-GPU delay is the time to read the work back, not
+//! the time from submitting it. Tracy has no flows, so a span's
+//! [`after_flow`](footfall_core::TimelineSpan::after_flow) is not shown. And
+//! Footfall does not know which GPU API ran the work, so the context's type
+//! is left unset.
 //!
 //! A [`TracyBackend`] can install itself as the process-wide backend with
 //! [`TracyBackend::install_global`], or it can be composed through an adapter such as
 //! `footfall_fanout`.
 
+mod timeline;
+
+pub use timeline::TimelineCounts;
+
 use footfall_core::{
-    Args, Backend, Context, ContextHandle, CounterDesc, CounterDescId, EventDesc,
-    InstallBackendError, LabelValue, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc,
-    ScopeDesc, ScopeDescId, ScopeToken, SourceLocation, Unit, install_backend,
+    Args, Backend, ClockReading, Context, ContextHandle, CounterDesc, CounterDescId, EventDesc,
+    FramePoint, InstallBackendError, LabelValue, MarkerKind, MarkerPhase, ResourceId,
+    ResourceKindDesc, ScopeDesc, ScopeDescId, ScopeToken, SourceLocation, TimelineSpan, Unit,
+    install_backend,
 };
 use std::{
     cell::RefCell,
@@ -42,6 +75,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
+use timeline::{PointOutcome, Timelines};
 use tracy_client::{
     Client, Frame, FrameName, PlotConfiguration, PlotFormat, PlotName, Span, SpanLocation,
 };
@@ -61,6 +95,7 @@ pub struct TracyBackend {
     /// Rendered text of each registered context, attached to zones and
     /// messages.
     contexts: Mutex<HashMap<ContextHandle, String>>,
+    timelines: Mutex<Timelines>,
 }
 
 impl TracyBackend {
@@ -81,6 +116,7 @@ impl TracyBackend {
             counters: Mutex::new(CounterState::default()),
             locations: Mutex::new(HashMap::new()),
             contexts: Mutex::new(HashMap::new()),
+            timelines: Mutex::new(Timelines::default()),
         }
     }
 
@@ -133,6 +169,30 @@ impl TracyBackend {
     #[must_use]
     pub fn is_connected(&self) -> bool {
         Client::is_connected()
+    }
+
+    /// Sends every timeline span still held, without waiting for the end of
+    /// the CPU frame they were reported in.
+    ///
+    /// A program that marks frames needs no call; spans are sent when each
+    /// frame ends, and when the backend is dropped. Call it in one that marks
+    /// none, after reporting a batch of spans: spans sent together are nested
+    /// with each other, so send a span's enclosing work in the same batch.
+    pub fn flush_timelines(&self) {
+        self.lock_timelines().flush();
+    }
+
+    /// Returns what the backend did with timeline spans: how many it sent to
+    /// Tracy, holds, and left out, and why.
+    #[must_use]
+    pub fn timeline_counts(&self) -> TimelineCounts {
+        self.lock_timelines().counts()
+    }
+
+    fn lock_timelines(&self) -> std::sync::MutexGuard<'_, Timelines> {
+        self.timelines
+            .lock()
+            .expect("tracy timeline mutex should not be poisoned")
     }
 
     /// Returns `true` when the Tracy client runtime is active.
@@ -269,6 +329,9 @@ impl TracyBackend {
                 OPEN_FRAMES.with(|frames| {
                     frames.borrow_mut().remove(&(self.key(), kind));
                 });
+                if kind == MarkerKind::Frame {
+                    self.flush_timelines();
+                }
             }
         }
     }
@@ -283,6 +346,14 @@ impl TracyBackend {
     ) {
         let message = resource_message(verb, desc, resource_id, &self.context_text(context), size);
         self.client.message(&message, self.callstack_depth);
+    }
+}
+
+impl Drop for TracyBackend {
+    fn drop(&mut self) {
+        if let Ok(timelines) = self.timelines.get_mut() {
+            timelines.flush();
+        }
     }
 }
 
@@ -416,6 +487,49 @@ impl Backend for TracyBackend {
 
     // Flows are ignored: Tracy has no native causal-link primitive.
 
+    fn clock_sync(&self, reading: ClockReading) {
+        self.lock_timelines().clock_sync(reading);
+    }
+
+    fn clock_pair(&self, first: ClockReading, second: ClockReading) {
+        self.lock_timelines().clock_pair(first, second);
+    }
+
+    fn timeline_span(&self, span: &TimelineSpan) {
+        self.register_current_thread();
+        let message = self.lock_timelines().timeline_span(&self.client, span);
+        if let Some(message) = message {
+            self.client.message(&message, 0);
+        }
+    }
+
+    fn frame_point(&self, point: &FramePoint) {
+        self.register_current_thread();
+        let outcome = self.lock_timelines().frame_point(point);
+        match outcome {
+            PointOutcome::None => {}
+            PointOutcome::Lateness(nanos) => {
+                let plot = *LATENESS_PLOT.get_or_init(|| {
+                    let plot = PlotName::new_leak(String::from("frame lateness (ms)"));
+                    self.client.plot_config(
+                        plot,
+                        PlotConfiguration::default().format(PlotFormat::Number),
+                    );
+                    plot
+                });
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "a plot shows lateness to well under a nanosecond"
+                )]
+                self.client.plot(plot, nanos as f64 / 1_000_000.0);
+            }
+            PointOutcome::Dropped(number) => {
+                self.client
+                    .message(&format!("frame {number} dropped"), self.callstack_depth);
+            }
+        }
+    }
+
     fn message(&self, desc: &'static EventDesc, context: ContextHandle, text: &str, args: &Args) {
         self.register_current_thread();
         let message = message_text(desc, &self.context_text(context), text, args);
@@ -448,6 +562,7 @@ static FRAME_NAME: OnceLock<FrameName> = OnceLock::new();
 static TRANSACTION_NAME: OnceLock<FrameName> = OnceLock::new();
 static PASS_NAME: OnceLock<FrameName> = OnceLock::new();
 static MARKER_NAME: OnceLock<FrameName> = OnceLock::new();
+static LATENESS_PLOT: OnceLock<PlotName> = OnceLock::new();
 fn resource_message(
     verb: &str,
     desc: &'static ResourceKindDesc,

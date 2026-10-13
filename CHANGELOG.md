@@ -70,5 +70,7 @@ The first release.
 
 - `footfall_tracing`: existing `tracing` spans and events, captured unchanged.
 - `footfall_tracy`: a live Tracy backend, for the Tracy 0.14 profiler.
+  Timelines become Tracy GPU contexts, synced from Footfall's clock syncs
+  and pairs, and frame points a plot of how late each frame was shown.
 - `footfall_fanout`: one backend that feeds two.
 - `footfall_memory`: scratch-buffer and cache metrics built on counters.

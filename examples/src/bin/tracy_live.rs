@@ -4,8 +4,10 @@
 //! The demo renderer, shown live in Tracy while Footfall captures it too.
 //!
 //! Start the Tracy 0.14 profiler and connect to this program: scopes appear as
-//! zones, counters as plots, and frame markers as frames. A fan-out backend
-//! sends every emission to both Tracy and the runtime.
+//! zones, counters as plots, and frame markers as frames. The demo's pretend
+//! GPU appears as a GPU context row, `graphics`, and how late each frame was
+//! shown as the `frame lateness (ms)` plot. A fan-out backend sends every
+//! emission to both Tracy and the runtime.
 //!
 //! ```sh
 //! cargo run -p footfall_examples --bin tracy_live
@@ -70,9 +72,23 @@ fn main() {
     report::frames(trace.frames(), 1_000_000 / u64::from(args.fps.max(1)));
     println!();
     report::spans(
-        "Where the time went",
-        &trace.spans().group_by(GroupBy::Name).table(),
+        "Where the time went on the CPU",
+        &trace.spans().on_threads().group_by(GroupBy::Name).table(),
         8,
+    );
+    let gpu = tracy.timeline_counts();
+    println!(
+        "\n{HEADING}Sent to Tracy's GPU rows{HEADING:#} {} zones on {} \
+         {DIM}· {} held · {} left out before their clock was synced · {} moved into order{DIM:#}",
+        gpu.sent,
+        if gpu.contexts == 1 {
+            String::from("1 context")
+        } else {
+            format!("{} contexts", gpu.contexts)
+        },
+        gpu.held,
+        gpu.unplaced,
+        gpu.moved,
     );
 }
 
