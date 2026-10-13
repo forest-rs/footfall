@@ -118,6 +118,9 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Span::styled(" · ", DIM),
                 missed,
             ];
+            if counts.early > 0 {
+                line.push(Span::from(format!(" · {} early", counts.early)).fg(SLOW));
+            }
             if counts.skipped > 0 {
                 line.push(Span::styled(format!(" · {} skipped", counts.skipped), DIM));
             }
