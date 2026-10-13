@@ -498,6 +498,15 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize) -> Result<()> {
             pacing.stutters(),
         );
     }
+    let basis = pacing.presentation_basis();
+    if basis.estimated > 0 || basis.unknown > 0 {
+        println!(
+            "  {DIM}presentation times: {} observed · {} estimated · {} without a basis{DIM:#}",
+            format::count(basis.observed),
+            format::count(basis.estimated),
+            format::count(basis.unknown),
+        );
+    }
     if pacing.interval_breaks() > 0 {
         let times = match pacing.interval_breaks() {
             1 => String::from("once"),
@@ -630,6 +639,7 @@ fn drop_reason(reason: DropReason) -> &'static str {
         DropReason::SurfaceUnavailable => "no surface",
         DropReason::OutputUnavailable => "no display",
         DropReason::Replaced => "replaced",
+        DropReason::NotPresented => "not presented",
         _ => "-",
     }
 }

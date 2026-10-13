@@ -1338,6 +1338,30 @@ impl Recording {
         clock: &'static ClockDesc,
         time: Option<u64>,
     ) {
+        self.frame_point_with(
+            at,
+            number,
+            kind,
+            clock,
+            time,
+            footfall_core::TimingBasis::Unknown,
+            Args::none(),
+        );
+    }
+
+    /// Records a frame point as [`frame_point`](Self::frame_point) does,
+    /// with a timing basis and args.
+    #[expect(clippy::too_many_arguments, reason = "a test helper")]
+    fn frame_point_with(
+        &mut self,
+        at: u64,
+        number: impl Into<FrameNumber>,
+        kind: footfall_core::FramePointKind,
+        clock: &'static ClockDesc,
+        time: Option<u64>,
+        basis: footfall_core::TimingBasis,
+        args: Args,
+    ) {
         self.record(
             at,
             MAIN,
@@ -1351,6 +1375,8 @@ impl Recording {
                         TickPeriod::NANOSECOND,
                     ))
                 }),
+                basis,
+                args,
             },
         );
     }
@@ -1758,4 +1784,97 @@ fn frame_streams_keep_each_windows_frames_apart() {
     );
     assert_eq!(main.frame(1).to_string(), "1:1");
     assert_eq!(FrameNumber::from(1).to_string(), "1");
+}
+
+#[test]
+fn frame_points_say_how_their_times_were_known_and_what_the_scheduler_knew() {
+    use footfall_analysis::Outcome;
+    use footfall_core::FramePointKind::{Deadline, Dropped, Presented, Sampled, Submitted, Target};
+    use footfall_core::{DropReason, TimingBasis};
+    let mut recording = Recording::new(7);
+    recording.clock_sync(0, &HOST, 0);
+    // Frame 1: its CPU work ended before the deadline, but it was submitted
+    // after it; the display observed when it was shown, late.
+    recording.numbered_frame(1, 0, 4_000);
+    recording.frame_point_with(
+        4_000,
+        1,
+        Deadline,
+        &HOST,
+        Some(5_000),
+        TimingBasis::Unknown,
+        Args::none()
+            .with("pipeline_depth", 2_u32)
+            .with("safety_margin_ns", 500_000_u64),
+    );
+    recording.frame_point(4_000, 1, Target, &HOST, Some(16_667));
+    recording.frame_point(4_000, 1, Sampled, &HOST, Some(16_667));
+    recording.frame_point_with(
+        6_000,
+        1,
+        Submitted,
+        &HOST,
+        Some(6_000),
+        TimingBasis::Observed,
+        Args::none(),
+    );
+    recording.frame_point_with(
+        40_000,
+        1,
+        Presented,
+        &HOST,
+        Some(33_333),
+        TimingBasis::Observed,
+        Args::none(),
+    );
+    // Frame 2: shown at a time assumed from the refresh rate.
+    recording.numbered_frame(2, 16_667, 20_000);
+    recording.frame_point(20_000, 2, Target, &HOST, Some(50_000));
+    recording.frame_point_with(
+        60_000,
+        2,
+        Presented,
+        &HOST,
+        Some(50_000),
+        TimingBasis::Estimated,
+        Args::none(),
+    );
+    // Frame 3: the platform did not present it and did not say why.
+    recording.numbered_frame(3, 33_333, 36_000);
+    recording.frame_point(70_000, 3, Dropped(DropReason::NotPresented), &HOST, None);
+    let trace = Trace::from_snapshot(&recording.snapshot(100_000));
+
+    let pacing = trace.pacing(us(1_000));
+    let first = pacing.frame(1).expect("frame 1");
+    assert_eq!(first.submitted(), Some(us(6_000)));
+    assert_eq!(first.sampled(), Some(us(16_667)));
+    assert_eq!(
+        first.outcome(),
+        Outcome::Late {
+            by: us(16_666),
+            cause: footfall_analysis::LateCause::MissedDeadline,
+        },
+        "submitted after the deadline, though its work ended before it"
+    );
+    assert_eq!(first.basis(Presented), TimingBasis::Observed);
+    assert_eq!(first.basis(Target), TimingBasis::Unknown);
+    let plan: Vec<_> = first
+        .args(Deadline)
+        .iter()
+        .map(|arg| arg.key().to_owned())
+        .collect();
+    assert_eq!(plan, ["pipeline_depth", "safety_margin_ns"]);
+    assert!(first.args(Presented).is_empty());
+    assert_eq!(
+        pacing.frame(2).map(|frame| frame.basis(Presented)),
+        Some(TimingBasis::Estimated)
+    );
+    assert!(
+        pacing
+            .frame(3)
+            .is_some_and(|frame| frame.outcome().missed()),
+        "not presented without a reason is a miss"
+    );
+    let basis = pacing.presentation_basis();
+    assert_eq!((basis.observed, basis.estimated, basis.unknown), (1, 1, 0));
 }

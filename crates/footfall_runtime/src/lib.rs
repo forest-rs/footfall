@@ -50,7 +50,8 @@ use footfall_core::{
     CounterDescId, EventDesc, EventDescId, FlowId, FlowPhase, FrameNumber, FramePoint,
     FramePointKind, InstallBackendError, InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId,
     ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, ScopeToken, SourceLocation,
-    TickPeriod, TimelineId, TimelineKind, TimelineSpan, Unit, install_backend, set_max_level,
+    TickPeriod, TimelineId, TimelineKind, TimelineSpan, TimingBasis, Unit, install_backend,
+    set_max_level,
 };
 use std::{
     boxed::Box,
@@ -2285,6 +2286,10 @@ pub enum Observation {
         kind: FramePointKind,
         /// When, as a reading of another clock; `None` for a dropped frame.
         time: Option<ClockTicks>,
+        /// How the recorder came by the time.
+        basis: TimingBasis,
+        /// What the recorder knew about the frame at this point.
+        args: Args,
     },
 }
 
@@ -3034,6 +3039,8 @@ impl Backend for Runtime {
                 number: point.number(),
                 kind: point.kind(),
                 time: point.time().map(ClockTicks::from),
+                basis: point.basis(),
+                args: *point.args(),
             },
             at_nanos,
         );

@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use footfall_core::{
     ClockId, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, FrameNumber, FramePointKind,
     LabelValue, MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken,
-    SourceLocation, TickPeriod, TimelineId, TimelineKind, Unit,
+    SourceLocation, TickPeriod, TimelineId, TimelineKind, TimingBasis, Unit,
 };
 use footfall_runtime::{
     ClockTicks, ContextSnapshot, CounterKind, CounterSnapshot, Drops, EventCursor, EventWindow,
@@ -1087,6 +1087,10 @@ pub enum OwnedObservation {
         kind: FramePointKind,
         /// When, as a reading of another clock; `None` for a dropped frame.
         time: Option<OwnedClockTicks>,
+        /// How the recorder came by the time.
+        basis: TimingBasis,
+        /// What the recorder knew about the frame at this point.
+        args: Vec<OwnedArgEntry>,
     },
 }
 
@@ -1877,10 +1881,18 @@ fn owned_observation(observation: &Observation) -> Option<OwnedObservation> {
         Observation::TimelineSpan { span } => OwnedObservation::TimelineSpan {
             span: Box::new(span.as_ref().into()),
         },
-        Observation::FramePoint { number, kind, time } => OwnedObservation::FramePoint {
+        Observation::FramePoint {
+            number,
+            kind,
+            time,
+            basis,
+            args,
+        } => OwnedObservation::FramePoint {
             number: *number,
             kind: *kind,
             time: time.as_ref().map(OwnedClockTicks::from),
+            basis: *basis,
+            args: owned_args(*args),
         },
         _ => return None,
     })

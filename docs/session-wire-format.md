@@ -288,7 +288,7 @@ thread id, then a `u8` observation tag and its fields:
 | `9` | clock sync | clock |
 | `10` | clock pair | clock, clock |
 | `11` | timeline span | timeline id `u64`, timeline name `name` and kind `u8` (`0` GPU, `1` display, `2` other; written with the name), scope id `u64`, name `name`, location `location`, context id `u64`, begin `clock`, length in ticks `u64`, frame `frame`, flow `u64` (the id plus one, or `0` for none), args |
-| `12` | frame point | frame `frame` (never none), kind `u8` (`0` deadline, `1` target, `2` presented, `3` dropped, `4` predicted, `5` expected), for a dropped frame its reason `u8` (`0` unknown, `1` discarded, `2` superseded, `3` missed deadline, `4` surface unavailable, `5` output unavailable, `6` replaced), time tag `u8` (`0` none, `1` present) and, when present, `clock` |
+| `12` | frame point | frame `frame` (never none), kind `u8` (`0` deadline, `1` target, `2` presented, `3` dropped, `4` predicted, `5` expected, `6` submitted, `7` sampled), for a dropped frame its reason `u8` (`0` unknown, `1` discarded, `2` superseded, `3` missed deadline, `4` surface unavailable, `5` output unavailable, `6` replaced, `7` not presented), timing basis `u8` (`0` unknown, `1` observed, `2` estimated), time tag `u8` (`0` none, `1` present) and, when present, `clock`, args |
 
 A counter sample is a counter's or gauge's value at a frame end, recorded
 for each one the frame updated; a counter's change over a frame is the

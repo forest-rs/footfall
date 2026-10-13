@@ -123,6 +123,14 @@ was shown, as how far off and how many frames were shown early or late by
 more than the tolerance. A scheduler that plans against bad predictions
 misses frames it had time for.
 
+A frame's deadline is judged by its `Submitted` time when the recorder
+reported one, and by its end marker otherwise. `FramePacing::basis` says how
+each time was known, and `Pacing::presentation_basis` how many presentation
+times were observed and how many estimated: a frame judged late on an
+estimated presentation time is only as late as the estimate.
+`FramePacing::args` returns the numbers a recorder attached to a point,
+such as a scheduler's state when it planned the frame.
+
 `Unknown` is not on time: without a target and a presentation time, a
 frame's pacing cannot be judged, and a trace with no presentation feedback
 says so rather than counting every frame as fine. An early frame is not a

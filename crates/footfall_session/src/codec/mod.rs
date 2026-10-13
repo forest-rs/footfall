@@ -24,7 +24,8 @@ use std::io;
 use footfall_core::{
     ClockId, ContextId, CounterDescId, DropReason, EventDescId, FlowId, FlowPhase, FrameNumber,
     FramePointKind, FrameStream, InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId,
-    ResourceKindId, ScopeDescId, ScopeToken, TickPeriod, TimelineId, TimelineKind, Unit,
+    ResourceKindId, ScopeDescId, ScopeToken, TickPeriod, TimelineId, TimelineKind, TimingBasis,
+    Unit,
 };
 use footfall_runtime::CounterKind;
 
@@ -868,15 +869,23 @@ pub(crate) fn encode_borrowed_observation(
                 clock.period(),
             )?;
         }
-        footfall_runtime::Observation::FramePoint { number, kind, time } => {
+        footfall_runtime::Observation::FramePoint {
+            number,
+            kind,
+            time,
+            basis,
+            args,
+        } => {
             encode_u8(bytes, 12);
             encode_frame_point(
                 bytes,
                 names,
                 *number,
                 *kind,
+                *basis,
                 time.as_ref().map(OwnedClockTicks::from).as_ref(),
             )?;
+            encode_borrowed_args(bytes, *args)?;
         }
         footfall_runtime::Observation::TimelineSpan { span } => {
             // Timeline spans are rare next to CPU events, so the borrowed
@@ -1131,9 +1140,16 @@ pub(crate) fn encode_observation(
             encode_u8(bytes, 9);
             encode_owned_clock(bytes, names, clock)?;
         }
-        OwnedObservation::FramePoint { number, kind, time } => {
+        OwnedObservation::FramePoint {
+            number,
+            kind,
+            time,
+            basis,
+            args,
+        } => {
             encode_u8(bytes, 12);
-            encode_frame_point(bytes, names, *number, *kind, time.as_ref())?;
+            encode_frame_point(bytes, names, *number, *kind, *basis, time.as_ref())?;
+            encode_args(bytes, args)?;
         }
         OwnedObservation::TimelineSpan { span } => {
             encode_u8(bytes, 11);
@@ -1229,12 +1245,30 @@ pub(crate) fn decode_observation(
                 io::Error::new(io::ErrorKind::InvalidData, "a frame point needs a frame")
             })?;
             let kind = decode_frame_point_kind(cursor)?;
+            let basis = match decode_u8(cursor)? {
+                0 => TimingBasis::Unknown,
+                1 => TimingBasis::Observed,
+                2 => TimingBasis::Estimated,
+                value => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown timing basis: {value}"),
+                    ));
+                }
+            };
             let time = if decode_bool(cursor, "frame point time tag")? {
                 Some(decode_clock(cursor, names)?)
             } else {
                 None
             };
-            Ok(OwnedObservation::FramePoint { number, kind, time })
+            let args = decode_args(cursor)?;
+            Ok(OwnedObservation::FramePoint {
+                number,
+                kind,
+                time,
+                basis,
+                args,
+            })
         }
         tag => Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1323,15 +1357,16 @@ fn decode_timeline(
     .with_args(args))
 }
 
-/// Writes a frame point: the frame, as a numbered marker writes it, the
-/// point's kind (followed by
-/// the reason for a dropped frame), and a presence tag followed by the clock
+/// Writes a frame point up to its args: the frame, as a numbered marker
+/// writes it, the point's kind (followed by the reason for a dropped
+/// frame), its timing basis, and a presence tag followed by the clock
 /// reading when it has a time.
 fn encode_frame_point(
     bytes: &mut Vec<u8>,
     names: &mut NameWriter,
     number: FrameNumber,
     kind: FramePointKind,
+    basis: TimingBasis,
     time: Option<&OwnedClockTicks>,
 ) -> io::Result<()> {
     encode_frame(bytes, Some(number))?;
@@ -1351,14 +1386,26 @@ fn encode_frame_point(
                     DropReason::SurfaceUnavailable => 4,
                     DropReason::OutputUnavailable => 5,
                     DropReason::Replaced => 6,
+                    DropReason::NotPresented => 7,
                     _ => return Err(unsupported("drop reason")),
                 },
             );
         }
         FramePointKind::Predicted => encode_u8(bytes, 4),
         FramePointKind::Expected => encode_u8(bytes, 5),
+        FramePointKind::Submitted => encode_u8(bytes, 6),
+        FramePointKind::Sampled => encode_u8(bytes, 7),
         _ => return Err(unsupported("frame point kind")),
     }
+    encode_u8(
+        bytes,
+        match basis {
+            TimingBasis::Unknown => 0,
+            TimingBasis::Observed => 1,
+            TimingBasis::Estimated => 2,
+            _ => return Err(unsupported("timing basis")),
+        },
+    );
     match time {
         None => encode_u8(bytes, 0),
         Some(time) => {
@@ -1382,6 +1429,7 @@ fn decode_frame_point_kind(cursor: &mut Cursor<'_>) -> io::Result<FramePointKind
             4 => DropReason::SurfaceUnavailable,
             5 => DropReason::OutputUnavailable,
             6 => DropReason::Replaced,
+            7 => DropReason::NotPresented,
             value => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -1391,6 +1439,8 @@ fn decode_frame_point_kind(cursor: &mut Cursor<'_>) -> io::Result<FramePointKind
         })),
         4 => Ok(FramePointKind::Predicted),
         5 => Ok(FramePointKind::Expected),
+        6 => Ok(FramePointKind::Submitted),
+        7 => Ok(FramePointKind::Sampled),
         value => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("unknown frame point kind: {value}"),

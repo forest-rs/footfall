@@ -14,7 +14,7 @@ use core::time::Duration;
 use footfall_core::{
     ClockId, ContextId, CounterDescId, FlowId, FlowPhase, FrameNumber, FramePointKind,
     InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId,
-    ScopeToken, TimelineId,
+    ScopeToken, TimelineId, TimingBasis,
 };
 use footfall_runtime::{CounterKind, Drops, SnapshotMetadata};
 use footfall_session::{
@@ -120,9 +120,17 @@ struct OpenMark {
     begin: Duration,
 }
 
-/// A frame point as a trace holds it: its kind, the time it gives in
-/// another clock's ticks, and when it was recorded.
-pub(crate) type HeldPoint = (FramePointKind, Option<OwnedClockTicks>, Duration);
+/// A frame point as a trace holds it.
+#[derive(Clone, Debug)]
+pub(crate) struct HeldPoint {
+    pub(crate) kind: FramePointKind,
+    /// The time it gives, in another clock's ticks.
+    pub(crate) time: Option<OwnedClockTicks>,
+    pub(crate) basis: TimingBasis,
+    pub(crate) args: Vec<OwnedArgEntry>,
+    /// When it was recorded.
+    pub(crate) at: Duration,
+}
 
 /// Which track a span is on.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -724,11 +732,23 @@ impl Trace {
                 self.unplaced
                     .push((event.sequence(), thread_id, at, span.clone()));
             }
-            OwnedObservation::FramePoint { number, kind, time } => {
+            OwnedObservation::FramePoint {
+                number,
+                kind,
+                time,
+                basis,
+                args,
+            } => {
                 self.frame_points
                     .entry(*number)
                     .or_default()
-                    .push((*kind, time.clone(), at));
+                    .push(HeldPoint {
+                        kind: *kind,
+                        time: time.clone(),
+                        basis: *basis,
+                        args: args.clone(),
+                        at,
+                    });
             }
             _ => {}
         }
@@ -1079,7 +1099,7 @@ impl Trace {
         let numbered = &self.numbered;
         let frame_spans = &self.frame_spans;
         self.frame_points.retain(|number, points| {
-            points.iter().any(|(_, _, at)| *at >= before)
+            points.iter().any(|point| point.at >= before)
                 || numbered.contains_key(&(0, *number))
                 || frame_spans.contains_key(number)
         });

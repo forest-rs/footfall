@@ -37,7 +37,10 @@ The first release.
   frames were early, late and why (missed deadline, backlog, GPU,
   display), dropped, skipped, or not known, with their CPU and GPU work,
   how long each stayed on screen, how far off each prediction was, and the
-  work spent on frames never shown.
+  work spent on frames never shown. Points say whether their time was
+  observed or estimated, can carry the recorder's numbers about the frame,
+  such as a scheduler's state, and include when the frame was submitted
+  and the time its content was made for.
 - `scope!` for a scope that lasts to the end of the block; `context!` and
   `args!` for labels and per-instance arguments.
 - Instrumentation levels, and `--cfg footfall_compile_out` to compile every

@@ -529,8 +529,8 @@ fn timeline_spans_match_their_golden_fixture() {
     );
 }
 
-/// Frame points carry the frame as a numbered marker does, the kind, and a
-/// tagged clock reading when they have a time.
+/// Frame points carry the frame as a numbered marker does, the kind, the
+/// timing basis, a tagged clock reading when they have a time, and args.
 #[test]
 fn frame_points_match_their_golden_fixture() {
     let envelope = OwnedSessionEnvelope::new(
@@ -542,13 +542,15 @@ fn frame_points_match_their_golden_fixture() {
                 1,
                 OwnedObservation::FramePoint {
                     number: FrameNumber::from(7),
-                    kind: footfall_core::FramePointKind::Target,
+                    kind: footfall_core::FramePointKind::Presented,
                     time: Some(OwnedClockTicks::new(
                         footfall_core::ClockId::new(0),
                         String::from("host"),
                         1_000,
                         footfall_core::TickPeriod::NANOSECOND,
                     )),
+                    basis: footfall_core::TimingBasis::Observed,
+                    args: Vec::new(),
                 },
             ),
             OwnedTimedObservation::new(
@@ -561,21 +563,24 @@ fn frame_points_match_their_golden_fixture() {
                         footfall_core::DropReason::Superseded,
                     ),
                     time: None,
+                    basis: footfall_core::TimingBasis::Unknown,
+                    args: Vec::new(),
                 },
             ),
         ]),
     );
     let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
-    // Tag `0c`; frame 7 written one more in stream 0 generation 0, target
-    // `01`, time `01`, clock `00` "host" at 1,000 ticks of 1/1 ns; then
-    // frame 8 of stream 1 generation 3, dropped `03` as superseded `02`, no
-    // time `00`.
+    // Tag `0c`; frame 7 written one more in stream 0 generation 0,
+    // presented `02`, observed `01`, time `01`, clock `00` "host" at 1,000
+    // ticks of 1/1 ns, no args `00`; then frame 8 of stream 1 generation 3,
+    // dropped `03` as superseded `02`, basis unknown `00`, no time `00`, no
+    // args `00`.
     assert_eq!(
         to_hex(&encoded),
         "01000000000602\
-         0000010c0800000101\
-         0004686f7374e8070101\
-         0a02010c090103030200"
+         0000010c080000020101\
+         0004686f7374e807010100\
+         0a02010c0901030302000000"
     );
     assert_eq!(
         decode_envelope(&encoded).expect("decoding should succeed"),
@@ -583,7 +588,8 @@ fn frame_points_match_their_golden_fixture() {
     );
 }
 
-/// Every frame point kind and drop reason survives the wire.
+/// Every frame point kind, drop reason, and timing basis survives the wire,
+/// with args.
 #[test]
 fn every_frame_point_kind_round_trips() {
     use footfall_core::{DropReason, FramePointKind};
@@ -595,6 +601,7 @@ fn every_frame_point_kind_round_trips() {
         DropReason::SurfaceUnavailable,
         DropReason::OutputUnavailable,
         DropReason::Replaced,
+        DropReason::NotPresented,
     ];
     let kinds = [
         FramePointKind::Deadline,
@@ -602,6 +609,8 @@ fn every_frame_point_kind_round_trips() {
         FramePointKind::Presented,
         FramePointKind::Predicted,
         FramePointKind::Expected,
+        FramePointKind::Submitted,
+        FramePointKind::Sampled,
     ]
     .into_iter()
     .chain(reasons.into_iter().map(FramePointKind::Dropped));
@@ -616,6 +625,15 @@ fn every_frame_point_kind_round_trips() {
                     number: FrameNumber::from(index as u64),
                     kind,
                     time: None,
+                    basis: [
+                        footfall_core::TimingBasis::Unknown,
+                        footfall_core::TimingBasis::Observed,
+                        footfall_core::TimingBasis::Estimated,
+                    ][index % 3],
+                    args: vec![OwnedArgEntry::new(
+                        String::from("pipeline_depth"),
+                        OwnedLabelValue::Unsigned(index as u64),
+                    )],
                 },
             )
         })
