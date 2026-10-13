@@ -3,7 +3,8 @@
 A live [Tracy](https://github.com/wolfpld/tracy) backend for Footfall. Scopes
 become zones, counters and gauges become plots, frame, pass, and transaction
 markers become Tracy frames, and messages and resource lifecycles become Tracy
-messages.
+messages. Timelines, such as GPU queues, become Tracy GPU contexts, each a row
+of its own, and how late each frame was shown becomes a plot.
 
 ## Tracy Version
 

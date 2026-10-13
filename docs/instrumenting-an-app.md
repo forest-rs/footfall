@@ -308,6 +308,14 @@ footfall::timeline_span(
 );
 ```
 
+In Tracy, through `footfall_tracy`, each timeline is a GPU context: a row
+of its own above the CPU threads, with its spans as GPU zones. The context
+is made once the timeline's clock is synced, and each later sync keeps it in
+step. The backend sends a frame's spans when the CPU frame they were
+reported in ends, nested by containment whatever order they came in. Tracy
+has no flows, and its CPU-to-GPU delay shows the time to read the work back
+rather than the time since submitting it.
+
 ## Frame Pacing
 
 Whether a frame was shown when it was meant to be is known only to the
