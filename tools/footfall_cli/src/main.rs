@@ -18,6 +18,7 @@
 //! footfall top --file demo.ffcap
 //! ```
 
+mod budget;
 mod format;
 mod json;
 mod pacing_json;
@@ -26,6 +27,7 @@ mod style;
 mod top;
 
 use anstream::{eprintln, println};
+use budget::Budget;
 use clap::{Parser, Subcommand};
 use footfall::analysis::{
     Comparison, GroupBy, KeyPart, LateCause, Outcome, Population, Selection, SpanId, Support,
@@ -89,9 +91,11 @@ enum Analysis {
     Summary {
         /// The capture file to read.
         file: PathBuf,
-        /// Frame budget in milliseconds.
-        #[arg(long, default_value_t = 16.7)]
-        budget_ms: f64,
+        /// Frame budget in milliseconds; longer frames are slow. Without
+        /// it, each frame is judged against its own deadline when the trace
+        /// records deadlines, and against 16.7 ms when it does not.
+        #[arg(long)]
+        budget_ms: Option<f64>,
     },
     /// Compare a capture's slow frames with the rest: which scopes account
     /// for the difference, and whether they ran more often or each ran
@@ -99,9 +103,11 @@ enum Analysis {
     Slow {
         /// The capture file to read.
         file: PathBuf,
-        /// Frame budget in milliseconds; longer frames are slow.
-        #[arg(long, default_value_t = 16.7)]
-        budget_ms: f64,
+        /// Frame budget in milliseconds; longer frames are slow. Without
+        /// it, each frame is judged against its own deadline when the trace
+        /// records deadlines, and against 16.7 ms when it does not.
+        #[arg(long)]
+        budget_ms: Option<f64>,
         /// How many scopes to show.
         #[arg(long, default_value_t = 10)]
         top: usize,
@@ -292,7 +298,7 @@ fn warn_incomplete(path: &Path, truncated: bool, skipped: u64) {
     }
 }
 
-fn summary(path: &Path, budget_ms: f64) -> Result<()> {
+fn summary(path: &Path, budget_ms: Option<f64>) -> Result<()> {
     let snapshot = read_joined(path)?;
     let metadata = snapshot.metadata();
     let capture = metadata.capture();
@@ -313,14 +319,8 @@ fn summary(path: &Path, budget_ms: f64) -> Result<()> {
         format::count(snapshot.events().len() as u64),
         metadata.instance_id()
     );
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "a budget in ms"
-    )]
-    let budget = (budget_ms * 1000.0) as u64;
     let trace = Trace::from_snapshot(&snapshot);
-    report::frames(trace.frames(), budget);
+    report::frames(trace.frames(), &Budget::for_trace(&trace, budget_ms));
     println!();
     report::spans(
         "Where the time went on the CPU",
@@ -360,21 +360,39 @@ fn read_trace(path: &Path) -> Result<Trace> {
     Ok(captured.into_trace())
 }
 
-fn slow(path: &Path, budget_ms: f64, top: usize, by_arg: Option<&str>) -> Result<()> {
+fn slow(path: &Path, budget_ms: Option<f64>, top: usize, by_arg: Option<&str>) -> Result<()> {
     let trace = read_trace(path)?;
-    let budget = Duration::from_secs_f64(budget_ms / 1000.0);
-    let (slow, normal): (Vec<_>, Vec<_>) = trace
-        .frames()
-        .iter()
-        .partition(|frame| frame.duration() > budget);
+    let budget = Budget::for_trace(&trace, budget_ms);
+    let (mut slow, mut normal) = (Vec::new(), Vec::new());
+    for frame in trace.frames() {
+        match budget.is_slow(frame) {
+            Some(true) => slow.push(frame),
+            Some(false) => normal.push(frame),
+            None => {}
+        }
+    }
+    let judged = slow.len() + normal.len();
+    let unjudged = trace.frames().len() - judged;
+    let left_out = if unjudged == 0 {
+        String::new()
+    } else {
+        format!(
+            " · {} with no deadline left out",
+            format::frames(unjudged as u64)
+        )
+    };
     println!(
-        "{HEADING}Why slow frames were slow{HEADING:#} {DIM}· {} of {} frames over {}{DIM:#}\n",
+        "{HEADING}Why slow frames were slow{HEADING:#} {DIM}· {} of {} frames {}{left_out}{DIM:#}",
         format::count(slow.len() as u64),
-        format::count(trace.frames().len() as u64),
-        format::duration(budget),
+        format::count(judged as u64),
+        budget.describe(),
     );
+    if let Some(note) = budget.note() {
+        println!("{DIM}{note}{DIM:#}");
+    }
+    println!();
     if slow.is_empty() {
-        println!("No frame was over budget.");
+        println!("No frame was slow.");
         return Ok(());
     }
     // Time inside each frame, so work that crosses a frame boundary counts

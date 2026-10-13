@@ -34,6 +34,7 @@ const TIMED: [FramePointKind; 7] = [
 /// The document for `pacing`, judged from `trace`, read from `path`.
 pub(crate) fn document(path: &Path, trace: &Trace, pacing: &Pacing) -> Json {
     let counts = pacing.counts();
+    let deadlines = pacing.deadlines();
     let capture = trace.metadata().map_or(Json::Null, |metadata| {
         Json::object([
             ("path", Json::from(path.display().to_string())),
@@ -64,6 +65,13 @@ pub(crate) fn document(path: &Path, trace: &Trace, pacing: &Pacing) -> Json {
                 ("missed", Json::from(counts.missed())),
                 ("late_causes", late_causes(counts.late_causes)),
                 ("late_support", late_support(counts.late_support)),
+            ]),
+        ),
+        (
+            "deadlines",
+            Json::object([
+                ("met", Json::from(deadlines.met)),
+                ("missed", Json::from(deadlines.missed)),
             ]),
         ),
         (
@@ -156,6 +164,11 @@ fn frame(frame: &FramePacing) -> Json {
         ("by_ns", Json::nanos_or_null(by)),
         ("missed", Json::from(outcome.missed())),
         ("why", frame.why().map_or(Json::Null, why)),
+        ("met_deadline", Json::from(frame.met_deadline())),
+        (
+            "submitted_late_ns",
+            Json::nanos_or_null(frame.submitted_late()),
+        ),
         (
             "work",
             range(frame.work().map(|work| (work.start(), work.end()))),
@@ -345,7 +358,9 @@ mod tests {
             r#""counts":{"frames":3,"on_time":1,"early":0,"late":1,"dropped":0,"skipped":1"#,
             r#""presentation_basis":{"observed":1,"estimated":1,"unknown":0}"#,
             r#""label":"2","stream":0,"generation":0,"number":2"#,
+            r#""deadlines":{"met":0,"missed":0}"#,
             r#""outcome":"late","by_ns":8000000,"missed":true,"why":{"cause":"#,
+            r#""met_deadline":null,"submitted_late_ns":null"#,
             r#""deadline":{"at_ns":"#,
             r#""args":{"pipeline_depth":2}"#,
             r#""presented":{"at_ns":"#,

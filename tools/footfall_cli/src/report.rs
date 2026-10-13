@@ -4,6 +4,7 @@
 //! Printed summaries of a snapshot: where time went, how frames did, what
 //! the counters say, and what was lost.
 
+use crate::budget::Budget;
 use crate::format;
 use crate::style::{BAD, DIM, GOOD, HEADING, NAME, WARN};
 use anstream::println;
@@ -146,23 +147,37 @@ pub(crate) fn comparison(comparison: &Comparison, baseline: &str, candidate: &st
     }
 }
 
-/// Prints how long frames took against a budget, such as 16.7 ms for 60 Hz.
-pub(crate) fn frames(frames: &[Frame], budget_micros: u64) {
+/// Prints how long frames took, and how many were slow by `budget`: over a
+/// fixed budget, or submitted after their own deadlines.
+pub(crate) fn frames(frames: &[Frame], budget: &Budget) {
     println!("{HEADING}Frames{HEADING:#}");
-    let Some(stats) = FrameStats::of(frames, budget_micros) else {
+    let Some(stats) = FrameStats::of(frames) else {
         println!("  {DIM}no complete frames{DIM:#}");
         return;
     };
-    let slow_style = if stats.slow == 0 { GOOD } else { BAD };
+    let judged: Vec<bool> = frames
+        .iter()
+        .filter_map(|frame| budget.is_slow(frame))
+        .collect();
+    let slow = judged.iter().filter(|&&slow| slow).count() as u64;
+    let of = if judged.len() as u64 == stats.count {
+        String::new()
+    } else {
+        format!(" of {}", format::count(judged.len() as u64))
+    };
+    let slow_style = if slow == 0 { GOOD } else { BAD };
     println!(
-        "  {} frames · mean {} · p95 {} · max {} · {slow_style}{} over {}{slow_style:#}",
+        "  {} frames · mean {} · p95 {} · max {} · {slow_style}{}{of} {}{slow_style:#}",
         format::count(stats.count),
         format::micros(stats.mean),
         format::micros(stats.p95),
         format::micros(stats.max),
-        stats.slow,
-        format::micros(budget_micros),
+        format::count(slow),
+        budget.describe(),
     );
+    if let Some(note) = budget.note() {
+        println!("  {DIM}{note}{DIM:#}");
+    }
 }
 
 /// Prints each counter's current value, largest first within each unit.
@@ -252,28 +267,22 @@ pub(crate) struct FrameStats {
     pub(crate) p95: u64,
     /// Longest duration, in microseconds.
     pub(crate) max: u64,
-    /// Frames longer than the budget.
-    pub(crate) slow: u64,
 }
 
 impl FrameStats {
     /// Computes statistics over `frames`, or `None` when there are none.
     #[must_use]
-    pub(crate) fn of(frames: &[Frame], budget_micros: u64) -> Option<Self> {
+    pub(crate) fn of(frames: &[Frame]) -> Option<Self> {
         Self::of_durations(
             frames
                 .iter()
                 .map(|frame| format::as_micros(frame.duration())),
-            budget_micros,
         )
     }
 
     /// Computes statistics over frame durations in microseconds.
     #[must_use]
-    pub(crate) fn of_durations(
-        durations: impl IntoIterator<Item = u64>,
-        budget_micros: u64,
-    ) -> Option<Self> {
+    pub(crate) fn of_durations(durations: impl IntoIterator<Item = u64>) -> Option<Self> {
         let mut durations: Vec<u64> = durations.into_iter().collect();
         if durations.is_empty() {
             return None;
@@ -287,10 +296,6 @@ impl FrameStats {
             mean: total / count,
             p95: durations[p95_index],
             max: durations[durations.len() - 1],
-            slow: durations
-                .iter()
-                .filter(|&&duration| duration > budget_micros)
-                .count() as u64,
         })
     }
 }
