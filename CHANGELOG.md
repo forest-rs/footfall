@@ -64,8 +64,9 @@ The first release.
 - `footfall_session`: `OwnedSnapshot`, the one form snapshots take outside
   the process, live or from a file; a compact versioned wire codec; and
   capture files. `CaptureRecorder` records a program's own runtime to a
-  capture as it runs, and `CaptureReader::join` reads a whole capture as
-  one snapshot, saying what it could not join.
+  capture as it runs and says what it wrote when it finishes, and
+  `CaptureReader::join` reads a whole capture as one snapshot, saying what
+  it could not join.
 - `footfall_session_wtransport`: serve runtimes to local tools, which find
   every producer without configuration, then fetch snapshots or subscribe
   to windows of changes. Graceful shutdown delivers everything recorded.

@@ -237,7 +237,7 @@ fn a_recorded_capture_reads_back_as_the_live_trace_with_its_gaps() {
     );
     live.push(&window(&runtime, &mut cursor))
         .expect("one instance");
-    let bytes = recorder.finish().expect("the capture ends");
+    let bytes = recorder.finish().expect("the capture ends").into_inner();
 
     let captured = Trace::from_capture(
         footfall_session::capture::CaptureReader::new(bytes.as_slice()).expect("the capture opens"),
