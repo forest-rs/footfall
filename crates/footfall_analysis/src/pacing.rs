@@ -37,6 +37,7 @@ pub struct FramePacing {
     /// The bases and args the points that had them came with.
     details: Vec<(FramePointKind, TimingBasis, Vec<OwnedArgEntry>)>,
     outcome: Outcome,
+    why: Option<Why>,
 }
 
 /// Whether a frame was shown when it was meant to be, as
@@ -94,6 +95,11 @@ impl Outcome {
 
 /// What made a frame late, as [`Outcome::Late`] says: the first of these the
 /// trace shows, in this order.
+///
+/// It is the leading explanation, not proof. More than one condition can
+/// hold for a frame, and some causes are inferred rather than observed;
+/// [`FramePacing::why`] lists every condition that held, what was observed,
+/// and how strongly the trace supports the cause.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub enum LateCause {
@@ -101,11 +107,16 @@ pub enum LateCause {
     MissedDeadline,
     /// It was submitted in time, but the frame before it was still waiting
     /// to be shown at this one's target: frames queued ahead pushed it back.
+    /// The queue itself is not observed, so this is
+    /// [`Support::Inferred`].
     Backlog,
     /// It was submitted in time, but its GPU work finished after its target.
     Gpu,
-    /// It was submitted and rendered in time, with nothing queued ahead of
-    /// it, and shown late anyway: the compositor or display held it.
+    /// It was submitted and its recorded GPU work finished in time, with
+    /// nothing queued ahead of it, and it was shown late anyway: the
+    /// compositor or display probably held it. Neither is observed, and GPU
+    /// work that was not recorded may have run late, so this is
+    /// [`Support::Unresolved`].
     Display,
     /// It was submitted in time with nothing queued ahead of it, but no GPU
     /// work was recorded for it, so whether the GPU or the display held it
@@ -254,6 +265,15 @@ impl FramePacing {
         self.outcome
     }
 
+    /// Returns what the trace shows about why a late frame was late: every
+    /// condition that held, what was observed, and how strongly the trace
+    /// supports the cause. `None` unless the frame was
+    /// [`Late`](Outcome::Late).
+    #[must_use]
+    pub const fn why(&self) -> Option<&Why> {
+        self.why.as_ref()
+    }
+
     /// Returns the time from the frame's begin marker to its presentation.
     ///
     /// This is how long the frame took to reach the screen once the program
@@ -353,6 +373,11 @@ impl Pacing {
                 Outcome::Early { .. } => counts.early += 1,
                 Outcome::Late { cause, .. } => {
                     counts.late += 1;
+                    match frame.why.map(|why| why.support) {
+                        Some(Support::Observed) => counts.late_support.observed += 1,
+                        Some(Support::Inferred) => counts.late_support.inferred += 1,
+                        _ => counts.late_support.unresolved += 1,
+                    }
                     let causes = &mut counts.late_causes;
                     match cause {
                         LateCause::MissedDeadline => causes.missed_deadline += 1,
@@ -529,6 +554,8 @@ pub struct OutcomeCounts {
     pub late: u64,
     /// The late frames, by what made them late.
     pub late_causes: LateCauseCounts,
+    /// The late frames, by how strongly the trace supports their causes.
+    pub late_support: SupportCounts,
     /// Frames never shown for a reason that is a miss.
     pub dropped: u64,
     /// Frames never shown for a reason that is not a miss: discarded,
@@ -571,6 +598,65 @@ pub struct BasisCounts {
     pub estimated: u64,
     /// Recorded without saying.
     pub unknown: u64,
+}
+
+/// How strongly the trace supports a judgment, as [`Why::support`] says.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum Support {
+    /// The trace recorded the condition itself: the frame was submitted
+    /// after its deadline, or its recorded GPU work finished after its
+    /// target, and its presentation time was not an estimate.
+    Observed,
+    /// It follows from what was recorded, but rests on something that was
+    /// not: a queue read from the frame before's presentation, or a
+    /// presentation time that was estimated.
+    Inferred,
+    /// The trace stops short of an answer: the program's part looked in
+    /// time, and what happened after it was not observed.
+    Unresolved,
+}
+
+/// What the trace shows about why a late frame was late, as
+/// [`FramePacing::why`] returns it.
+///
+/// [`cause`](Self::cause) is the first condition that held, but more than
+/// one can: a frame can be submitted late and have slow GPU work too. The
+/// conditions say each that held, and the stages say what was observed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Why {
+    /// The leading explanation: the first condition that held.
+    pub cause: LateCause,
+    /// How strongly the trace supports it.
+    pub support: Support,
+    /// How long after its deadline the frame was submitted, when it was.
+    pub submitted_late: Option<Duration>,
+    /// Whether the submission time came from a
+    /// [`Submitted`](FramePointKind::Submitted) point rather than the frame's
+    /// end marker.
+    pub submit_reported: bool,
+    /// How long after its target its recorded GPU work finished, when it
+    /// did.
+    pub gpu_late: Option<Duration>,
+    /// Whether GPU work was recorded for the frame at all.
+    pub gpu_recorded: bool,
+    /// Whether the frame before it was still waiting to be shown at this
+    /// one's target.
+    pub behind_previous: bool,
+    /// How the frame's presentation time was known.
+    pub presented: TimingBasis,
+}
+
+/// How many late frames' causes had each [`Support`], as
+/// [`OutcomeCounts::late_support`] holds them.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SupportCounts {
+    /// Their causes were observed.
+    pub observed: u64,
+    /// Their causes were inferred.
+    pub inferred: u64,
+    /// The trace stops short of their causes.
+    pub unresolved: u64,
 }
 
 /// How many late frames had each [`LateCause`], as
@@ -656,6 +742,7 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
                 dropped: None,
                 details: Vec::new(),
                 outcome: Outcome::Unknown,
+                why: None,
             };
             for point in trace.frame_points().get(&number).into_iter().flatten() {
                 let (kind, time) = (&point.kind, &point.time);
@@ -718,7 +805,9 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
             .checked_sub(1)
             .map(|before| &frames[before])
             .filter(|before| frames[index].number.previous() == Some(before.number));
-        frames[index].outcome = outcome(&frames[index], before, tolerance);
+        let (judged, why) = outcome(&frames[index], before, tolerance);
+        frames[index].outcome = judged;
+        frames[index].why = why;
     }
     let gaps: Vec<TimeRange> = trace.gaps().iter().map(crate::Gap::range).collect();
     let (intervals, interval_breaks) = intervals(&frames, &gaps);
@@ -799,9 +888,13 @@ fn busy(spans: &mut [(TimelineId, TimeRange)]) -> Duration {
 
 /// Judges a frame against its target and deadline, and a late one against
 /// the frame before it, `before`.
-fn outcome(raw: &FramePacing, before: Option<&FramePacing>, tolerance: Duration) -> Outcome {
+fn outcome(
+    raw: &FramePacing,
+    before: Option<&FramePacing>,
+    tolerance: Duration,
+) -> (Outcome, Option<Why>) {
     if let Some(reason) = raw.dropped {
-        return Outcome::Dropped { reason };
+        return (Outcome::Dropped { reason }, None);
     }
     let submitted = raw.submitted.or(raw.work.map(|work| work.end()));
     let submitted_late = raw
@@ -810,39 +903,61 @@ fn outcome(raw: &FramePacing, before: Option<&FramePacing>, tolerance: Duration)
         .and_then(|(deadline, submitted)| submitted.checked_sub(deadline))
         .filter(|by| !by.is_zero());
     let Some((presented, target)) = raw.presented.zip(raw.target) else {
-        return match submitted_late {
+        let outcome = match submitted_late {
             Some(by) => Outcome::SubmittedLate { by },
             None => Outcome::Unknown,
         };
+        return (outcome, None);
     };
     if presented.saturating_add(tolerance) < target {
-        return Outcome::Early {
-            by: target - presented,
-        };
+        let by = target - presented;
+        return (Outcome::Early { by }, None);
     }
     if presented <= target.saturating_add(tolerance) {
-        return Outcome::OnTime;
+        return (Outcome::OnTime, None);
     }
     let submitted_in_time =
         raw.deadline.is_some() && submitted.is_some() && submitted_late.is_none();
-    let cause = if submitted_late.is_some() {
-        LateCause::MissedDeadline
-    } else if before
+    let behind_previous = before
         .and_then(|before| before.presented)
-        .is_some_and(|shown| shown.saturating_add(tolerance) >= target)
-    {
-        LateCause::Backlog
-    } else if raw.gpu.is_some_and(|gpu| gpu.end() > target) {
-        LateCause::Gpu
+        .is_some_and(|shown| shown.saturating_add(tolerance) >= target);
+    let gpu_late = raw
+        .gpu
+        .and_then(|gpu| gpu.end().checked_sub(target))
+        .filter(|by| !by.is_zero());
+    let (cause, support) = if submitted_late.is_some() {
+        (LateCause::MissedDeadline, Support::Observed)
+    } else if behind_previous {
+        (LateCause::Backlog, Support::Inferred)
+    } else if gpu_late.is_some() {
+        (LateCause::Gpu, Support::Observed)
     } else if !submitted_in_time {
-        LateCause::Unknown
+        (LateCause::Unknown, Support::Unresolved)
     } else if raw.gpu.is_some() {
-        LateCause::Display
+        (LateCause::Display, Support::Unresolved)
     } else {
-        LateCause::AfterSubmit
+        (LateCause::AfterSubmit, Support::Unresolved)
     };
-    Outcome::Late {
+    let presented_basis = raw.basis(FramePointKind::Presented);
+    // Lateness measured against an estimated presentation is an estimate.
+    let support = if support == Support::Observed && presented_basis == TimingBasis::Estimated {
+        Support::Inferred
+    } else {
+        support
+    };
+    let why = Why {
+        cause,
+        support,
+        submitted_late,
+        submit_reported: raw.submitted.is_some(),
+        gpu_late,
+        gpu_recorded: raw.gpu.is_some(),
+        behind_previous,
+        presented: presented_basis,
+    };
+    let late = Outcome::Late {
         by: presented - target,
         cause,
-    }
+    };
+    (late, Some(why))
 }
