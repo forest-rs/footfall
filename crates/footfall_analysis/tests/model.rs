@@ -1478,6 +1478,9 @@ fn presentation_intervals_run_across_drops_and_break_where_unknown() {
     // Frame 11 was meant for 200 ms and shown a refresh early.
     recording.frame_point(170_000, 11, Target, &HOST, Some(200_000));
     shown(&mut recording, 11, 183_333);
+    // Frames 12 and 13 were still in flight when the trace ended.
+    recording.numbered_frame(12, 185_000, 190_000);
+    recording.numbered_frame(13, 200_000, 205_000);
     let trace = Trace::from_snapshot(&recording.snapshot(250_000));
 
     let pacing = trace.pacing(us(1_000));
@@ -1487,7 +1490,11 @@ fn presentation_intervals_run_across_drops_and_break_where_unknown() {
         (5, us(16_667), us(33_333)),
         "1 to 3 across the drop, 3 to 4, 6 to 7, 9 to 10, and 10 to 11"
     );
-    assert_eq!(pacing.interval_breaks(), 2, "at frame 5 and at frame 8");
+    assert_eq!(
+        pacing.interval_breaks(),
+        2,
+        "at frame 5 and at frame 8, not at the frames still in flight"
+    );
     assert_eq!(pacing.stutters(), 1);
     assert_eq!(
         pacing.frame(11).map(|frame| frame.outcome()),
