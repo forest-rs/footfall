@@ -230,6 +230,12 @@ snapshot as a live consumer would, so events lost between them stay gaps
 where they were lost. Both keep what precedes a cut-short end and skip
 snapshots from another runtime instance, and say whether they did.
 
+Captures from a release stay readable by later releases at the same
+protocol major version. One Footfall cannot decode fails with an
+`IncompatibleVersion` inside the `io::Error`, naming the version that wrote
+it, so a tool can say which Footfall would read it rather than call the
+file damaged; see [capture files](session-wire-format.md#capture-files).
+
 To analyse a session as it runs, push each window into a
 `footfall::analysis::Trace`. It pairs scopes and frames that span windows,
 skips events it has already seen, records events evicted between reads as

@@ -385,10 +385,40 @@ The codec enforces these bounds before allocating dynamic payload data:
 These are protocol limits, not tuning recommendations. Producers should still
 chunk snapshots to keep latency and consumer memory bounded.
 
+## Capture Files
+
+A capture file is the 8 bytes `FFALLCAP`, the `u16` protocol major and
+minor it was written at, little-endian, and then snapshot publications back
+to back: each envelope as its byte length, a LEB128 integer, followed by
+the envelope as above. A file can hold any number of snapshots, from one
+runtime or several.
+
+From the first release, Footfall promises this about captures:
+
+- A capture a released Footfall wrote stays readable by every later
+  release that speaks the same protocol major version, and means the same
+  thing when read: the same frames, spans, counters, and frame points.
+- A capture Footfall cannot decode, from a newer minor version or another
+  major version, fails with an error that names the version that wrote it
+  (`footfall_session::IncompatibleVersion`), at the header or at the first
+  envelope that is too new. It is never read as if it were another layout.
+
+This is a promise about files, separate from the Rust API's semver: a new
+major release of a crate may change its API and still read old captures.
+What analysis concludes from a capture can improve between releases, and
+such changes are noted in the changelog. Captures written before the first
+release are not covered.
+
+Captures recorded by real programs are kept in
+[`examples/captures`](../examples/captures) and read by every test run, for
+both decoding and what they say.
+
 ## Compatibility Rule
 
 The protocol stays at `1.0` until Footfall is first published, so changes
 before then do not bump it. After that, changes that add payload tags, reorder
 snapshot publication, change field encoding, or change the meaning of existing
-tags require a protocol version bump. Consumers must already handle chunked
-publication, so changing chunk sizes does not require a version bump.
+tags require a protocol version bump: a minor bump when older data still
+decodes and means the same, a major bump when it does not. Consumers must
+already handle chunked publication, so changing chunk sizes does not require
+a version bump.

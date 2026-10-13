@@ -30,12 +30,12 @@ use footfall_core::{
 use footfall_runtime::CounterKind;
 
 use crate::{
-    CaptureSettings, Drops, Envelope, EnvelopeHeader, EventWindow, OwnedArgEntry, OwnedClockTicks,
-    OwnedContextEntry, OwnedContextSnapshot, OwnedCounterSnapshot, OwnedHistogramSnapshot,
-    OwnedLabelValue, OwnedObservation, OwnedSessionEnvelope, OwnedSessionPayload,
-    OwnedSnapshotSummary, OwnedSourceLocation, OwnedTimedObservation, OwnedTimelineWork,
-    PROTOCOL_VERSION, Payload, ProtocolVersion, RowCounts, SnapshotKind, SnapshotMetadata,
-    ThreadSnapshot,
+    CaptureSettings, Drops, Envelope, EnvelopeHeader, EventWindow, IncompatibleVersion,
+    OwnedArgEntry, OwnedClockTicks, OwnedContextEntry, OwnedContextSnapshot, OwnedCounterSnapshot,
+    OwnedHistogramSnapshot, OwnedLabelValue, OwnedObservation, OwnedSessionEnvelope,
+    OwnedSessionPayload, OwnedSnapshotSummary, OwnedSourceLocation, OwnedTimedObservation,
+    OwnedTimelineWork, PROTOCOL_VERSION, Payload, ProtocolVersion, RowCounts, SnapshotKind,
+    SnapshotMetadata, ThreadSnapshot,
 };
 
 /// Maximum UTF-8 string payload accepted by the codec.
@@ -208,14 +208,7 @@ pub(crate) fn encode_header(bytes: &mut Vec<u8>, header: EnvelopeHeader) {
 pub(crate) fn decode_header(cursor: &mut Cursor<'_>) -> io::Result<EnvelopeHeader> {
     let protocol_version = ProtocolVersion::new(decode_u16(cursor)?, decode_u16(cursor)?);
     if !CODEC_VERSION.can_decode(protocol_version) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "unsupported session codec version {}.{}",
-                protocol_version.major(),
-                protocol_version.minor()
-            ),
-        ));
+        return Err(IncompatibleVersion::error(protocol_version));
     }
     Ok(EnvelopeHeader::new(protocol_version, decode_u64(cursor)?))
 }

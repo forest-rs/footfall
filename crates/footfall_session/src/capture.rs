@@ -55,8 +55,8 @@ use std::io::{self, BufReader, Read, Write};
 use footfall_runtime::{EventCursor, EventWindow, Runtime, Snapshot};
 
 use crate::{
-    Chunking, Consumer, Envelope, OwnedSessionEnvelope, OwnedSessionPayload, OwnedSnapshot,
-    PROTOCOL_VERSION, ProtocolVersion,
+    Chunking, Consumer, Envelope, IncompatibleVersion, OwnedSessionEnvelope, OwnedSessionPayload,
+    OwnedSnapshot, PROTOCOL_VERSION, ProtocolVersion,
     codec::{
         MAX_SESSION_ENVELOPE_BYTES, VarintDecoder, decode_envelope, encode_envelope,
         encode_owned_envelope, encode_varint,
@@ -306,16 +306,7 @@ impl<R: Read> CaptureReader<R> {
             u16::from_le_bytes([version[2], version[3]]),
         );
         if !PROTOCOL_VERSION.can_decode(protocol_version) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "capture was written with session protocol {}.{}, which this reader ({}.{}) cannot decode",
-                    protocol_version.major(),
-                    protocol_version.minor(),
-                    PROTOCOL_VERSION.major(),
-                    PROTOCOL_VERSION.minor()
-                ),
-            ));
+            return Err(IncompatibleVersion::error(protocol_version));
         }
         Ok(Self {
             inner,
@@ -365,6 +356,10 @@ impl<R: Read> CaptureReader<R> {
             self.read_exact(&mut frame)?;
             self.offset += len_bytes + u64::try_from(len).unwrap_or(u64::MAX);
             let envelope = decode_envelope(&frame).map_err(|error| {
+                // An incompatibility stays one, for the reader to tell apart.
+                if IncompatibleVersion::of(&error).is_some() {
+                    return error;
+                }
                 io::Error::new(
                     error.kind(),
                     format!(
@@ -529,7 +524,7 @@ mod tests {
     use footfall_runtime::Runtime;
 
     use super::{CaptureReader, CaptureRecorder, CaptureWriter};
-    use crate::OwnedSnapshot;
+    use crate::{IncompatibleVersion, OwnedSnapshot, ProtocolVersion};
 
     fn mark(runtime: &Runtime) {
         runtime.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, ContextHandle::ROOT);
@@ -686,5 +681,72 @@ mod tests {
             "{error}"
         );
         assert!(reader.next().is_none(), "reading stops after an error");
+    }
+
+    /// A capture of one snapshot, with its header's protocol version, and
+    /// its first envelope's, set to `header` and `envelope`.
+    fn capture_at(header: (u16, u16), envelope: (u16, u16)) -> Vec<u8> {
+        let runtime = Runtime::default();
+        mark(&runtime);
+        let mut writer = CaptureWriter::new(Vec::new()).expect("header writes");
+        writer
+            .write_snapshot(&runtime.snapshot())
+            .expect("snapshot writes");
+        let mut bytes = writer.finish().expect("capture finishes");
+        bytes[8..10].copy_from_slice(&header.0.to_le_bytes());
+        bytes[10..12].copy_from_slice(&header.1.to_le_bytes());
+        // The first envelope follows its LEB128 length.
+        let start = 12
+            + bytes[12..]
+                .iter()
+                .position(|byte| byte & 0x80 == 0)
+                .expect("a length")
+            + 1;
+        bytes[start..start + 2].copy_from_slice(&envelope.0.to_le_bytes());
+        bytes[start + 2..start + 4].copy_from_slice(&envelope.1.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn captures_from_incompatible_versions_say_so_and_are_never_misread() {
+        // Today's capture reads.
+        let current = capture_at((1, 0), (1, 0));
+        let snapshots: Vec<_> = CaptureReader::new(current.as_slice())
+            .expect("header reads")
+            .collect::<Result<_, _>>()
+            .expect("snapshots read");
+        assert_eq!(snapshots.len(), 1);
+
+        // A newer minor or another major is refused at the header, saying
+        // which version wrote it.
+        for header in [(1, 1), (2, 0), (0, 9)] {
+            let bytes = capture_at(header, (1, 0));
+            let error = CaptureReader::new(bytes.as_slice()).expect_err("refused");
+            assert_eq!(error.kind(), ErrorKind::InvalidData);
+            let incompatible = IncompatibleVersion::of(&error).expect("an incompatibility");
+            assert_eq!(
+                incompatible.produced(),
+                ProtocolVersion::new(header.0, header.1)
+            );
+            assert_eq!(incompatible.supported(), crate::PROTOCOL_VERSION);
+            assert!(error.to_string().contains("cannot decode"), "{error}");
+        }
+
+        // An envelope newer than its file's header is refused too.
+        let bytes = capture_at((1, 0), (1, 1));
+        let error = CaptureReader::new(bytes.as_slice())
+            .expect("the header is current")
+            .next()
+            .expect("a snapshot")
+            .expect_err("its envelope is refused");
+        assert_eq!(
+            IncompatibleVersion::of(&error).map(IncompatibleVersion::produced),
+            Some(ProtocolVersion::new(1, 1))
+        );
+
+        // A damaged capture is not an incompatible one.
+        let error =
+            CaptureReader::new(&b"FFALLCAX\x01\x00\x00\x00"[..]).expect_err("not a capture");
+        assert!(IncompatibleVersion::of(&error).is_none());
     }
 }
