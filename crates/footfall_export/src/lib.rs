@@ -16,8 +16,8 @@
 //! ```
 
 use footfall_core::{
-    ContextId, FlowPhase, MarkerKind, MarkerPhase, ResourceId, ScopeToken, TimelineId,
-    TimelineKind, Unit,
+    ContextId, FlowPhase, FrameNumber, FrameStream, MarkerKind, MarkerPhase, ResourceId,
+    ScopeToken, TimelineId, TimelineKind, Unit,
 };
 use footfall_runtime::CounterKind;
 use footfall_session::{
@@ -233,6 +233,17 @@ fn build_metadata_event(name: &str, pid: u64, tid: u64, arg_key: &str, arg_value
     write_json_field_str(&mut json, arg_key, arg_value).expect("string write should succeed");
     json.push_str("}}");
     json
+}
+
+/// Writes a frame's number under `key`, followed by its stream as
+/// `"stream"` when it is not the default stream.
+fn write_frame_fields(json: &mut String, key: &str, frame: FrameNumber) -> fmt::Result {
+    write_json_field_u64(json, key, frame.number())?;
+    if frame.stream() != FrameStream::DEFAULT {
+        json.push(',');
+        write_json_field_str(json, "stream", &frame.stream().to_string())?;
+    }
+    Ok(())
 }
 
 fn build_capture_window_event(snapshot: &OwnedSnapshot) -> String {
@@ -606,7 +617,7 @@ fn build_timeline_span(
     write_json_field_u64(&mut json, "tid", tid)?;
     json.push_str(",\"args\":{");
     if let Some(frame) = span.frame() {
-        write_json_field_u64(&mut json, "frame", frame)?;
+        write_frame_fields(&mut json, "frame", frame)?;
         json.push(',');
     }
     write_json_field_u64(&mut json, "context_id", span.context_id().get())?;
@@ -784,7 +795,7 @@ fn build_timed_observation(
             write_json_field_u64(&mut json, "tid", event.thread_id())?;
             json.push_str(",\"args\":{");
             if let Some(number) = number {
-                write_json_field_u64(&mut json, "number", *number)?;
+                write_frame_fields(&mut json, "number", *number)?;
                 json.push(',');
             }
             write_json_field_u64(&mut json, "context_id", context_id.get())?;
@@ -1073,8 +1084,8 @@ fn write_json_string(writer: &mut impl Write, value: &str) -> fmt::Result {
 mod tests {
     use super::{to_chrome_trace_json, track_name};
     use footfall_core::{
-        Args, Context, ContextId, CounterDescId, FlowId, FlowPhase, LabelKey, MarkerKind,
-        MarkerPhase, ScopeToken, SourceLocation, Unit,
+        Args, Context, ContextId, CounterDescId, FlowId, FlowPhase, FrameNumber, LabelKey,
+        MarkerKind, MarkerPhase, ScopeToken, SourceLocation, Unit,
     };
     use footfall_runtime::{
         ContextSnapshot, CounterKind, CounterSnapshot, Drops, EventWindow, Observation, Snapshot,
@@ -1202,7 +1213,7 @@ mod tests {
                 Observation::FrameMarker {
                     kind: MarkerKind::Frame,
                     phase: MarkerPhase::Begin,
-                    number: Some(1234),
+                    number: Some(FrameNumber::from(1234)),
                     context_id: ContextId::new(1),
                 },
             ))

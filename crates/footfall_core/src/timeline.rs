@@ -5,7 +5,8 @@
 //! and displays report about frames.
 
 use crate::{
-    Args, ClockDesc, ClockReading, ContextHandle, FlowId, ScopeDesc, TickPeriod, TimelineDesc,
+    Args, ClockDesc, ClockReading, ContextHandle, FlowId, FrameNumber, ScopeDesc, TickPeriod,
+    TimelineDesc,
 };
 
 /// One finished piece of work on a timeline that is not a CPU thread, such
@@ -46,7 +47,7 @@ pub struct TimelineSpan {
     period: TickPeriod,
     begin: u64,
     end: u64,
-    frame: Option<u64>,
+    frame: Option<FrameNumber>,
     flow: Option<FlowId>,
     args: Args,
 }
@@ -79,11 +80,12 @@ impl TimelineSpan {
         }
     }
 
-    /// Says which frame the work belongs to, by the program's number for it;
+    /// Says which frame the work belongs to, by the program's number for it:
+    /// a plain `u64`, or a [`FrameNumber`] in one of several frame streams;
     /// see [`frame_begin_numbered`](crate::frame_begin_numbered).
     #[must_use]
-    pub const fn in_frame(mut self, number: u64) -> Self {
-        self.frame = Some(number);
+    pub fn in_frame(mut self, number: impl Into<FrameNumber>) -> Self {
+        self.frame = Some(number.into());
         self
     }
 
@@ -146,7 +148,7 @@ impl TimelineSpan {
 
     /// Returns the frame the work belongs to, if given.
     #[must_use]
-    pub const fn frame(&self) -> Option<u64> {
+    pub const fn frame(&self) -> Option<FrameNumber> {
         self.frame
     }
 
@@ -255,24 +257,25 @@ impl DropReason {
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FramePoint {
-    number: u64,
+    number: FrameNumber,
     kind: FramePointKind,
     time: Option<ClockReading>,
 }
 
 impl FramePoint {
-    /// Says the frame numbered `number` reached `kind` at `ticks` of
+    /// Says the frame numbered `number`, a plain `u64` or a [`FrameNumber`]
+    /// in one of several frame streams, reached `kind` at `ticks` of
     /// `clock`.
     #[must_use]
-    pub const fn at(
-        number: u64,
+    pub fn at(
+        number: impl Into<FrameNumber>,
         kind: FramePointKind,
         clock: &'static ClockDesc,
         period: TickPeriod,
         ticks: u64,
     ) -> Self {
         Self {
-            number,
+            number: number.into(),
             kind,
             time: Some(ClockReading::new(clock, ticks, period)),
         }
@@ -280,17 +283,17 @@ impl FramePoint {
 
     /// Says the frame numbered `number` was never shown, and why.
     #[must_use]
-    pub const fn dropped(number: u64, reason: DropReason) -> Self {
+    pub fn dropped(number: impl Into<FrameNumber>, reason: DropReason) -> Self {
         Self {
-            number,
+            number: number.into(),
             kind: FramePointKind::Dropped(reason),
             time: None,
         }
     }
 
-    /// Returns the program's number for the frame.
+    /// Returns the program's number for the frame, in its stream.
     #[must_use]
-    pub const fn number(&self) -> u64 {
+    pub const fn number(&self) -> FrameNumber {
         self.number
     }
 

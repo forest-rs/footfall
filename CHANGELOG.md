@@ -17,6 +17,9 @@ The first release.
   `static` descriptor and attributed to a registered semantic context.
 - Markers can carry the program's own frame number, so overlapping frames
   pair correctly and later observations can find a frame by number.
+  Numbers belong to a `FrameStream`, such as one per window, with a
+  generation for when its numbering starts again; plain numbers belong to
+  the default stream.
 - Clock syncs and pairs relate other clocks, such as a GPU's or a frame
   scheduler's host clock, to the runtime's, and `Clocks` converts their
   times, following drift between syncs. `Clocks::forget_before` bounds

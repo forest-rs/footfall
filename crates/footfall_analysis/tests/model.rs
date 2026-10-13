@@ -13,8 +13,8 @@ use footfall_analysis::{
 };
 use footfall_core::{
     Args, ClockDesc, ClockReading, Context, ContextId, CounterDesc, EventDesc, FlowId, FlowPhase,
-    InstrumentationLevel, LabelKey, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc,
-    ScopeDesc, ScopeToken, TickPeriod, TimelineDesc, TimelineSpan,
+    FrameNumber, FrameStream, InstrumentationLevel, LabelKey, MarkerKind, MarkerPhase, ResourceId,
+    ResourceKindDesc, ScopeDesc, ScopeToken, TickPeriod, TimelineDesc, TimelineSpan,
 };
 use footfall_runtime::{
     CaptureSettings, ClockTicks, ContextSnapshot, CounterKind, EventWindow, Observation, Snapshot,
@@ -154,7 +154,7 @@ impl Recording {
             Observation::FrameMarker {
                 kind: MarkerKind::Frame,
                 phase,
-                number,
+                number: number.map(FrameNumber::from),
                 context_id: ContextId::new(0),
             },
         )
@@ -298,7 +298,7 @@ fn numbered_frames_pair_by_number_and_can_be_found_by_it() {
 
     let frame = trace.frame_numbered(1234).expect("frame 1234 completed");
     assert_eq!(frame.id(), FrameId::new(first));
-    assert_eq!(frame.number(), Some(1234));
+    assert_eq!(frame.number(), Some(1234.into()));
     assert_eq!(frame.range(), range(0, 20));
     let later = trace.frame_numbered(1235).expect("frame 1235 completed");
     assert_eq!(later.id(), FrameId::new(second));
@@ -1083,7 +1083,7 @@ fn gpu_work_is_placed_on_its_own_timeline_through_its_clock() {
         us(150),
         "500 less the passes' 100 and 250"
     );
-    assert_eq!(gpu_frame.frame_number(), Some(1234));
+    assert_eq!(gpu_frame.frame_number(), Some(1234.into()));
     assert_eq!(gpu_frame.timeline(), graphics.timeline_id());
     let placement = gpu_frame.placement().expect("timed by another clock");
     assert!(!placement.between_syncs(), "one sync, so extended from it");
@@ -1333,7 +1333,7 @@ impl Recording {
     fn frame_point(
         &mut self,
         at: u64,
-        number: u64,
+        number: impl Into<FrameNumber>,
         kind: footfall_core::FramePointKind,
         clock: &'static ClockDesc,
         time: Option<u64>,
@@ -1342,7 +1342,7 @@ impl Recording {
             at,
             MAIN,
             Observation::FramePoint {
-                number,
+                number: number.into(),
                 kind,
                 time: time.map(|micros| {
                     ClockTicks::from(ClockReading::new(
@@ -1664,7 +1664,7 @@ fn forgetting_covers_frame_points_waiting_work_and_old_clock_readings() {
     let numbers: Vec<_> = pacing.frames().iter().map(|frame| frame.number()).collect();
     assert_eq!(
         numbers,
-        [2],
+        [FrameNumber::from(2)],
         "frame 1 is forgotten; frame 2 keeps its target"
     );
     assert_eq!(
@@ -1680,4 +1680,82 @@ fn forgetting_covers_frame_points_waiting_work_and_old_clock_readings() {
         Some(2),
         "the sync at 10 µs, the last before, and the one at 70 µs"
     );
+}
+
+#[test]
+fn frame_streams_keep_each_windows_frames_apart() {
+    use footfall_core::FramePointKind::{Presented, Target};
+    let (main, tools) = (FrameStream::new(1), FrameStream::new(2));
+    let mut recording = Recording::new(7);
+    recording.clock_sync(0, &HOST, 0);
+    // Both windows number their frames from 1: the main window at 60 Hz,
+    // the tools window at 30 Hz, each shown on time.
+    let mut ids = Vec::new();
+    for (stream, period, start) in [(main, 16_667, 0), (tools, 33_333, 100_000)] {
+        for number in 1..=3_u64 {
+            let frame = stream.frame(number);
+            let begin = start + (number - 1) * period;
+            let mark = |recording: &mut Recording, at, phase| {
+                recording.record(
+                    at,
+                    MAIN,
+                    Observation::FrameMarker {
+                        kind: MarkerKind::Frame,
+                        phase,
+                        number: Some(frame),
+                        context_id: ContextId::new(0),
+                    },
+                )
+            };
+            ids.push(mark(&mut recording, begin, MarkerPhase::Begin));
+            mark(&mut recording, begin + 1_000, MarkerPhase::End);
+            let shown = begin + period;
+            recording.frame_point(begin + 1_000, frame, Target, &HOST, Some(shown));
+            recording.frame_point(shown, frame, Presented, &HOST, Some(shown));
+        }
+    }
+    let trace = Trace::from_snapshot(&recording.snapshot(300_000));
+
+    assert_eq!(
+        trace.frame_numbered(main.frame(1)).map(|frame| frame.id()),
+        Some(FrameId::new(ids[0]))
+    );
+    assert_eq!(
+        trace.frame_numbered(tools.frame(1)).map(|frame| frame.id()),
+        Some(FrameId::new(ids[3]))
+    );
+    assert!(
+        trace.frame_numbered(1).is_none(),
+        "nothing in the default stream"
+    );
+
+    let pacing = trace.pacing(us(1_000));
+    assert_eq!(pacing.frames().len(), 6);
+    assert_eq!(pacing.streams(), [main, tools]);
+    assert_eq!(pacing.counts().on_time, 6);
+    assert_eq!(
+        pacing
+            .frame(tools.frame(2))
+            .and_then(|frame| frame.target()),
+        Some(us(166_666))
+    );
+    assert_eq!(pacing.interval_breaks(), 0, "a new stream is not a break");
+    let main_only = pacing.in_stream(main);
+    assert_eq!(
+        (
+            main_only.intervals().count(),
+            main_only.intervals().median()
+        ),
+        (2, us(16_667))
+    );
+    let tools_only = pacing.in_stream(tools);
+    assert_eq!(
+        (
+            tools_only.intervals().count(),
+            tools_only.intervals().median()
+        ),
+        (2, us(33_333))
+    );
+    assert_eq!(main.frame(1).to_string(), "1:1");
+    assert_eq!(FrameNumber::from(1).to_string(), "1");
 }

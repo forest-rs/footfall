@@ -10,7 +10,9 @@ use crate::span::TrackKind;
 use crate::time::{TimeRange, nanos};
 use crate::trace::Trace;
 use core::time::Duration;
-use footfall_core::{DropReason, FramePointKind, TimelineId, TimelineKind};
+use footfall_core::{
+    DropReason, FrameNumber, FramePointKind, FrameStream, TimelineId, TimelineKind,
+};
 use std::collections::BTreeSet;
 
 /// One numbered frame's pacing: its CPU work, its GPU work, its deadline,
@@ -18,7 +20,7 @@ use std::collections::BTreeSet;
 /// shown, and what that adds up to, as [`Pacing::frames`] returns it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FramePacing {
-    number: u64,
+    number: FrameNumber,
     frame: Option<FrameId>,
     work: Option<TimeRange>,
     gpu: Option<TimeRange>,
@@ -109,9 +111,9 @@ pub enum LateCause {
 }
 
 impl FramePacing {
-    /// Returns the program's number for the frame.
+    /// Returns the program's number for the frame, in its stream.
     #[must_use]
-    pub const fn number(&self) -> u64 {
+    pub const fn number(&self) -> FrameNumber {
         self.number
     }
 
@@ -230,22 +232,65 @@ pub struct Pacing {
     unplaced_points: u64,
     intervals: Vec<Duration>,
     interval_breaks: u64,
+    gaps: Vec<TimeRange>,
 }
 
 impl Pacing {
-    /// Returns each numbered frame's pacing, by number.
+    /// Returns each numbered frame's pacing, by stream, then by number.
     #[must_use]
     pub fn frames(&self) -> &[FramePacing] {
         &self.frames
     }
 
-    /// Returns the pacing of the frame numbered `number`.
+    /// Returns the pacing of the frame numbered `number`: a plain `u64` for
+    /// the default frame stream, or a [`FrameNumber`].
     #[must_use]
-    pub fn frame(&self, number: u64) -> Option<&FramePacing> {
+    pub fn frame(&self, number: impl Into<FrameNumber>) -> Option<&FramePacing> {
+        let number = number.into();
         self.frames
             .binary_search_by_key(&number, FramePacing::number)
             .ok()
             .map(|index| &self.frames[index])
+    }
+
+    /// Returns the frame streams the frames belong to, such as one per
+    /// window, in order.
+    #[must_use]
+    pub fn streams(&self) -> Vec<FrameStream> {
+        let mut streams: Vec<_> = self
+            .frames
+            .iter()
+            .map(|frame| frame.number.stream())
+            .collect();
+        streams.dedup();
+        streams
+    }
+
+    /// Returns the pacing of one frame stream's frames alone, such as one
+    /// window's. The other answers pool every stream's frames; each frame is
+    /// judged against the frame before it in its own stream either way.
+    #[must_use]
+    pub fn in_stream(&self, stream: FrameStream) -> Self {
+        let frames: Vec<FramePacing> = self
+            .frames
+            .iter()
+            .filter(|frame| frame.number.stream() == stream)
+            .cloned()
+            .collect();
+        let (intervals, interval_breaks) = intervals(&frames, &self.gaps);
+        let unplaced_points = if frames.len() == self.frames.len() {
+            self.unplaced_points
+        } else {
+            0
+        };
+        Self {
+            frames,
+            tolerance: self.tolerance,
+            unplaced_points,
+            intervals,
+            interval_breaks,
+            gaps: self.gaps.clone(),
+        }
     }
 
     /// Returns how far from its target a frame could be shown, either way,
@@ -519,7 +564,7 @@ pub struct WastedWork {
 /// What a numbered frame's points and work say, before its outcome is
 /// judged against the frame before it.
 struct Raw {
-    number: u64,
+    number: FrameNumber,
     frame: Option<FrameId>,
     work: Option<TimeRange>,
     gpu: Option<TimeRange>,
@@ -533,7 +578,7 @@ struct Raw {
 }
 
 pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
-    let mut numbers: BTreeSet<u64> = trace.numbered_frames().collect();
+    let mut numbers: BTreeSet<FrameNumber> = trace.numbered_frames().collect();
     numbers.extend(trace.frame_points().keys().copied());
     let mut unplaced_points = 0_u64;
     let raws: Vec<Raw> = numbers
@@ -609,7 +654,7 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
             let before = index
                 .checked_sub(1)
                 .map(|before| &raws[before])
-                .filter(|before| before.number + 1 == raw.number);
+                .filter(|before| raw.number.previous() == Some(before.number));
             let outcome = outcome(raw, before, tolerance);
             FramePacing {
                 number: raw.number,
@@ -635,6 +680,7 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
         unplaced_points,
         intervals,
         interval_breaks,
+        gaps,
     }
 }
 
@@ -644,10 +690,15 @@ fn intervals(frames: &[FramePacing], gaps: &[TimeRange]) -> (Vec<Duration>, u64)
     let mut intervals = Vec::new();
     let mut breaks = 0;
     // The frame examined last, and when the frame on screen was shown.
-    let mut before: Option<u64> = None;
+    let mut before: Option<FrameNumber> = None;
     let mut shown: Option<Duration> = None;
     for frame in frames {
-        if before.is_some_and(|number| frame.number != number + 1) && shown.take().is_some() {
+        if before.is_some_and(|number| number.stream() != frame.number.stream()) {
+            // Another stream's frames, such as another window's.
+            shown = None;
+        } else if before.is_some_and(|number| frame.number.previous() != Some(number))
+            && shown.take().is_some()
+        {
             breaks += 1;
         }
         before = Some(frame.number);

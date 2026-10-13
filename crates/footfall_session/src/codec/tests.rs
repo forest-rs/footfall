@@ -6,8 +6,8 @@
 use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
 
 use footfall_core::{
-    Context, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, LabelKey, MarkerKind,
-    MarkerPhase, ScopeToken, SourceLocation,
+    Context, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, FrameNumber, FrameStream,
+    LabelKey, MarkerKind, MarkerPhase, ScopeToken, SourceLocation,
 };
 use footfall_runtime::{CounterKind, Snapshot, SnapshotMetadata, ThreadSnapshot};
 use std::io::ErrorKind;
@@ -377,7 +377,7 @@ fn codec_round_trips_owned_session_envelopes() {
 }
 
 /// Markers carry the program's number as a `u64` one greater than it, or
-/// `0` without one.
+/// `0` without one, and for a numbered one its stream's id and generation.
 #[test]
 fn markers_match_their_golden_fixture() {
     let marker = |at, sequence, phase, number| {
@@ -397,17 +397,18 @@ fn markers_match_their_golden_fixture() {
         EnvelopeHeader::new(PROTOCOL_VERSION, 0),
         OwnedSessionPayload::Events(vec![
             marker(0, 0, MarkerPhase::Begin, None),
-            marker(5, 1, MarkerPhase::End, Some(41)),
+            marker(5, 1, MarkerPhase::End, Some(FrameStream::new(2).frame(41))),
         ]),
     );
     let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
     // Header, events tag and count; then per row: time and sequence
-    // deltas, thread, tag `05`, kind, phase, number, context.
+    // deltas, thread, tag `05`, kind, phase, number, stream id and
+    // generation when numbered, context.
     assert_eq!(
         to_hex(&encoded),
         "01000000000602\
          0000010500000000\
-         0a02010500012a00"
+         0a02010500012a020000"
     );
     assert_eq!(
         decode_envelope(&encoded).expect("decoding should succeed"),
@@ -491,7 +492,7 @@ fn timeline_spans_match_their_golden_fixture() {
         ),
         1_400,
     )
-    .with_frame(Some(7))
+    .with_frame(Some(FrameNumber::from(7)))
     .with_flow(Some(FlowId::new(3)));
     let envelope = OwnedSessionEnvelope::new(
         EnvelopeHeader::new(PROTOCOL_VERSION, 0),
@@ -507,7 +508,8 @@ fn timeline_spans_match_their_golden_fixture() {
     let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
     // Tag `0b`; timeline `00` "gpu", kind `00`; scope `01` "shadow", no
     // location; context `00`; clock `02` "ts" at 1,000 ticks of 1/1 ns;
-    // 400 ticks long; frame 7 and flow 3, each written one more; no args.
+    // 400 ticks long; frame 7 written one more, in stream 0 generation 0;
+    // flow 3 written one more; no args.
     assert_eq!(
         to_hex(&encoded),
         "01000000000601\
@@ -517,7 +519,7 @@ fn timeline_spans_match_their_golden_fixture() {
          00\
          02027473e8070101\
          9003\
-         08\
+         080000\
          04\
          00"
     );
@@ -527,8 +529,8 @@ fn timeline_spans_match_their_golden_fixture() {
     );
 }
 
-/// Frame points carry the frame's number, the kind, and a tagged clock
-/// reading when they have a time.
+/// Frame points carry the frame as a numbered marker does, the kind, and a
+/// tagged clock reading when they have a time.
 #[test]
 fn frame_points_match_their_golden_fixture() {
     let envelope = OwnedSessionEnvelope::new(
@@ -539,7 +541,7 @@ fn frame_points_match_their_golden_fixture() {
                 0,
                 1,
                 OwnedObservation::FramePoint {
-                    number: 7,
+                    number: FrameNumber::from(7),
                     kind: footfall_core::FramePointKind::Target,
                     time: Some(OwnedClockTicks::new(
                         footfall_core::ClockId::new(0),
@@ -554,7 +556,7 @@ fn frame_points_match_their_golden_fixture() {
                 1,
                 1,
                 OwnedObservation::FramePoint {
-                    number: 8,
+                    number: FrameStream::new(1).with_generation(3).frame(8),
                     kind: footfall_core::FramePointKind::Dropped(
                         footfall_core::DropReason::Superseded,
                     ),
@@ -564,15 +566,16 @@ fn frame_points_match_their_golden_fixture() {
         ]),
     );
     let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
-    // Tag `0c`; frame 7, target `01`, time `01`, clock `00` "host" at
-    // 1,000 ticks of 1/1 ns; then frame 8, dropped `03` as superseded `02`,
-    // no time `00`.
+    // Tag `0c`; frame 7 written one more in stream 0 generation 0, target
+    // `01`, time `01`, clock `00` "host" at 1,000 ticks of 1/1 ns; then
+    // frame 8 of stream 1 generation 3, dropped `03` as superseded `02`, no
+    // time `00`.
     assert_eq!(
         to_hex(&encoded),
         "01000000000602\
-         0000010c070101\
+         0000010c0800000101\
          0004686f7374e8070101\
-         0a02010c08030200"
+         0a02010c090103030200"
     );
     assert_eq!(
         decode_envelope(&encoded).expect("decoding should succeed"),
@@ -610,7 +613,7 @@ fn every_frame_point_kind_round_trips() {
                 0,
                 1,
                 OwnedObservation::FramePoint {
-                    number: index as u64,
+                    number: FrameNumber::from(index as u64),
                     kind,
                     time: None,
                 },

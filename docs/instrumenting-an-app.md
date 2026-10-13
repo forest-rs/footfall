@@ -231,6 +231,29 @@ for frame_index in 0..3_u64 {
 }
 ```
 
+A program with more than one stream of frames, such as several windows,
+gives each a `FrameStream` and numbers its frames within it, so two windows'
+frame 42 stay apart in markers, timeline work, and frame points. When a
+window's frame driver or surface is recreated and its numbering starts
+again, give the stream a new generation. Plain numbers belong to
+`FrameStream::DEFAULT`.
+
+```rust
+use footfall::{ContextHandle, FrameStream};
+
+let main_window = FrameStream::new(1);
+let inspector = FrameStream::new(2);
+footfall::frame_begin_numbered(main_window.frame(42), ContextHandle::ROOT);
+footfall::frame_end_numbered(main_window.frame(42), ContextHandle::ROOT);
+footfall::frame_begin_numbered(inspector.frame(42), ContextHandle::ROOT);
+footfall::frame_end_numbered(inspector.frame(42), ContextHandle::ROOT);
+
+// The inspector's surface was recreated, and its numbering began again.
+let inspector = inspector.with_generation(1);
+footfall::frame_begin_numbered(inspector.frame(0), ContextHandle::ROOT);
+footfall::frame_end_numbered(inspector.frame(0), ContextHandle::ROOT);
+```
+
 ## Other Clocks
 
 Some times come from clocks other than the runtime's: a GPU's timestamp

@@ -114,6 +114,7 @@ mod clock;
 mod context;
 mod descriptor;
 mod emit;
+mod frame;
 mod handle;
 mod id;
 mod label;
@@ -138,6 +139,7 @@ pub use emit::{
 };
 #[cfg(feature = "std")]
 pub use emit::{InstallBackendError, install_backend};
+pub use frame::{FrameNumber, FrameStream};
 #[cfg(feature = "std")]
 pub use handle::LazyContext;
 pub use handle::{ContextHandle, RegisteredContext, register_context, release_context};

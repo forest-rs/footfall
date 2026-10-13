@@ -6,7 +6,7 @@
 use crate::time::TimeRange;
 use core::fmt;
 use core::time::Duration;
-use footfall_core::{ContextId, CounterDescId, MarkerKind, Unit};
+use footfall_core::{ContextId, CounterDescId, FrameNumber, MarkerKind, Unit};
 use footfall_runtime::CounterKind;
 use std::sync::Arc;
 
@@ -45,7 +45,7 @@ impl fmt::Display for FrameId {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame {
     pub(crate) id: FrameId,
-    pub(crate) number: Option<u64>,
+    pub(crate) number: Option<FrameNumber>,
     pub(crate) kind: MarkerKind,
     pub(crate) context_id: ContextId,
     pub(crate) thread_id: u64,
@@ -64,7 +64,7 @@ impl Frame {
     /// Returns the program's own number for the frame, such as a frame
     /// scheduler's frame index, when its markers carried one.
     #[must_use]
-    pub const fn number(&self) -> Option<u64> {
+    pub const fn number(&self) -> Option<FrameNumber> {
         self.number
     }
 

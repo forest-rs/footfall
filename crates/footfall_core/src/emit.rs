@@ -6,8 +6,8 @@ use crate::InstrumentationLevel;
 #[cfg(not(footfall_compile_out))]
 use crate::max_level;
 use crate::{
-    Args, ClockReading, Context, ContextHandle, CounterDesc, EventDesc, FlowId, FramePoint,
-    ResourceId, ResourceKindDesc, ScopeDesc, TimelineSpan,
+    Args, ClockReading, Context, ContextHandle, CounterDesc, EventDesc, FlowId, FrameNumber,
+    FramePoint, ResourceId, ResourceKindDesc, ScopeDesc, TimelineSpan,
 };
 #[cfg(feature = "std")]
 use std::sync::OnceLock;
@@ -293,7 +293,8 @@ pub trait Backend: Send + Sync {
     }
 
     /// Observes a frame, transaction, or pass boundary that the program
-    /// numbers itself, such as a frame scheduler's frame index.
+    /// numbers itself, such as a frame scheduler's frame index, within one
+    /// of its frame streams.
     ///
     /// The number lets observations made later, such as when the frame was
     /// shown, find the frame they belong to. The default forwards to
@@ -302,7 +303,7 @@ pub trait Backend: Send + Sync {
         &self,
         kind: MarkerKind,
         phase: MarkerPhase,
-        number: u64,
+        number: FrameNumber,
         context: ContextHandle,
     ) {
         let _ = number;
@@ -507,27 +508,33 @@ pub fn frame_marker(kind: MarkerKind, phase: MarkerPhase, context: ContextHandle
 }
 
 /// Emits a frame, transaction, or pass boundary marker carrying the
-/// program's own number for it, such as a frame scheduler's frame index.
+/// program's own number for it, such as a frame scheduler's frame index:
+/// a plain `u64`, or a [`FrameNumber`] in one of several frame streams.
 ///
 /// A begin and an end with the same kind and number delimit one unit of
 /// work, even when other units of the same kind begin or end between them.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn numbered_marker(kind: MarkerKind, phase: MarkerPhase, number: u64, context: ContextHandle) {
-    dispatch!(when matches!(phase, MarkerPhase::End) || max_level().captures_markers() => numbered_marker(kind, phase, number, context));
+pub fn numbered_marker(
+    kind: MarkerKind,
+    phase: MarkerPhase,
+    number: impl Into<FrameNumber>,
+    context: ContextHandle,
+) {
+    dispatch!(when matches!(phase, MarkerPhase::End) || max_level().captures_markers() => numbered_marker(kind, phase, number.into(), context));
 }
 
 /// Emits a frame begin marker for the frame the program numbers `number`.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn frame_begin_numbered(number: u64, context: ContextHandle) {
+pub fn frame_begin_numbered(number: impl Into<FrameNumber>, context: ContextHandle) {
     numbered_marker(MarkerKind::Frame, MarkerPhase::Begin, number, context);
 }
 
 /// Emits a frame end marker for the frame the program numbers `number`.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]
-pub fn frame_end_numbered(number: u64, context: ContextHandle) {
+pub fn frame_end_numbered(number: impl Into<FrameNumber>, context: ContextHandle) {
     numbered_marker(MarkerKind::Frame, MarkerPhase::End, number, context);
 }
 

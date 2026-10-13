@@ -9,6 +9,7 @@ use crate::query::{GroupBy, KeyPart};
 use crate::time::{Selection, TimeRange};
 use crate::trace::Trace;
 use core::time::Duration;
+use footfall_core::FrameNumber;
 use std::collections::BTreeMap;
 
 /// Units of work to compare, such as frames, in one trace.
@@ -20,7 +21,7 @@ pub struct Population<'t> {
     trace: &'t Trace,
     units: Vec<TimeRange>,
     /// Each unit's frame number, when the units are numbered frames.
-    numbers: Vec<Option<u64>>,
+    numbers: Vec<Option<FrameNumber>>,
 }
 
 impl<'t> Population<'t> {

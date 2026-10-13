@@ -81,6 +81,9 @@ whole, wherever they ran; `Trace::frame_spans` lists them.
 work, and the frame points a frame scheduler or display reported into a
 `FramePacing`: its deadline, its predicted, target, and expected display
 times, when it was shown, how long its GPU was busy, and an `Outcome`.
+Frames are numbered within frame streams, such as one per window; each
+frame is judged against the frame before it in its own stream, and
+`Pacing::in_stream` narrows the answers to one stream's frames.
 
 | Outcome | Meaning |
 |---|---|

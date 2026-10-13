@@ -7,9 +7,9 @@ use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use std::collections::{HashMap, HashSet};
 
 use footfall_core::{
-    ClockId, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, FramePointKind, LabelValue,
-    MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, SourceLocation,
-    TickPeriod, TimelineId, TimelineKind, Unit,
+    ClockId, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, FrameNumber, FramePointKind,
+    LabelValue, MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken,
+    SourceLocation, TickPeriod, TimelineId, TimelineKind, Unit,
 };
 use footfall_runtime::{
     ClockTicks, ContextSnapshot, CounterKind, CounterSnapshot, Drops, EventCursor, EventWindow,
@@ -1014,8 +1014,9 @@ pub enum OwnedObservation {
         kind: MarkerKind,
         /// Marker phase.
         phase: MarkerPhase,
-        /// The program's own number for the unit of work, when it gave one.
-        number: Option<u64>,
+        /// The program's own number for the unit of work, in its frame
+        /// stream, when it gave one.
+        number: Option<FrameNumber>,
         /// Canonical semantic context id.
         context_id: ContextId,
     },
@@ -1080,8 +1081,8 @@ pub enum OwnedObservation {
     /// A time a frame scheduler or display knows about a numbered frame;
     /// see `footfall_core::frame_point`.
     FramePoint {
-        /// The program's number for the frame.
-        number: u64,
+        /// The program's number for the frame, in its stream.
+        number: FrameNumber,
         /// What the point says about the frame.
         kind: FramePointKind,
         /// When, as a reading of another clock; `None` for a dropped frame.
@@ -1103,7 +1104,7 @@ pub struct OwnedTimelineWork {
     context_id: ContextId,
     begin: OwnedClockTicks,
     end: u64,
-    frame: Option<u64>,
+    frame: Option<FrameNumber>,
     flow: Option<FlowId>,
     args: Vec<OwnedArgEntry>,
 }
@@ -1148,7 +1149,7 @@ impl OwnedTimelineWork {
 
     /// Sets the program's number for the frame the work belongs to.
     #[must_use]
-    pub const fn with_frame(mut self, frame: Option<u64>) -> Self {
+    pub const fn with_frame(mut self, frame: Option<FrameNumber>) -> Self {
         self.frame = frame;
         self
     }
@@ -1223,7 +1224,7 @@ impl OwnedTimelineWork {
 
     /// Returns the program's number for the frame the work belongs to.
     #[must_use]
-    pub const fn frame(&self) -> Option<u64> {
+    pub const fn frame(&self) -> Option<FrameNumber> {
         self.frame
     }
 
