@@ -5,7 +5,9 @@
 //!
 //! A producer offers its runtimes to tools on the same machine; a tool finds
 //! every producer, then fetches snapshots or subscribes to a stream of them.
-//! Nothing here runs on the instrumented hot path.
+//! Nothing here runs on the instrumented hot path. Serving and attaching run
+//! on Tokio: call them from within a Tokio runtime, for example under
+//! `#[tokio::main]`. Outside one they panic.
 //!
 //! **Producers** call [`LocalSessionServer::start`] with the runtimes to
 //! offer, each as a [`ServedSession`]. It manages a self-signed localhost
