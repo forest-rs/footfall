@@ -8,6 +8,7 @@ cargo install footfall_cli
 
 footfall top                                 # watch the running session
 footfall record demo.ffcap                   # save it until Ctrl-C
+footfall check demo.ffcap                    # what it gives the analyses, and lacks
 footfall analyze summary demo.ffcap          # frames, scopes, counters, losses
 footfall analyze slow demo.ffcap             # what the slow frames did differently
 footfall analyze pacing demo.ffcap           # which frames were shown late, and why
@@ -24,6 +25,66 @@ and `footfall` finds them through a per-user state directory without
 configuration. Set `FOOTFALL_STATE_DIR` to the same directory for both to
 keep experiments apart from anything else running. Add `--help` to any
 command to see its options.
+
+## Checking an integration
+
+`footfall check` says what a capture gives the analyses. That makes it the
+first thing to run after instrumenting a program or wiring up a frame
+scheduler. Each line is one thing an analysis uses:
+
+| Check | What it looks for |
+|---|---|
+| `frames` | frame markers |
+| `numbered` | frames marked with their number |
+| `deadlines` | deadline points on numbered frames |
+| `submissions` | submission points |
+| `presentations` | presentation or drop points |
+| `bases` | submission and presentation times that state their basis |
+| `clocks` | times and spans on clocks that were never synced |
+| `gpu` | GPU work for the frames that were shown |
+| `counter_samples` | counter samples at frame ends |
+| `losses` | anything lost or cut short |
+| `visibility` | whether the output looked visible at all |
+
+Each check reports a status:
+
+- **present**: the capture has it everywhere it applies.
+- **partial**: some of the frames or times have it, and some don't.
+- **missing**: none do.
+- **suspect**: it's there but looks like an artifact of how the run was
+  recorded. For example, a long run of frames dropped for no stated reason
+  with none shown is what a sleeping display or a hidden window looks like.
+- **not recorded**: the producer's capture level or settings left it out,
+  so the capture can't say.
+- **n/a**: it needs something else that is missing.
+
+Anything short of present also says what depends on it, the call that
+records it, and the section of the
+[instrumenting guide](https://github.com/forest-rs/footfall/blob/main/docs/instrumenting-an-app.md)
+that explains it.
+
+Some frames are left out of the counts and named, rather than counted
+against the capture:
+
+- **Still in flight:** a frame whose point the capture ended too soon to
+  receive. At most 16 such frames at the end of each stream are left out;
+  more than that means the producer stopped reporting the point.
+- **Dropped before submitting:** a frame that was superseded, discarded,
+  missed its deadline, or had no surface can't have a submission time.
+
+`--require CHECK`, repeated, fails unless each named check is present. It
+lets an integration test or CI job keep a producer honest:
+
+```sh
+footfall check run.ffcap --require presentations --require bases --require gpu
+```
+
+`--json` prints the same as one document: `footfall_version`, `capture`,
+and `items`, the checks in the order above. Each item has:
+- `id` and `status` (`present`, `partial`, `missing`, `suspect`,
+  `not_recorded`, or `not_applicable`), and `reason` for the last two;
+- `found`, and `have` and `of` where it's counted;
+- `needed_for`, `fix`, and `guide`.
 
 ## Slow frames
 
