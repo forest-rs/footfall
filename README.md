@@ -53,7 +53,7 @@ footfall::frame_begin(ContextHandle::ROOT);
 footfall::frame_end(ContextHandle::ROOT);
 
 let trace = footfall::export::to_chrome_trace_json(&runtime.snapshot().into());
-# let _ = trace;
+println!("{} bytes of Chrome trace JSON", trace.len());
 ```
 
 Libraries depend on `footfall` with no features: the instrumentation API is

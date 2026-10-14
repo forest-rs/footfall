@@ -6,9 +6,10 @@
 //! A capture file is the header `FFALLCAP` followed by the `u16` protocol
 //! major and minor version, little-endian, and then snapshot publications
 //! back to back: each envelope as its byte length, a LEB128 integer,
-//! followed by the envelope encoded as in the [wire-format document]. A file can hold any
-//! number of snapshots, from one runtime or several, and a reader rebuilds
-//! each one exactly as a live consumer would have received it.
+//! followed by the envelope encoded as in the [wire-format document]. A
+//! file can hold any number of snapshots, from one runtime or several, and a
+//! reader rebuilds each one exactly as a live consumer would have received
+//! it.
 //!
 //! ```
 //! use footfall_runtime::Runtime;

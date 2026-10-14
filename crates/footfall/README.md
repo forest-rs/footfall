@@ -33,7 +33,8 @@ a tool needs as modules.
 | `tracy` | `footfall::tracy` | A live Tracy backend |
 
 `wtransport` and `tracy` are not available on wasm targets; there, the
-features add nothing.
+features add nothing. `wtransport` runs on Tokio, so serve and attach from
+within a Tokio runtime.
 
 ## Quick start
 
@@ -80,10 +81,12 @@ for counter in snapshot.counters() {
     println!("{} = {} {}", counter.name(), counter.value(), counter.unit().as_str());
 }
 let chrome_trace_json = footfall::export::to_chrome_trace_json(&snapshot.into());
-# let _ = chrome_trace_json;
+println!("{} bytes of Chrome trace JSON", chrome_trace_json.len());
 ```
 
-Save the JSON to a file and open it in [Perfetto](https://ui.perfetto.dev).
+Save the JSON to a file, or write one directly with
+`footfall::export::write_chrome_trace_file`, and open it in
+[Perfetto](https://ui.perfetto.dev).
 
 ## Guides
 

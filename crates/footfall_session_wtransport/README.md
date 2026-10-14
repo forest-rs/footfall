@@ -12,6 +12,9 @@ consumers.
   snapshot from a cursor, and `subscribe()` streams new ones. Every failure
   is a typed `ClientError`.
 
+Both run on Tokio: call them from within a Tokio runtime, for example under
+`#[tokio::main]`. Outside one they panic.
+
 The byte-level encoding is documented in the
 [wire format](https://github.com/forest-rs/footfall/blob/main/docs/session-wire-format.md).
 

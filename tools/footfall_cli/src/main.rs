@@ -46,6 +46,7 @@ use style::{BAD, DIM, GOOD, HEADING, HINT, NAME, WARN};
 /// Watch Footfall sessions live, record them to capture files, and
 /// summarize, compare, or export the captures.
 #[derive(Debug, Parser)]
+#[command(name = "footfall", version)]
 struct Args {
     #[command(subcommand)]
     command: Command,
