@@ -63,7 +63,8 @@ use footfall_core::{
     Args, Context, ContextHandle, EventDesc, LabelKey, LabelValue, ScopeDesc, ScopeToken,
     SourceLocation,
 };
-use std::{cell::RefCell, collections::HashMap, fmt::Write as _, sync::Mutex};
+use hashbrown::HashMap;
+use std::{cell::RefCell, fmt::Write as _, sync::Mutex};
 use tracing_core::{
     Event, Level, Metadata, Subscriber,
     field::{Field, Visit},

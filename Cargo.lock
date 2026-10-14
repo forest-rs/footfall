@@ -691,6 +691,7 @@ dependencies = [
  "footfall_core",
  "footfall_runtime",
  "footfall_session",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -746,6 +747,7 @@ dependencies = [
  "footfall_core",
  "footfall_runtime",
  "footfall_session",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -753,6 +755,7 @@ name = "footfall_fanout"
 version = "0.1.0"
 dependencies = [
  "footfall_core",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -767,6 +770,7 @@ name = "footfall_runtime"
 version = "0.1.0"
 dependencies = [
  "footfall_core",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -775,6 +779,7 @@ version = "0.1.0"
 dependencies = [
  "footfall_core",
  "footfall_runtime",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -797,6 +802,7 @@ version = "0.1.0"
 dependencies = [
  "footfall_core",
  "footfall_runtime",
+ "hashbrown 0.17.1",
  "tracing",
  "tracing-core",
  "tracing-subscriber",
@@ -807,6 +813,7 @@ name = "footfall_tracy"
 version = "0.1.0"
 dependencies = [
  "footfall_core",
+ "hashbrown 0.17.1",
  "tracy-client",
  "tracy-client-sys",
 ]

@@ -16,6 +16,7 @@ description = "Chrome Trace JSON export of Footfall snapshots, for Perfetto and 
 footfall_core = { features = ["std"], workspace = true }
 footfall_runtime.workspace = true
 footfall_session = { features = ["std"], workspace = true }
+hashbrown.workspace = true
 
 [lib]
 path = "src/lib.rs"

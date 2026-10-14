@@ -24,8 +24,9 @@ use footfall_session::{
     Clocks, OwnedArgEntry, OwnedContextEntry, OwnedCounterSnapshot, OwnedHistogramSnapshot,
     OwnedLabelValue, OwnedObservation, OwnedSnapshot, OwnedTimedObservation, OwnedTimelineWork,
 };
+use hashbrown::HashMap;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     fmt::{self, Write},
     fs,
     path::Path,

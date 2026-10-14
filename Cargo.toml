@@ -42,6 +42,8 @@ footfall_session = { default-features = false, path = "crates/footfall_session",
 footfall_session_wtransport = { default-features = false, path = "crates/footfall_session_wtransport", version = "0.1.0" }
 footfall_tracing = { default-features = false, path = "crates/footfall_tracing", version = "0.1.0" }
 footfall_tracy = { default-features = false, path = "crates/footfall_tracy", version = "0.1.0" }
+# The default hasher is foldhash; hashbrown's other defaults are unused.
+hashbrown = { default-features = false, features = ["default-hasher"], version = "0.17.1" }
 # These choose the Tracy protocol version: tracy-client-sys 0.30 is Tracy
 # 0.14, and the Tracy profiler must be the same version. When updating them,
 # update the Tracy version in crates/footfall_tracy/README.md, the crate docs

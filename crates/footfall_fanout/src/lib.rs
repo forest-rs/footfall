@@ -28,9 +28,9 @@ use footfall_core::{
     FrameNumber, FramePoint, InstallBackendError, MarkerKind, MarkerPhase, ResourceId,
     ResourceKindDesc, ScopeDesc, ScopeToken, TimelineSpan, install_backend,
 };
+use hashbrown::HashMap;
 use std::{
     boxed::Box,
-    collections::HashMap,
     fmt,
     sync::{
         Mutex,

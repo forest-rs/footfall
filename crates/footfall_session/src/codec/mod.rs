@@ -18,7 +18,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 use std::io;
 
 use footfall_core::{

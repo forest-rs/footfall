@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 use core::fmt;
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 
 use footfall_core::ContextId;
 use footfall_runtime::{
