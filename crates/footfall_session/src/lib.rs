@@ -46,8 +46,9 @@
 //! The wire format and the contract consumers can rely on are documented in
 //! the [session wire format] and [session consumer contract] guides.
 //!
-//! Without the `std` feature this crate only defines the protocol version
-//! and error codes.
+//! Without the `std` feature, on `alloc` alone, this crate still has
+//! [`OwnedSnapshot`], publishing envelopes to a [`Consumer`], and
+//! reassembling them; [`codec`] and [`capture`] need `std`.
 //!
 //! [session wire format]: https://github.com/forest-rs/footfall/blob/main/docs/session-wire-format.md
 //! [session consumer contract]: https://github.com/forest-rs/footfall/blob/main/docs/session-consumer-contract.md
@@ -58,7 +59,6 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-#[cfg(feature = "std")]
 mod assembled;
 #[cfg(feature = "std")]
 pub mod capture;
@@ -66,21 +66,17 @@ mod clocks;
 #[cfg(feature = "std")]
 pub mod codec;
 mod error;
-#[cfg(feature = "std")]
 mod snapshot;
 
-#[cfg(feature = "std")]
 pub use assembled::{AppendError, AssembleError, OwnedSnapshot};
 // Types that snapshots carry as they are, re-exported so consumers can name
 // and match them without depending on `footfall_core` or `footfall_runtime`.
-#[cfg(feature = "std")]
 pub use clocks::{ClockInfo, Clocks, Converted};
 pub use error::SessionErrorCode;
 pub use footfall_core::{
     ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, InstrumentationLevel, MarkerKind,
     MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, Unit,
 };
-#[cfg(feature = "std")]
 pub use footfall_runtime::{
     CaptureSettings, CounterKind, Drops, EventCursor, EventWindow, SnapshotMetadata, ThreadSnapshot,
 };

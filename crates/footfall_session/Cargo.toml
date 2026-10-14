@@ -14,11 +14,11 @@ description = "Footfall snapshots outside the process: owned snapshots, a compac
 
 [features]
 default = ["std"]
-std = ["footfall_core/std", "dep:footfall_runtime", "footfall_runtime/std"]
+std = ["footfall_core/std", "footfall_runtime/std"]
 
 [dependencies]
 footfall_core.workspace = true
-footfall_runtime = { optional = true, workspace = true }
+footfall_runtime.workspace = true
 hashbrown.workspace = true
 
 [lib]
