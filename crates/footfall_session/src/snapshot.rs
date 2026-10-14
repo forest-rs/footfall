@@ -4,7 +4,7 @@
 //! Runtime snapshot publication envelopes.
 
 use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 
 use footfall_core::{
     ClockId, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, FrameNumber, FramePointKind,

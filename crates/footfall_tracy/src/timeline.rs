@@ -15,7 +15,8 @@ use footfall_core::{
     ClockId, ClockReading, DropReason, FrameNumber, FramePoint, FramePointKind, ScopeDesc,
     TickPeriod, TimelineId, TimelineSpan,
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
+use std::collections::BTreeMap;
 use std::time::Instant;
 use tracy_client::{Client, GpuContext, GpuContextType, GpuSpan};
 
@@ -481,7 +482,7 @@ fn lateness(target: ClockReading, presented: ClockReading) -> PointOutcome {
 mod tests {
     use super::{Held, Pair, Plan, Step, Sync, Upload, advance, plan, ticks_now};
     use footfall_core::{ClockDesc, ScopeDesc, TickPeriod};
-    use std::collections::HashMap;
+    use hashbrown::HashMap;
     use std::time::{Duration, Instant};
 
     static FRAME: ScopeDesc = ScopeDesc::new("frame");

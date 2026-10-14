@@ -22,7 +22,8 @@ use footfall_session::{
     OwnedHistogramSnapshot, OwnedLabelValue, OwnedObservation, OwnedSnapshot, OwnedSourceLocation,
     OwnedTimelineWork, SnapshotKind, capture::CaptureReader,
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// Everything one runtime instance recorded, as far as its snapshots show,

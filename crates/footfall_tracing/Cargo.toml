@@ -14,6 +14,7 @@ description = "A tracing layer that forwards spans and events into Footfall."
 
 [dependencies]
 footfall_core = { features = ["std"], workspace = true }
+hashbrown.workspace = true
 tracing-core = "0.1.34"
 tracing-subscriber = { default-features = false, features = ["registry", "std"], version = "0.3.20" }
 

@@ -53,9 +53,10 @@ use footfall_core::{
     TickPeriod, TimelineId, TimelineKind, TimelineSpan, TimingBasis, Unit, install_backend,
     set_max_level,
 };
+use hashbrown::{HashMap, HashSet};
 use std::{
     boxed::Box,
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, VecDeque},
     string::String,
     sync::{
         Mutex,

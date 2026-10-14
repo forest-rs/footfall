@@ -65,9 +65,9 @@ use footfall_core::{
     ResourceKindDesc, ScopeDesc, ScopeDescId, ScopeToken, SourceLocation, TimelineSpan, Unit,
     install_backend,
 };
+use hashbrown::HashMap;
 use std::{
     cell::RefCell,
-    collections::HashMap,
     fmt,
     fmt::Write as _,
     sync::{
@@ -375,7 +375,7 @@ impl fmt::Debug for TracyBackend {
 #[derive(Default)]
 struct CounterState {
     plots: HashMap<CounterDescId, PlotName>,
-    configured: std::collections::HashSet<CounterDescId>,
+    configured: hashbrown::HashSet<CounterDescId>,
     values: HashMap<CounterDescId, u64>,
 }
 
