@@ -6,7 +6,6 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 publish = false
 description = "Criterion benchmarks for Footfall substrate overhead."
 

@@ -24,8 +24,6 @@ rust-version = "1.88.0"
 authors = ["Footfall Contributors"]
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/forest-rs/footfall"
-homepage = "https://github.com/forest-rs/footfall"
-readme = "README.md"
 keywords = ["instrumentation", "observability", "profiling", "tracing"]
 categories = ["development-tools::debugging", "development-tools::profiling"]
 
