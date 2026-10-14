@@ -3,6 +3,18 @@
 All notable changes to the published Footfall crates are recorded here. The
 crates share one version.
 
+## Unreleased
+
+### Tools
+
+- `footfall check` says what a capture gives the analyses: frame markers
+  and numbers, deadlines, submissions, presentations, stated timing bases,
+  clock syncs, GPU work, counter samples, losses, and whether the output
+  looked visible. For each one it says whether the capture has it, what
+  depends on it, and the call that records it. `--require` fails unless
+  the named checks are fully there, and `--json` prints the result for
+  other programs.
+
 ## 0.1.0 (2026-10-14)
 
 The first release.

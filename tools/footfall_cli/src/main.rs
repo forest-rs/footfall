@@ -9,6 +9,7 @@
 //! ```sh
 //! footfall top
 //! footfall record demo.ffcap
+//! footfall check demo.ffcap
 //! footfall analyze summary demo.ffcap
 //! footfall analyze slow demo.ffcap --by-arg nodes
 //! footfall analyze pacing demo.ffcap
@@ -19,6 +20,7 @@
 //! ```
 
 mod budget;
+mod check;
 mod format;
 mod json;
 mod pacing_json;
@@ -75,6 +77,23 @@ enum Command {
     /// one span did.
     #[command(subcommand)]
     Analyze(Analysis),
+    /// Check what a capture gives the analyses: for each thing they use,
+    /// whether the capture has it, what depends on it, and how to record it.
+    Check {
+        /// The capture file to read.
+        file: PathBuf,
+        /// Print the result as one JSON document, for other programs to
+        /// read.
+        #[arg(long)]
+        json: bool,
+        /// Fail unless the capture fully has CHECK; repeat for several.
+        #[arg(
+            long,
+            value_name = "CHECK",
+            value_parser = clap::builder::PossibleValuesParser::new(check::IDS)
+        )]
+        require: Vec<String>,
+    },
     /// Join a capture's windows into one Chrome trace for Perfetto.
     Export {
         /// The capture file to read.
@@ -177,6 +196,11 @@ async fn main() {
             .await
         }
         Command::Analyze(analysis) => analyze(analysis),
+        Command::Check {
+            file,
+            json,
+            require,
+        } => check(&file, json, &require),
         Command::Export { file, output } => {
             let output = output.unwrap_or_else(|| file.with_extension("json"));
             export(&file, &output)
@@ -268,7 +292,8 @@ async fn record(path: &Path, session: Option<&str>, interval: Duration) -> Resul
         format::bytes(bytes)
     );
     println!(
-        "summarize it with {HINT}footfall analyze summary {}{HINT:#}",
+        "summarize it with {HINT}footfall analyze summary {}{HINT:#}, or see what it gives the analyses with {HINT}footfall check {}{HINT:#}",
+        path.display(),
         path.display()
     );
     Ok(())
@@ -362,10 +387,91 @@ fn summary(path: &Path, budget_ms: Option<f64>) -> Result<()> {
 /// Reads every window of a capture into a trace of its first runtime
 /// instance, warning about what could not be added.
 fn read_trace(path: &Path) -> Result<Trace> {
+    Ok(read_trace_saying(path)?.0)
+}
+
+/// Reads a capture as [`read_trace`] does, and says how it was read.
+fn read_trace_saying(path: &Path) -> Result<(Trace, check::Read)> {
     let captured = Trace::from_capture(open_capture(path)?)
         .map_err(|error| format!("{}: {error}", path.display()))?;
-    warn_incomplete(path, captured.truncated().is_some(), captured.skipped());
-    Ok(captured.into_trace())
+    let read = check::Read {
+        truncated: captured.truncated().is_some(),
+        skipped: captured.skipped(),
+    };
+    warn_incomplete(path, read.truncated, read.skipped);
+    Ok((captured.into_trace(), read))
+}
+
+/// Says what a capture gives the analyses, and fails when a required check
+/// is not met.
+fn check(path: &Path, json: bool, require: &[String]) -> Result<()> {
+    let (trace, read) = read_trace_saying(path)?;
+    let items = check::check(&trace, read);
+    let unmet = check::unmet(&items, require)?;
+    if json {
+        println!("{}", check::document(path, &trace, &items));
+    } else {
+        print_check(path, &trace, &items);
+    }
+    if unmet.is_empty() {
+        return Ok(());
+    }
+    let unmet: Vec<String> = unmet
+        .iter()
+        .map(|item| format!("{} ({})", item.id, item.status.name().replace('_', " ")))
+        .collect();
+    Err(format!("required checks not met: {}", unmet.join(", ")).into())
+}
+
+fn print_check(path: &Path, trace: &Trace, items: &[check::Item]) {
+    use check::Status;
+    let producer = trace.metadata().map_or(String::new(), |metadata| {
+        format!(
+            " · {} pid {} · producer {}",
+            metadata.process_name(),
+            metadata.process_id(),
+            metadata.producer_version()
+        )
+    });
+    println!(
+        "{HEADING}What {} gives the analyses{HEADING:#}{DIM}{producer}{DIM:#}",
+        path.display()
+    );
+    for item in items {
+        let (style, word) = match &item.status {
+            Status::Present => (GOOD, "present"),
+            Status::Partial => (WARN, "partial"),
+            Status::Suspect => (WARN, "suspect"),
+            Status::Missing => (BAD, "missing"),
+            Status::NotRecorded(_) => (BAD, "not recorded"),
+            Status::NotApplicable(_) => (DIM, "n/a"),
+        };
+        let found = match &item.status {
+            Status::NotRecorded(why) => why.clone(),
+            Status::NotApplicable(why) => (*why).to_owned(),
+            _ => item.found.clone(),
+        };
+        println!(
+            "  {style}{word:<12}{style:#} {NAME}{:<16}{NAME:#} {found}",
+            item.id
+        );
+        if matches!(
+            item.status,
+            Status::Partial | Status::Suspect | Status::Missing
+        ) {
+            println!("  {:30}{DIM}needed for {}{DIM:#}", "", item.needed_for);
+            println!("  {:30}{HINT}{}{HINT:#}", "", item.fix);
+            println!("  {:30}{DIM}{}{DIM:#}", "", item.guide());
+        }
+    }
+    let present = items
+        .iter()
+        .filter(|item| item.status == Status::Present)
+        .count();
+    println!(
+        "{DIM}{present} of {} present; --json for every detail{DIM:#}",
+        items.len()
+    );
 }
 
 fn slow(path: &Path, budget_ms: Option<f64>, top: usize, by_arg: Option<&str>) -> Result<()> {
@@ -469,7 +575,10 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> 
         format::duration(pacing.tolerance()),
     );
     if counts.total() == 0 {
-        println!("No numbered frames: mark frames with frame_begin_numbered.");
+        println!(
+            "No numbered frames: mark frames with frame_begin_numbered. {HINT}footfall check {}{HINT:#} says what else pacing needs.",
+            path.display()
+        );
         return Ok(());
     }
     let style = if counts.missed() == 0 { GOOD } else { BAD };

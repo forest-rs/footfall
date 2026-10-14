@@ -391,7 +391,10 @@ Say why a frame was dropped. A frame the program superseded with newer work
 (`DropReason::Superseded`) is not a miss, while one still waiting when its
 deadline passed (`DropReason::MissedDeadline`) is, and so is one the
 platform reports it never presented without saying why
-(`DropReason::NotPresented`).
+(`DropReason::NotPresented`). A frame dropped because the display was
+asleep or the window hidden or minimized is `DropReason::OutputUnavailable`.
+Without it, a run that nobody could see looks like one that dropped every
+frame.
 
 Say how each time of something that happened was known, with
 `FramePoint::with_basis`: a presentation time the compositor reported is
@@ -428,6 +431,20 @@ footfall::frame_point(
 );
 // Or, if newer work replaced the next frame before it was submitted:
 footfall::frame_point(&FramePoint::dropped(1235, footfall::DropReason::Superseded));
+```
+
+## Checking What You Recorded
+
+Run `footfall check` on a capture to see what it gives the analyses. It
+covers frame markers and numbers, deadlines, submissions, presentations,
+stated timing bases, clock syncs, GPU work, counter samples, losses, and
+whether the output looked visible. For each one it says whether the
+capture has it, which conclusions depend on it, and the call that records
+it, with a link to the section of this guide that explains it. Add
+`--require` to make it a test:
+
+```sh
+footfall check run.ffcap --require presentations --require gpu
 ```
 
 ## What Lives Where
