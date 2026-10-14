@@ -51,10 +51,12 @@ Each crate owns one thing and says what it does not own.
   own.
 - **`footfall_runtime`** owns bounded in-process collection: per-thread
   shards, the context table, timestamps, sequence numbers, cursors, and
-  snapshots. It does not own wire formats, export, or UI policy.
+  snapshots. It does not own wire formats, export, or UI policy. Its
+  snapshot types need only `alloc`; collection needs `std`.
 - **`footfall_session`** owns the form snapshots take outside the process
   (`OwnedSnapshot`), the versioned envelopes they travel in, the codec, and
-  capture files. It is transport-neutral.
+  capture files. It is transport-neutral, and all but capture files need
+  only `alloc`.
 - **`footfall_session_wtransport`** owns one transport: local discovery,
   identity and certificate pinning, and request, response, and
   subscription framing over WebTransport.

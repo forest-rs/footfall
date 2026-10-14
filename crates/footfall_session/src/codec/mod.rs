@@ -4,11 +4,11 @@
 //! Byte encoding of session envelopes.
 //!
 //! This is the encoding the [wire-format document] specifies, shared by every
-//! transport and by capture files. Encoding fails with
-//! [`io::ErrorKind::InvalidInput`] for a value this protocol version has no
-//! encoding for or that exceeds a limit; decoding fails with
-//! [`io::ErrorKind::InvalidData`] for anything malformed, truncated, too
-//! large, or of an unsupported version.
+//! transport and by capture files. It needs only `alloc`. Failures are a
+//! [`CodecError`]: encoding fails for a value this protocol version has no
+//! encoding for or that exceeds a limit, and decoding for bytes that are
+//! malformed, truncated, or too large, or that a newer protocol version
+//! produced. With `std`, a `CodecError` converts to an [`std::io::Error`].
 //!
 //! [wire-format document]: https://github.com/forest-rs/footfall/blob/main/docs/session-wire-format.md
 
@@ -18,8 +18,8 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
+use core::fmt;
 use hashbrown::{HashMap, HashSet};
-use std::io;
 
 use footfall_core::{
     ClockId, ContextId, CounterDescId, DropReason, EventDescId, FlowId, FlowPhase, FrameNumber,
@@ -49,6 +49,77 @@ pub const MAX_CONTEXT_ENTRIES_PER_CONTEXT: usize = footfall_core::CONTEXT_INLINE
 /// Maximum per-instance arguments accepted for one encoded observation.
 pub const MAX_ARGS_PER_OBSERVATION: usize = footfall_core::ARGS_INLINE_CAPACITY;
 
+/// Why an envelope could not be encoded or decoded.
+///
+/// With `std`, it converts to an [`std::io::Error`] of kind `InvalidInput`
+/// for [`Unencodable`](Self::Unencodable) and `InvalidData` otherwise. An
+/// [`Incompatible`](Self::Incompatible) error stays one:
+/// [`IncompatibleVersion::of`] finds it in the converted error.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum CodecError {
+    /// The envelope holds a value this protocol version has no encoding
+    /// for, or one over a limit such as [`MAX_SESSION_STRING_BYTES`]. Only
+    /// encoding fails this way.
+    Unencodable {
+        /// What could not be encoded.
+        reason: String,
+    },
+    /// The bytes are not an envelope: malformed, truncated, or over a
+    /// limit. Only decoding fails this way.
+    Malformed {
+        /// What is wrong with the bytes.
+        reason: String,
+    },
+    /// The envelope was produced at a protocol version this codec cannot
+    /// decode. Only decoding fails this way.
+    Incompatible(IncompatibleVersion),
+}
+
+impl CodecError {
+    pub(crate) fn unencodable(reason: impl Into<String>) -> Self {
+        Self::Unencodable {
+            reason: reason.into(),
+        }
+    }
+
+    pub(crate) fn malformed(reason: impl Into<String>) -> Self {
+        Self::Malformed {
+            reason: reason.into(),
+        }
+    }
+}
+
+impl fmt::Display for CodecError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unencodable { reason } | Self::Malformed { reason } => {
+                formatter.write_str(reason)
+            }
+            Self::Incompatible(incompatible) => incompatible.fmt(formatter),
+        }
+    }
+}
+
+impl core::error::Error for CodecError {}
+
+#[cfg(feature = "std")]
+impl From<CodecError> for std::io::Error {
+    fn from(error: CodecError) -> Self {
+        use std::io::ErrorKind;
+        match error {
+            CodecError::Incompatible(incompatible) => {
+                IncompatibleVersion::error(incompatible.produced())
+            }
+            CodecError::Unencodable { .. } => Self::new(ErrorKind::InvalidInput, error),
+            CodecError::Malformed { .. } => Self::new(ErrorKind::InvalidData, error),
+        }
+    }
+}
+
+/// The result of encoding or decoding.
+type Result<T, E = CodecError> = core::result::Result<T, E>;
+
 /// Newest protocol version this codec decodes.
 const CODEC_VERSION: ProtocolVersion = PROTOCOL_VERSION;
 
@@ -66,7 +137,7 @@ pub(crate) const TAG_EVENTS: u8 = 6;
 pub(crate) const TAG_SNAPSHOT_END: u8 = 7;
 
 /// Encodes one envelope, as published by [`crate::publish_snapshot`].
-pub fn encode_envelope(envelope: Envelope<'_>) -> io::Result<Vec<u8>> {
+pub fn encode_envelope(envelope: Envelope<'_>) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     encode_header(&mut bytes, envelope.header());
     match envelope.payload() {
@@ -114,7 +185,7 @@ pub fn encode_envelope(envelope: Envelope<'_>) -> io::Result<Vec<u8>> {
 }
 
 /// Encodes one owned envelope, such as one received earlier.
-pub fn encode_owned_envelope(envelope: &OwnedSessionEnvelope) -> io::Result<Vec<u8>> {
+pub fn encode_owned_envelope(envelope: &OwnedSessionEnvelope) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     encode_header(&mut bytes, envelope.header());
     match envelope.payload() {
@@ -162,7 +233,7 @@ pub fn encode_owned_envelope(envelope: &OwnedSessionEnvelope) -> io::Result<Vec<
 }
 
 /// Decodes one envelope, checking its protocol version.
-pub fn decode_envelope(bytes: &[u8]) -> io::Result<OwnedSessionEnvelope> {
+pub fn decode_envelope(bytes: &[u8]) -> Result<OwnedSessionEnvelope> {
     validate_wire_len(
         bytes.len(),
         MAX_SESSION_ENVELOPE_BYTES,
@@ -184,15 +255,13 @@ pub fn decode_envelope(bytes: &[u8]) -> io::Result<OwnedSessionEnvelope> {
         TAG_EVENTS => OwnedSessionPayload::Events(decode_events(&mut cursor)?),
         TAG_SNAPSHOT_END => OwnedSessionPayload::SnapshotEnd(decode_drops(&mut cursor)?),
         tag => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("unknown session payload tag: {tag}"),
-            ));
+            return Err(CodecError::malformed(format!(
+                "unknown session payload tag: {tag}"
+            )));
         }
     };
     if !cursor.is_exhausted() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(CodecError::malformed(
             "trailing bytes after session envelope",
         ));
     }
@@ -205,10 +274,12 @@ pub(crate) fn encode_header(bytes: &mut Vec<u8>, header: EnvelopeHeader) {
     encode_u64(bytes, header.chunk_index());
 }
 
-pub(crate) fn decode_header(cursor: &mut Cursor<'_>) -> io::Result<EnvelopeHeader> {
+pub(crate) fn decode_header(cursor: &mut Cursor<'_>) -> Result<EnvelopeHeader> {
     let protocol_version = ProtocolVersion::new(decode_u16(cursor)?, decode_u16(cursor)?);
     if !CODEC_VERSION.can_decode(protocol_version) {
-        return Err(IncompatibleVersion::error(protocol_version));
+        return Err(CodecError::Incompatible(IncompatibleVersion::new(
+            protocol_version,
+        )));
     }
     Ok(EnvelopeHeader::new(protocol_version, decode_u64(cursor)?))
 }
@@ -220,7 +291,7 @@ pub(crate) fn encode_snapshot_summary(
     captured_at_nanos: u64,
     window: EventWindow,
     counts: RowCounts,
-) -> io::Result<()> {
+) -> Result<()> {
     encode_snapshot_metadata(bytes, metadata)?;
     encode_u8(
         bytes,
@@ -242,16 +313,15 @@ pub(crate) fn encode_snapshot_summary(
     Ok(())
 }
 
-pub(crate) fn decode_snapshot_summary(cursor: &mut Cursor<'_>) -> io::Result<OwnedSnapshotSummary> {
+pub(crate) fn decode_snapshot_summary(cursor: &mut Cursor<'_>) -> Result<OwnedSnapshotSummary> {
     let metadata = decode_snapshot_metadata(cursor)?;
     let kind = match decode_u8(cursor)? {
         0 => SnapshotKind::Full,
         1 => SnapshotKind::Changes,
         tag => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("unknown snapshot kind tag: {tag}"),
-            ));
+            return Err(CodecError::malformed(format!(
+                "unknown snapshot kind tag: {tag}"
+            )));
         }
     };
     let captured_at_nanos = decode_u64(cursor)?;
@@ -277,18 +347,15 @@ pub(crate) fn decode_snapshot_summary(cursor: &mut Cursor<'_>) -> io::Result<Own
     ))
 }
 
-fn decode_bool(cursor: &mut Cursor<'_>, what: &str) -> io::Result<bool> {
+fn decode_bool(cursor: &mut Cursor<'_>, what: &str) -> Result<bool> {
     match decode_u8(cursor)? {
         0 => Ok(false),
         1 => Ok(true),
-        tag => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid {what}: {tag}"),
-        )),
+        tag => Err(CodecError::malformed(format!("invalid {what}: {tag}"))),
     }
 }
 
-fn encode_context_ids(bytes: &mut Vec<u8>, ids: &[ContextId]) -> io::Result<()> {
+fn encode_context_ids(bytes: &mut Vec<u8>, ids: &[ContextId]) -> Result<()> {
     encode_len(bytes, ids.len())?;
     for id in ids {
         encode_u64(bytes, id.get());
@@ -296,7 +363,7 @@ fn encode_context_ids(bytes: &mut Vec<u8>, ids: &[ContextId]) -> io::Result<()> 
     Ok(())
 }
 
-fn decode_context_ids(cursor: &mut Cursor<'_>) -> io::Result<Vec<ContextId>> {
+fn decode_context_ids(cursor: &mut Cursor<'_>) -> Result<Vec<ContextId>> {
     let len = decode_bounded_len(cursor, MAX_ROWS_PER_ENVELOPE, "retired context ids")?;
     let mut ids = Vec::with_capacity(len);
     for _ in 0..len {
@@ -308,7 +375,7 @@ fn decode_context_ids(cursor: &mut Cursor<'_>) -> io::Result<Vec<ContextId>> {
 pub(crate) fn encode_snapshot_metadata(
     bytes: &mut Vec<u8>,
     metadata: &SnapshotMetadata,
-) -> io::Result<()> {
+) -> Result<()> {
     encode_string(bytes, metadata.process_name())?;
     encode_optional_string(bytes, metadata.session_name())?;
     encode_u64(bytes, metadata.instance_id());
@@ -327,7 +394,7 @@ pub(crate) fn encode_snapshot_metadata(
     Ok(())
 }
 
-pub(crate) fn decode_snapshot_metadata(cursor: &mut Cursor<'_>) -> io::Result<SnapshotMetadata> {
+pub(crate) fn decode_snapshot_metadata(cursor: &mut Cursor<'_>) -> Result<SnapshotMetadata> {
     let process_name = decode_string(cursor)?;
     let session_name = decode_optional_string(cursor, "session name")?;
     let instance_id = decode_u64(cursor)?;
@@ -342,10 +409,9 @@ pub(crate) fn decode_snapshot_metadata(cursor: &mut Cursor<'_>) -> io::Result<Sn
     );
     let flags = decode_u8(cursor)?;
     if flags & !0b11 != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unknown capture flags: {flags:#04x}"),
-        ));
+        return Err(CodecError::malformed(format!(
+            "unknown capture flags: {flags:#04x}"
+        )));
     }
     let capture = capture
         .with_counter_samples(flags & 0b01 != 0)
@@ -362,7 +428,7 @@ pub(crate) fn decode_snapshot_metadata(cursor: &mut Cursor<'_>) -> io::Result<Sn
     })
 }
 
-pub(crate) fn encode_threads(bytes: &mut Vec<u8>, threads: &[ThreadSnapshot]) -> io::Result<()> {
+pub(crate) fn encode_threads(bytes: &mut Vec<u8>, threads: &[ThreadSnapshot]) -> Result<()> {
     encode_len(bytes, threads.len())?;
     for thread in threads {
         encode_u64(bytes, thread.id());
@@ -371,7 +437,7 @@ pub(crate) fn encode_threads(bytes: &mut Vec<u8>, threads: &[ThreadSnapshot]) ->
     Ok(())
 }
 
-pub(crate) fn decode_threads(cursor: &mut Cursor<'_>) -> io::Result<Vec<ThreadSnapshot>> {
+pub(crate) fn decode_threads(cursor: &mut Cursor<'_>) -> Result<Vec<ThreadSnapshot>> {
     let len = decode_bounded_len(cursor, MAX_ROWS_PER_ENVELOPE, "thread rows")?;
     let mut threads = Vec::with_capacity(len);
     for _ in 0..len {
@@ -384,7 +450,7 @@ pub(crate) fn decode_threads(cursor: &mut Cursor<'_>) -> io::Result<Vec<ThreadSn
     Ok(threads)
 }
 
-pub(crate) fn encode_optional_string(bytes: &mut Vec<u8>, value: Option<&str>) -> io::Result<()> {
+pub(crate) fn encode_optional_string(bytes: &mut Vec<u8>, value: Option<&str>) -> Result<()> {
     match value {
         Some(value) => {
             encode_u8(bytes, 1);
@@ -400,18 +466,17 @@ pub(crate) fn encode_optional_string(bytes: &mut Vec<u8>, value: Option<&str>) -
 pub(crate) fn decode_optional_string(
     cursor: &mut Cursor<'_>,
     what: &str,
-) -> io::Result<Option<String>> {
+) -> Result<Option<String>> {
     match decode_u8(cursor)? {
         0 => Ok(None),
         1 => Ok(Some(decode_string(cursor)?)),
-        tag => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid {what} presence tag: {tag}"),
-        )),
+        tag => Err(CodecError::malformed(format!(
+            "invalid {what} presence tag: {tag}"
+        ))),
     }
 }
 
-pub(crate) fn encode_level(level: InstrumentationLevel) -> io::Result<u8> {
+pub(crate) fn encode_level(level: InstrumentationLevel) -> Result<u8> {
     match level {
         InstrumentationLevel::Off => Ok(0),
         InstrumentationLevel::Counters => Ok(1),
@@ -421,16 +486,15 @@ pub(crate) fn encode_level(level: InstrumentationLevel) -> io::Result<u8> {
     }
 }
 
-pub(crate) fn decode_level(tag: u8) -> io::Result<InstrumentationLevel> {
+pub(crate) fn decode_level(tag: u8) -> Result<InstrumentationLevel> {
     match tag {
         0 => Ok(InstrumentationLevel::Off),
         1 => Ok(InstrumentationLevel::Counters),
         2 => Ok(InstrumentationLevel::Scoped),
         3 => Ok(InstrumentationLevel::Trace),
-        tag => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unknown instrumentation level tag: {tag}"),
-        )),
+        tag => Err(CodecError::malformed(format!(
+            "unknown instrumentation level tag: {tag}"
+        ))),
     }
 }
 
@@ -438,15 +502,15 @@ pub(crate) fn usize_to_u64(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }
 
-pub(crate) fn decode_u64_as_usize(cursor: &mut Cursor<'_>) -> io::Result<usize> {
+pub(crate) fn decode_u64_as_usize(cursor: &mut Cursor<'_>) -> Result<usize> {
     usize::try_from(decode_u64(cursor)?)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "u64 value does not fit usize"))
+        .map_err(|_| CodecError::malformed("u64 value does not fit usize"))
 }
 
 pub(crate) fn encode_contexts(
     bytes: &mut Vec<u8>,
     contexts: &[OwnedContextSnapshot],
-) -> io::Result<()> {
+) -> Result<()> {
     encode_len(bytes, contexts.len())?;
     for context in contexts {
         encode_u64(bytes, context.id().get());
@@ -463,7 +527,7 @@ pub(crate) fn encode_contexts(
 pub(crate) fn encode_borrowed_contexts(
     bytes: &mut Vec<u8>,
     contexts: &[footfall_runtime::ContextSnapshot],
-) -> io::Result<()> {
+) -> Result<()> {
     encode_len(bytes, contexts.len())?;
     for context in contexts {
         encode_u64(bytes, context.id().get());
@@ -477,7 +541,7 @@ pub(crate) fn encode_borrowed_contexts(
     Ok(())
 }
 
-pub(crate) fn decode_contexts(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedContextSnapshot>> {
+pub(crate) fn decode_contexts(cursor: &mut Cursor<'_>) -> Result<Vec<OwnedContextSnapshot>> {
     let len = decode_bounded_len(cursor, MAX_ROWS_PER_ENVELOPE, "context rows")?;
     let mut contexts = Vec::with_capacity(len);
     for _ in 0..len {
@@ -500,7 +564,7 @@ pub(crate) fn decode_contexts(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedCo
 pub(crate) fn encode_borrowed_label_value(
     bytes: &mut Vec<u8>,
     value: footfall_core::LabelValue,
-) -> io::Result<()> {
+) -> Result<()> {
     match value {
         footfall_core::LabelValue::Unsigned(value) => {
             encode_u8(bytes, 0);
@@ -526,7 +590,7 @@ pub(crate) fn encode_borrowed_label_value(
 pub(crate) fn encode_counters(
     bytes: &mut Vec<u8>,
     counters: &[OwnedCounterSnapshot],
-) -> io::Result<()> {
+) -> Result<()> {
     encode_len(bytes, counters.len())?;
     let mut names = NameWriter::default();
     for counter in counters {
@@ -543,7 +607,7 @@ pub(crate) fn encode_counters(
 pub(crate) fn encode_borrowed_counters(
     bytes: &mut Vec<u8>,
     counters: &[footfall_runtime::CounterSnapshot],
-) -> io::Result<()> {
+) -> Result<()> {
     encode_len(bytes, counters.len())?;
     let mut names = NameWriter::default();
     for counter in counters {
@@ -557,7 +621,7 @@ pub(crate) fn encode_borrowed_counters(
     Ok(())
 }
 
-pub(crate) fn decode_counters(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedCounterSnapshot>> {
+pub(crate) fn decode_counters(cursor: &mut Cursor<'_>) -> Result<Vec<OwnedCounterSnapshot>> {
     let len = decode_bounded_len(cursor, MAX_ROWS_PER_ENVELOPE, "counter rows")?;
     let mut counters = Vec::with_capacity(len);
     let mut names = NameReader::default();
@@ -578,7 +642,7 @@ pub(crate) fn decode_counters(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedCo
 pub(crate) fn encode_histograms(
     bytes: &mut Vec<u8>,
     histograms: &[OwnedHistogramSnapshot],
-) -> io::Result<()> {
+) -> Result<()> {
     encode_len(bytes, histograms.len())?;
     let mut names = NameWriter::default();
     for histogram in histograms {
@@ -601,7 +665,7 @@ pub(crate) fn encode_histograms(
 pub(crate) fn encode_borrowed_histograms(
     bytes: &mut Vec<u8>,
     histograms: &[footfall_runtime::HistogramSnapshot],
-) -> io::Result<()> {
+) -> Result<()> {
     encode_len(bytes, histograms.len())?;
     let mut names = NameWriter::default();
     for histogram in histograms {
@@ -640,9 +704,7 @@ pub(crate) fn encode_histogram_body(
     encode_u64(bytes, updated_at_nanos);
 }
 
-pub(crate) fn decode_histograms(
-    cursor: &mut Cursor<'_>,
-) -> io::Result<Vec<OwnedHistogramSnapshot>> {
+pub(crate) fn decode_histograms(cursor: &mut Cursor<'_>) -> Result<Vec<OwnedHistogramSnapshot>> {
     let len = decode_bounded_len(cursor, MAX_ROWS_PER_ENVELOPE, "histogram rows")?;
     let mut histograms = Vec::with_capacity(len);
     let mut names = NameReader::default();
@@ -675,10 +737,7 @@ pub(crate) fn decode_histograms(
     Ok(histograms)
 }
 
-pub(crate) fn encode_events(
-    bytes: &mut Vec<u8>,
-    events: &[OwnedTimedObservation],
-) -> io::Result<()> {
+pub(crate) fn encode_events(bytes: &mut Vec<u8>, events: &[OwnedTimedObservation]) -> Result<()> {
     encode_len(bytes, events.len())?;
     // Timestamps and sequence numbers are written as differences from the
     // previous row's, which are small.
@@ -697,7 +756,7 @@ pub(crate) fn encode_events(
 pub(crate) fn encode_borrowed_events(
     bytes: &mut Vec<u8>,
     events: &[footfall_runtime::TimedObservation],
-) -> io::Result<()> {
+) -> Result<()> {
     encode_len(bytes, events.len())?;
     // Timestamps and sequence numbers are written as differences from the
     // previous row's, which are small.
@@ -713,7 +772,7 @@ pub(crate) fn encode_borrowed_events(
     Ok(())
 }
 
-pub(crate) fn decode_events(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedTimedObservation>> {
+pub(crate) fn decode_events(cursor: &mut Cursor<'_>) -> Result<Vec<OwnedTimedObservation>> {
     let len = decode_bounded_len(cursor, MAX_ROWS_PER_ENVELOPE, "event rows")?;
     let mut events = Vec::with_capacity(len);
     let mut names = NameReader::default();
@@ -735,7 +794,7 @@ pub(crate) fn encode_borrowed_observation(
     bytes: &mut Vec<u8>,
     observation: &footfall_runtime::Observation,
     names: &mut NameWriter,
-) -> io::Result<()> {
+) -> Result<()> {
     match observation {
         footfall_runtime::Observation::ScopeBegin {
             desc_id,
@@ -910,7 +969,7 @@ pub(crate) fn encode_borrowed_observation(
     Ok(())
 }
 
-pub(crate) fn encode_args(bytes: &mut Vec<u8>, args: &[OwnedArgEntry]) -> io::Result<()> {
+pub(crate) fn encode_args(bytes: &mut Vec<u8>, args: &[OwnedArgEntry]) -> Result<()> {
     let count = u8::try_from(args.len().min(MAX_ARGS_PER_OBSERVATION))
         .expect("bounded args count fits into u8");
     encode_u8(bytes, count);
@@ -921,10 +980,7 @@ pub(crate) fn encode_args(bytes: &mut Vec<u8>, args: &[OwnedArgEntry]) -> io::Re
     Ok(())
 }
 
-pub(crate) fn encode_borrowed_args(
-    bytes: &mut Vec<u8>,
-    args: footfall_core::Args,
-) -> io::Result<()> {
+pub(crate) fn encode_borrowed_args(bytes: &mut Vec<u8>, args: footfall_core::Args) -> Result<()> {
     let count = u8::try_from(args.len().min(MAX_ARGS_PER_OBSERVATION))
         .expect("bounded args count fits into u8");
     encode_u8(bytes, count);
@@ -935,13 +991,12 @@ pub(crate) fn encode_borrowed_args(
     Ok(())
 }
 
-pub(crate) fn decode_args(cursor: &mut Cursor<'_>) -> io::Result<Vec<OwnedArgEntry>> {
+pub(crate) fn decode_args(cursor: &mut Cursor<'_>) -> Result<Vec<OwnedArgEntry>> {
     let count = usize::from(decode_u8(cursor)?);
     if count > MAX_ARGS_PER_OBSERVATION {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("too many observation args: {count}"),
-        ));
+        return Err(CodecError::malformed(format!(
+            "too many observation args: {count}"
+        )));
     }
     let mut args = Vec::with_capacity(count);
     for _ in 0..count {
@@ -962,7 +1017,7 @@ pub(crate) fn encode_drops(bytes: &mut Vec<u8>, drops: Drops) {
     encode_u64(bytes, drops.retired_rows());
 }
 
-pub(crate) fn decode_drops(cursor: &mut Cursor<'_>) -> io::Result<Drops> {
+pub(crate) fn decode_drops(cursor: &mut Cursor<'_>) -> Result<Drops> {
     Ok(Drops::new()
         .with_refused_contexts(decode_u64(cursor)?)
         .with_unattributed(decode_u64(cursor)?)
@@ -972,7 +1027,7 @@ pub(crate) fn decode_drops(cursor: &mut Cursor<'_>) -> io::Result<Drops> {
         .with_retired_rows(decode_u64(cursor)?))
 }
 
-pub(crate) fn encode_label_value(bytes: &mut Vec<u8>, value: &OwnedLabelValue) -> io::Result<()> {
+pub(crate) fn encode_label_value(bytes: &mut Vec<u8>, value: &OwnedLabelValue) -> Result<()> {
     match value {
         OwnedLabelValue::Unsigned(value) => {
             encode_u8(bytes, 0);
@@ -994,16 +1049,15 @@ pub(crate) fn encode_label_value(bytes: &mut Vec<u8>, value: &OwnedLabelValue) -
     Ok(())
 }
 
-pub(crate) fn decode_label_value(cursor: &mut Cursor<'_>) -> io::Result<OwnedLabelValue> {
+pub(crate) fn decode_label_value(cursor: &mut Cursor<'_>) -> Result<OwnedLabelValue> {
     match decode_u8(cursor)? {
         0 => Ok(OwnedLabelValue::Unsigned(decode_u64(cursor)?)),
         1 => Ok(OwnedLabelValue::Signed(decode_i64(cursor)?)),
         2 => Ok(OwnedLabelValue::Bool(decode_u8(cursor)? != 0)),
         3 => Ok(OwnedLabelValue::String(decode_string(cursor)?)),
-        tag => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unknown label-value tag: {tag}"),
-        )),
+        tag => Err(CodecError::malformed(format!(
+            "unknown label-value tag: {tag}"
+        ))),
     }
 }
 
@@ -1011,7 +1065,7 @@ pub(crate) fn encode_observation(
     bytes: &mut Vec<u8>,
     observation: &OwnedObservation,
     names: &mut NameWriter,
-) -> io::Result<()> {
+) -> Result<()> {
     match observation {
         OwnedObservation::ScopeBegin {
             desc_id,
@@ -1160,7 +1214,7 @@ pub(crate) fn encode_observation(
 pub(crate) fn decode_observation(
     cursor: &mut Cursor<'_>,
     names: &mut NameReader,
-) -> io::Result<OwnedObservation> {
+) -> Result<OwnedObservation> {
     match decode_u8(cursor)? {
         0 => {
             let desc_id = ScopeDescId::new(names.id(cursor)?);
@@ -1234,19 +1288,17 @@ pub(crate) fn decode_observation(
             span: Box::new(decode_timeline(cursor, names)?),
         }),
         12 => {
-            let number = decode_frame(cursor)?.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "a frame point needs a frame")
-            })?;
+            let number = decode_frame(cursor)?
+                .ok_or_else(|| CodecError::malformed("a frame point needs a frame"))?;
             let kind = decode_frame_point_kind(cursor)?;
             let basis = match decode_u8(cursor)? {
                 0 => TimingBasis::Unknown,
                 1 => TimingBasis::Observed,
                 2 => TimingBasis::Estimated,
                 value => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("unknown timing basis: {value}"),
-                    ));
+                    return Err(CodecError::malformed(format!(
+                        "unknown timing basis: {value}"
+                    )));
                 }
             };
             let time = if decode_bool(cursor, "frame point time tag")? {
@@ -1263,10 +1315,9 @@ pub(crate) fn decode_observation(
                 args,
             })
         }
-        tag => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unknown observation tag: {tag}"),
-        )),
+        tag => Err(CodecError::malformed(format!(
+            "unknown observation tag: {tag}"
+        ))),
     }
 }
 
@@ -1280,7 +1331,7 @@ fn encode_clock(
     name: &str,
     ticks: u64,
     period: TickPeriod,
-) -> io::Result<()> {
+) -> Result<()> {
     names.encode(bytes, clock_id.get(), name)?;
     encode_u64(bytes, ticks);
     encode_u32(bytes, period.nanos());
@@ -1297,7 +1348,7 @@ fn encode_timeline(
     bytes: &mut Vec<u8>,
     names: &mut NameWriter,
     work: &OwnedTimelineWork,
-) -> io::Result<()> {
+) -> Result<()> {
     names.encode_kinded(
         bytes,
         work.timeline_id().get(),
@@ -1319,10 +1370,7 @@ fn encode_timeline(
     encode_args(bytes, work.args())
 }
 
-fn decode_timeline(
-    cursor: &mut Cursor<'_>,
-    names: &mut NameReader,
-) -> io::Result<OwnedTimelineWork> {
+fn decode_timeline(cursor: &mut Cursor<'_>, names: &mut NameReader) -> Result<OwnedTimelineWork> {
     let timeline_id = TimelineId::new(names.id(cursor)?);
     let (timeline_name, kind) = names.kinded_name(cursor)?;
     let timeline_kind = decode_timeline_kind(kind)?;
@@ -1361,7 +1409,7 @@ fn encode_frame_point(
     kind: FramePointKind,
     basis: TimingBasis,
     time: Option<&OwnedClockTicks>,
-) -> io::Result<()> {
+) -> Result<()> {
     encode_frame(bytes, Some(number))?;
     match kind {
         FramePointKind::Deadline => encode_u8(bytes, 0),
@@ -1409,7 +1457,7 @@ fn encode_frame_point(
     Ok(())
 }
 
-fn decode_frame_point_kind(cursor: &mut Cursor<'_>) -> io::Result<FramePointKind> {
+fn decode_frame_point_kind(cursor: &mut Cursor<'_>) -> Result<FramePointKind> {
     match decode_u8(cursor)? {
         0 => Ok(FramePointKind::Deadline),
         1 => Ok(FramePointKind::Target),
@@ -1424,24 +1472,22 @@ fn decode_frame_point_kind(cursor: &mut Cursor<'_>) -> io::Result<FramePointKind
             6 => DropReason::Replaced,
             7 => DropReason::NotPresented,
             value => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("unknown drop reason: {value}"),
-                ));
+                return Err(CodecError::malformed(format!(
+                    "unknown drop reason: {value}"
+                )));
             }
         })),
         4 => Ok(FramePointKind::Predicted),
         5 => Ok(FramePointKind::Expected),
         6 => Ok(FramePointKind::Submitted),
         7 => Ok(FramePointKind::Sampled),
-        value => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unknown frame point kind: {value}"),
-        )),
+        value => Err(CodecError::malformed(format!(
+            "unknown frame point kind: {value}"
+        ))),
     }
 }
 
-fn encode_timeline_kind(kind: TimelineKind) -> io::Result<u8> {
+fn encode_timeline_kind(kind: TimelineKind) -> Result<u8> {
     match kind {
         TimelineKind::Gpu => Ok(0),
         TimelineKind::Display => Ok(1),
@@ -1450,15 +1496,14 @@ fn encode_timeline_kind(kind: TimelineKind) -> io::Result<u8> {
     }
 }
 
-fn decode_timeline_kind(value: u8) -> io::Result<TimelineKind> {
+fn decode_timeline_kind(value: u8) -> Result<TimelineKind> {
     match value {
         0 => Ok(TimelineKind::Gpu),
         1 => Ok(TimelineKind::Display),
         2 => Ok(TimelineKind::Other),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unknown timeline kind: {value}"),
-        )),
+        _ => Err(CodecError::malformed(format!(
+            "unknown timeline kind: {value}"
+        ))),
     }
 }
 
@@ -1466,7 +1511,7 @@ fn encode_owned_clock(
     bytes: &mut Vec<u8>,
     names: &mut NameWriter,
     clock: &OwnedClockTicks,
-) -> io::Result<()> {
+) -> Result<()> {
     encode_clock(
         bytes,
         names,
@@ -1477,15 +1522,14 @@ fn encode_owned_clock(
     )
 }
 
-fn decode_clock(cursor: &mut Cursor<'_>, names: &mut NameReader) -> io::Result<OwnedClockTicks> {
+fn decode_clock(cursor: &mut Cursor<'_>, names: &mut NameReader) -> Result<OwnedClockTicks> {
     let clock_id = ClockId::new(names.id(cursor)?);
     let name = names.name(cursor)?;
     let ticks = decode_u64(cursor)?;
     let period_nanos = decode_u32(cursor)?;
     let period_ticks = decode_u32(cursor)?;
     if period_ticks == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
+        return Err(CodecError::malformed(
             "a clock's tick period counts zero ticks",
         ));
     }
@@ -1506,7 +1550,7 @@ fn encode_counter_sample(
     context_id: ContextId,
     kind: CounterKind,
     value: u64,
-) -> io::Result<()> {
+) -> Result<()> {
     encode_u8(bytes, 8);
     names.encode(bytes, desc_id.get(), name)?;
     encode_u8(bytes, encode_unit(unit)?);
@@ -1516,7 +1560,7 @@ fn encode_counter_sample(
     Ok(())
 }
 
-pub(crate) fn encode_counter_kind(kind: CounterKind) -> io::Result<u8> {
+pub(crate) fn encode_counter_kind(kind: CounterKind) -> Result<u8> {
     match kind {
         CounterKind::Counter => Ok(0),
         CounterKind::Gauge => Ok(1),
@@ -1524,18 +1568,17 @@ pub(crate) fn encode_counter_kind(kind: CounterKind) -> io::Result<u8> {
     }
 }
 
-pub(crate) fn decode_counter_kind(tag: u8) -> io::Result<CounterKind> {
+pub(crate) fn decode_counter_kind(tag: u8) -> Result<CounterKind> {
     match tag {
         0 => Ok(CounterKind::Counter),
         1 => Ok(CounterKind::Gauge),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unknown counter kind tag: {tag}"),
-        )),
+        _ => Err(CodecError::malformed(format!(
+            "unknown counter kind tag: {tag}"
+        ))),
     }
 }
 
-pub(crate) fn encode_unit(unit: Unit) -> io::Result<u8> {
+pub(crate) fn encode_unit(unit: Unit) -> Result<u8> {
     match unit {
         Unit::Bytes => Ok(0),
         Unit::Count => Ok(1),
@@ -1547,7 +1590,7 @@ pub(crate) fn encode_unit(unit: Unit) -> io::Result<u8> {
     }
 }
 
-pub(crate) fn decode_unit(tag: u8) -> io::Result<Unit> {
+pub(crate) fn decode_unit(tag: u8) -> Result<Unit> {
     match tag {
         0 => Ok(Unit::Bytes),
         1 => Ok(Unit::Count),
@@ -1555,36 +1598,30 @@ pub(crate) fn decode_unit(tag: u8) -> io::Result<Unit> {
         3 => Ok(Unit::Micros),
         4 => Ok(Unit::Ratio),
         5 => Ok(Unit::Items),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unknown unit tag: {tag}"),
-        )),
+        _ => Err(CodecError::malformed(format!("unknown unit tag: {tag}"))),
     }
 }
 
 /// Writes a marker's number as a `u64` one greater than the number, or `0`
 /// for an unnumbered marker.
-fn encode_marker_number(bytes: &mut Vec<u8>, number: Option<u64>) -> io::Result<()> {
+fn encode_marker_number(bytes: &mut Vec<u8>, number: Option<u64>) -> Result<()> {
     let encoded = match number {
         None => 0,
-        Some(number) => number.checked_add(1).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "a marker number must be less than u64::MAX",
-            )
-        })?,
+        Some(number) => number
+            .checked_add(1)
+            .ok_or_else(|| CodecError::unencodable("a marker number must be less than u64::MAX"))?,
     };
     encode_u64(bytes, encoded);
     Ok(())
 }
 
-fn decode_marker_number(cursor: &mut Cursor<'_>) -> io::Result<Option<u64>> {
+fn decode_marker_number(cursor: &mut Cursor<'_>) -> Result<Option<u64>> {
     Ok(decode_u64(cursor)?.checked_sub(1))
 }
 
 /// Writes a numbered frame: its number as [`encode_marker_number`] writes
 /// it, `0` for none, then for a numbered one its stream's id and generation.
-fn encode_frame(bytes: &mut Vec<u8>, frame: Option<FrameNumber>) -> io::Result<()> {
+fn encode_frame(bytes: &mut Vec<u8>, frame: Option<FrameNumber>) -> Result<()> {
     encode_marker_number(bytes, frame.map(FrameNumber::number))?;
     if let Some(frame) = frame {
         encode_u64(bytes, u64::from(frame.stream().id()));
@@ -1593,17 +1630,13 @@ fn encode_frame(bytes: &mut Vec<u8>, frame: Option<FrameNumber>) -> io::Result<(
     Ok(())
 }
 
-fn decode_frame(cursor: &mut Cursor<'_>) -> io::Result<Option<FrameNumber>> {
+fn decode_frame(cursor: &mut Cursor<'_>) -> Result<Option<FrameNumber>> {
     let Some(number) = decode_marker_number(cursor)? else {
         return Ok(None);
     };
     let part = |cursor: &mut Cursor<'_>, what: &str| {
-        u32::try_from(decode_u64(cursor)?).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("frame stream {what} out of range"),
-            )
-        })
+        u32::try_from(decode_u64(cursor)?)
+            .map_err(|_| CodecError::malformed(format!("frame stream {what} out of range")))
     };
     let id = part(cursor, "id")?;
     let generation = part(cursor, "generation")?;
@@ -1614,7 +1647,7 @@ fn decode_frame(cursor: &mut Cursor<'_>) -> io::Result<Option<FrameNumber>> {
     ))
 }
 
-pub(crate) fn encode_marker_kind(kind: MarkerKind) -> io::Result<u8> {
+pub(crate) fn encode_marker_kind(kind: MarkerKind) -> Result<u8> {
     match kind {
         MarkerKind::Frame => Ok(0),
         MarkerKind::Transaction => Ok(1),
@@ -1624,22 +1657,20 @@ pub(crate) fn encode_marker_kind(kind: MarkerKind) -> io::Result<u8> {
 }
 
 /// Error for a value this protocol version has no encoding for.
-pub(crate) fn unsupported(what: &str) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidInput,
-        format!("{what} has no encoding in this session protocol version"),
-    )
+pub(crate) fn unsupported(what: &str) -> CodecError {
+    CodecError::unencodable(format!(
+        "{what} has no encoding in this session protocol version"
+    ))
 }
 
-pub(crate) fn decode_marker_kind(tag: u8) -> io::Result<MarkerKind> {
+pub(crate) fn decode_marker_kind(tag: u8) -> Result<MarkerKind> {
     match tag {
         0 => Ok(MarkerKind::Frame),
         1 => Ok(MarkerKind::Transaction),
         2 => Ok(MarkerKind::Pass),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unknown marker kind tag: {tag}"),
-        )),
+        _ => Err(CodecError::malformed(format!(
+            "unknown marker kind tag: {tag}"
+        ))),
     }
 }
 
@@ -1650,14 +1681,13 @@ pub(crate) fn encode_marker_phase(phase: MarkerPhase) -> u8 {
     }
 }
 
-pub(crate) fn decode_marker_phase(tag: u8) -> io::Result<MarkerPhase> {
+pub(crate) fn decode_marker_phase(tag: u8) -> Result<MarkerPhase> {
     match tag {
         0 => Ok(MarkerPhase::Begin),
         1 => Ok(MarkerPhase::End),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unknown marker phase tag: {tag}"),
-        )),
+        _ => Err(CodecError::malformed(format!(
+            "unknown marker phase tag: {tag}"
+        ))),
     }
 }
 
@@ -1669,81 +1699,81 @@ pub(crate) fn encode_flow_phase(phase: FlowPhase) -> u8 {
     }
 }
 
-pub(crate) fn decode_flow_phase(tag: u8) -> io::Result<FlowPhase> {
+pub(crate) fn decode_flow_phase(tag: u8) -> Result<FlowPhase> {
     match tag {
         0 => Ok(FlowPhase::Begin),
         1 => Ok(FlowPhase::Step),
         2 => Ok(FlowPhase::End),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("unknown flow phase tag: {tag}"),
-        )),
+        _ => Err(CodecError::malformed(format!(
+            "unknown flow phase tag: {tag}"
+        ))),
     }
 }
 
-pub(crate) fn encode_len(bytes: &mut Vec<u8>, len: usize) -> io::Result<()> {
+pub(crate) fn encode_len(bytes: &mut Vec<u8>, len: usize) -> Result<()> {
     encode_u32(
         bytes,
-        u32::try_from(len)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "length exceeds u32"))?,
+        u32::try_from(len).map_err(|_| CodecError::unencodable("length exceeds u32"))?,
     );
     Ok(())
 }
 
-pub(crate) fn encode_usize(bytes: &mut Vec<u8>, value: usize) -> io::Result<()> {
+pub(crate) fn encode_usize(bytes: &mut Vec<u8>, value: usize) -> Result<()> {
     encode_len(bytes, value)
 }
 
-pub(crate) fn decode_usize(cursor: &mut Cursor<'_>) -> io::Result<usize> {
+pub(crate) fn decode_usize(cursor: &mut Cursor<'_>) -> Result<usize> {
     usize::try_from(decode_u32(cursor)?)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "u32 length does not fit usize"))
+        .map_err(|_| CodecError::malformed("u32 length does not fit usize"))
 }
 
 pub(crate) fn decode_bounded_len(
     cursor: &mut Cursor<'_>,
     max_len: usize,
     what: &'static str,
-) -> io::Result<usize> {
+) -> Result<usize> {
     let len = decode_usize(cursor)?;
     validate_wire_len(len, max_len, what)?;
     if len > cursor.remaining() {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            format!("{what} length exceeds remaining envelope bytes"),
-        ));
+        return Err(CodecError::malformed(format!(
+            "{what} length exceeds remaining envelope bytes"
+        )));
     }
     Ok(len)
 }
 
-pub(crate) fn validate_wire_len(len: usize, max_len: usize, what: &'static str) -> io::Result<()> {
+pub(crate) fn validate_wire_len(len: usize, max_len: usize, what: &'static str) -> Result<()> {
     if len <= max_len {
         return Ok(());
     }
-    Err(io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!("{what} length {len} exceeds maximum {max_len}"),
-    ))
+    Err(CodecError::malformed(format!(
+        "{what} length {len} exceeds maximum {max_len}"
+    )))
 }
 
-pub(crate) fn encode_string(bytes: &mut Vec<u8>, value: &str) -> io::Result<()> {
-    validate_wire_len(value.len(), MAX_SESSION_STRING_BYTES, "session string")?;
+pub(crate) fn encode_string(bytes: &mut Vec<u8>, value: &str) -> Result<()> {
+    if value.len() > MAX_SESSION_STRING_BYTES {
+        return Err(CodecError::unencodable(format!(
+            "session string length {} exceeds maximum {MAX_SESSION_STRING_BYTES}",
+            value.len()
+        )));
+    }
     encode_len(bytes, value.len())?;
     bytes.extend_from_slice(value.as_bytes());
     Ok(())
 }
 
-pub(crate) fn decode_string(cursor: &mut Cursor<'_>) -> io::Result<String> {
+pub(crate) fn decode_string(cursor: &mut Cursor<'_>) -> Result<String> {
     let len = decode_bounded_len(cursor, MAX_SESSION_STRING_BYTES, "session string")?;
     let bytes = cursor.read_exact(len)?;
-    String::from_utf8(bytes.to_vec())
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
+    String::from_utf8(bytes.to_vec()).map_err(|error| CodecError::malformed(error.to_string()))
 }
 
 pub(crate) fn encode_u8(bytes: &mut Vec<u8>, value: u8) {
     bytes.push(value);
 }
 
-pub(crate) fn decode_u8(cursor: &mut Cursor<'_>) -> io::Result<u8> {
+pub(crate) fn decode_u8(cursor: &mut Cursor<'_>) -> Result<u8> {
     Ok(cursor.read_exact(1)?[0])
 }
 
@@ -1751,7 +1781,7 @@ pub(crate) fn encode_u16(bytes: &mut Vec<u8>, value: u16) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
 
-pub(crate) fn decode_u16(cursor: &mut Cursor<'_>) -> io::Result<u16> {
+pub(crate) fn decode_u16(cursor: &mut Cursor<'_>) -> Result<u16> {
     let bytes = cursor.read_exact(2)?;
     Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
 }
@@ -1760,16 +1790,16 @@ pub(crate) fn encode_u32(bytes: &mut Vec<u8>, value: u32) {
     encode_u64(bytes, u64::from(value));
 }
 
-pub(crate) fn decode_u32(cursor: &mut Cursor<'_>) -> io::Result<u32> {
+pub(crate) fn decode_u32(cursor: &mut Cursor<'_>) -> Result<u32> {
     u32::try_from(decode_u64(cursor)?)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "integer does not fit u32"))
+        .map_err(|_| CodecError::malformed("integer does not fit u32"))
 }
 
 pub(crate) fn encode_u64(bytes: &mut Vec<u8>, value: u64) {
     encode_varint(bytes, value);
 }
 
-pub(crate) fn decode_u64(cursor: &mut Cursor<'_>) -> io::Result<u64> {
+pub(crate) fn decode_u64(cursor: &mut Cursor<'_>) -> Result<u64> {
     let mut decoder = VarintDecoder::new();
     loop {
         if let Some(value) = decoder.push(decode_u8(cursor)?)? {
@@ -1811,7 +1841,7 @@ pub const fn varint_len(value: u64) -> usize {
 /// let mut decoder = VarintDecoder::new();
 /// assert_eq!(decoder.push(bytes[0])?, None);
 /// assert_eq!(decoder.push(bytes[1])?, Some(300));
-/// # Ok::<(), std::io::Error>(())
+/// # Ok::<(), footfall_session::codec::CodecError>(())
 /// ```
 #[derive(Clone, Copy, Debug, Default)]
 pub struct VarintDecoder {
@@ -1829,13 +1859,10 @@ impl VarintDecoder {
     /// Takes the next byte. Returns the integer after its last byte, `None`
     /// while more bytes are needed, and an error for an encoding longer than
     /// ten bytes or a value that does not fit a `u64`.
-    pub fn push(&mut self, byte: u8) -> io::Result<Option<u64>> {
+    pub fn push(&mut self, byte: u8) -> Result<Option<u64>> {
         let bits = u64::from(byte & 0x7f);
         if self.shift == 63 && bits > 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "integer does not fit u64",
-            ));
+            return Err(CodecError::malformed("integer does not fit u64"));
         }
         self.value |= bits << self.shift;
         if byte & 0x80 == 0 {
@@ -1843,10 +1870,7 @@ impl VarintDecoder {
         }
         self.shift += 7;
         if self.shift > 63 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "integer longer than ten bytes",
-            ));
+            return Err(CodecError::malformed("integer longer than ten bytes"));
         }
         Ok(None)
     }
@@ -1858,7 +1882,7 @@ pub(crate) fn encode_i64(bytes: &mut Vec<u8>, value: i64) {
     encode_u64(bytes, ((value << 1) ^ (value >> 63)).cast_unsigned());
 }
 
-pub(crate) fn decode_i64(cursor: &mut Cursor<'_>) -> io::Result<i64> {
+pub(crate) fn decode_i64(cursor: &mut Cursor<'_>) -> Result<i64> {
     let value = decode_u64(cursor)?;
     Ok((value >> 1).cast_signed() ^ -(value & 1).cast_signed())
 }
@@ -1868,7 +1892,7 @@ pub(crate) fn encode_delta(bytes: &mut Vec<u8>, previous: u64, value: u64) {
     encode_i64(bytes, value.wrapping_sub(previous).cast_signed());
 }
 
-pub(crate) fn decode_delta(cursor: &mut Cursor<'_>, previous: u64) -> io::Result<u64> {
+pub(crate) fn decode_delta(cursor: &mut Cursor<'_>, previous: u64) -> Result<u64> {
     Ok(previous.wrapping_add(decode_i64(cursor)?.cast_unsigned()))
 }
 
@@ -1882,7 +1906,7 @@ pub(crate) fn decode_delta(cursor: &mut Cursor<'_>, previous: u64) -> io::Result
 pub(crate) struct NameWriter(HashSet<u64>);
 
 impl NameWriter {
-    pub(crate) fn encode(&mut self, bytes: &mut Vec<u8>, id: u64, name: &str) -> io::Result<()> {
+    pub(crate) fn encode(&mut self, bytes: &mut Vec<u8>, id: u64, name: &str) -> Result<()> {
         encode_u64(bytes, id);
         if self.0.insert(id) {
             encode_string(bytes, name)?;
@@ -1898,7 +1922,7 @@ impl NameWriter {
         id: u64,
         name: &str,
         kind: u8,
-    ) -> io::Result<()> {
+    ) -> Result<()> {
         encode_u64(bytes, id);
         if self.0.insert(id) {
             encode_string(bytes, name)?;
@@ -1915,7 +1939,7 @@ impl NameWriter {
         id: u64,
         name: &str,
         location: Option<(&str, &str, u32)>,
-    ) -> io::Result<()> {
+    ) -> Result<()> {
         encode_u64(bytes, id);
         if self.0.insert(id) {
             encode_string(bytes, name)?;
@@ -1946,12 +1970,12 @@ pub(crate) struct NameReader {
 }
 
 impl NameReader {
-    pub(crate) fn id(&mut self, cursor: &mut Cursor<'_>) -> io::Result<u64> {
+    pub(crate) fn id(&mut self, cursor: &mut Cursor<'_>) -> Result<u64> {
         self.last_id = decode_u64(cursor)?;
         Ok(self.last_id)
     }
 
-    pub(crate) fn name(&mut self, cursor: &mut Cursor<'_>) -> io::Result<String> {
+    pub(crate) fn name(&mut self, cursor: &mut Cursor<'_>) -> Result<String> {
         if let Some(name) = self.names.get(&self.last_id) {
             return Ok(name.clone());
         }
@@ -1962,7 +1986,7 @@ impl NameReader {
 
     /// Reads a descriptor's name and kind byte, or reuses those read with
     /// its first row.
-    pub(crate) fn kinded_name(&mut self, cursor: &mut Cursor<'_>) -> io::Result<(String, u8)> {
+    pub(crate) fn kinded_name(&mut self, cursor: &mut Cursor<'_>) -> Result<(String, u8)> {
         if let Some(name) = self.names.get(&self.last_id) {
             let kind = self.kinds.get(&self.last_id).copied().unwrap_or_default();
             return Ok((name.clone(), kind));
@@ -1978,7 +2002,7 @@ impl NameReader {
     pub(crate) fn located_name(
         &mut self,
         cursor: &mut Cursor<'_>,
-    ) -> io::Result<(String, Option<OwnedSourceLocation>)> {
+    ) -> Result<(String, Option<OwnedSourceLocation>)> {
         if let Some(name) = self.names.get(&self.last_id) {
             return Ok((name.clone(), self.locations.get(&self.last_id).cloned()));
         }
@@ -2007,14 +2031,15 @@ impl<'a> Cursor<'a> {
         Self { bytes, offset: 0 }
     }
 
-    fn read_exact(&mut self, len: usize) -> io::Result<&'a [u8]> {
+    fn read_exact(&mut self, len: usize) -> Result<&'a [u8]> {
         let end = self
             .offset
             .checked_add(len)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "cursor overflow"))?;
-        let bytes = self.bytes.get(self.offset..end).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::UnexpectedEof, "truncated session envelope")
-        })?;
+            .ok_or_else(|| CodecError::malformed("cursor overflow"))?;
+        let bytes = self
+            .bytes
+            .get(self.offset..end)
+            .ok_or_else(|| CodecError::malformed("truncated session envelope"))?;
         self.offset = end;
         Ok(bytes)
     }

@@ -58,6 +58,9 @@ The first release.
   so even the shortest scopes have a duration.
 - Snapshots record their provenance: runtime instance, process, wall-clock
   anchor, producer version, level, and capacities.
+- Snapshots are plain values that need only `alloc`: without its `std`
+  feature `footfall_runtime` has the snapshot types alone, for programs
+  without `std` to build snapshots by hand.
 
 ### Consuming
 
@@ -70,6 +73,10 @@ The first release.
   protocol major version, or fail with an `IncompatibleVersion` naming the
   version that wrote them; captures recorded by real programs are tested
   with every change.
+- Without `std`, on `alloc` alone, `footfall_session` has `OwnedSnapshot`,
+  publishing and reassembling envelopes, and the codec, which fails with a
+  `CodecError` saying whether an envelope could not be encoded, its bytes
+  are malformed, or a newer protocol produced it. Capture files need `std`.
 - `footfall_session_wtransport`: serve runtimes to local tools, which find
   every producer without configuration, then fetch snapshots or subscribe
   to windows of changes. Graceful shutdown delivers everything recorded.

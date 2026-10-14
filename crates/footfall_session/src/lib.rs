@@ -47,8 +47,8 @@
 //! the [session wire format] and [session consumer contract] guides.
 //!
 //! Without the `std` feature, on `alloc` alone, this crate still has
-//! [`OwnedSnapshot`], publishing envelopes to a [`Consumer`], and
-//! reassembling them; [`codec`] and [`capture`] need `std`.
+//! [`OwnedSnapshot`], publishing envelopes to a [`Consumer`], reassembling
+//! them, and the [`codec`]; only [`capture`] files need `std`.
 //!
 //! [session wire format]: https://github.com/forest-rs/footfall/blob/main/docs/session-wire-format.md
 //! [session consumer contract]: https://github.com/forest-rs/footfall/blob/main/docs/session-consumer-contract.md
@@ -63,7 +63,6 @@ mod assembled;
 #[cfg(feature = "std")]
 pub mod capture;
 mod clocks;
-#[cfg(feature = "std")]
 pub mod codec;
 mod error;
 mod snapshot;
@@ -144,10 +143,10 @@ impl ProtocolVersion {
 
 /// Data produced at a protocol version this crate cannot decode.
 ///
-/// Capture readers and the codec return it inside the [`std::io::Error`]
-/// they fail with, of kind `InvalidData`, so a tool can tell a capture from
-/// an incompatible Footfall apart from a damaged one, and say which version
-/// would read it:
+/// The codec fails with it as [`CodecError::Incompatible`]. Capture readers
+/// return it inside the [`std::io::Error`] they fail with, of kind
+/// `InvalidData`, so a tool can tell a capture from an incompatible Footfall
+/// apart from a damaged one, and say which version would read it:
 ///
 /// ```
 /// use footfall_session::IncompatibleVersion;
@@ -161,6 +160,8 @@ impl ProtocolVersion {
 /// let incompatible = IncompatibleVersion::of(&error).expect("not damaged");
 /// assert_eq!(incompatible.produced().major(), 2);
 /// ```
+///
+/// [`CodecError::Incompatible`]: codec::CodecError::Incompatible
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IncompatibleVersion {
     produced: ProtocolVersion,
@@ -188,16 +189,18 @@ impl IncompatibleVersion {
         error.get_ref()?.downcast_ref()
     }
 
+    /// The incompatibility of data produced at `produced`.
+    pub(crate) const fn new(produced: ProtocolVersion) -> Self {
+        Self {
+            produced,
+            supported: PROTOCOL_VERSION,
+        }
+    }
+
     /// The error for data produced at `produced`.
     #[cfg(feature = "std")]
     pub(crate) fn error(produced: ProtocolVersion) -> std::io::Error {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            Self {
-                produced,
-                supported: PROTOCOL_VERSION,
-            },
-        )
+        std::io::Error::new(std::io::ErrorKind::InvalidData, Self::new(produced))
     }
 }
 

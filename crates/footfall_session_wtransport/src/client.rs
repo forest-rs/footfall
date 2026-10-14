@@ -14,7 +14,9 @@ use crate::wire::{
     read_u64, validate_wire_count, validate_wire_len,
 };
 use crate::{MAX_DISCOVERED_SESSIONS, MAX_SESSION_ENVELOPES};
-use footfall_session::codec::{MAX_SESSION_ENVELOPE_BYTES, decode_envelope, varint_len};
+use footfall_session::codec::{
+    CodecError, MAX_SESSION_ENVELOPE_BYTES, decode_envelope, varint_len,
+};
 use footfall_session::{
     AssembleError, EventCursor, OwnedSnapshot, ProtocolVersion, SessionErrorCode, SnapshotKind,
 };
@@ -894,12 +896,27 @@ async fn read_snapshot(recv: &mut RecvStream) -> Result<(OwnedSnapshot, usize), 
                 client: CODEC_VERSION,
             });
         }
-        envelopes.push(decode_envelope(&frame).map_err(io_error)?);
+        envelopes.push(decode_envelope(&frame).map_err(codec_error)?);
     }
     Ok((OwnedSnapshot::from_envelopes(envelopes)?, bytes))
 }
 
 /// Reads the protocol version at the start of an encoded envelope.
+/// Classifies an envelope the codec could not decode. The frame arrived
+/// whole, so bytes missing from it make it malformed; the connection did
+/// not close.
+pub(crate) fn codec_error(error: CodecError) -> ClientError {
+    match error {
+        CodecError::Incompatible(incompatible) => ClientError::Incompatible {
+            server: incompatible.produced(),
+            client: CODEC_VERSION,
+        },
+        error => ClientError::Malformed {
+            reason: error.to_string(),
+        },
+    }
+}
+
 fn frame_version(frame: &[u8]) -> Option<ProtocolVersion> {
     let major = u16::from_le_bytes(frame.get(0..2)?.try_into().ok()?);
     let minor = u16::from_le_bytes(frame.get(2..4)?.try_into().ok()?);

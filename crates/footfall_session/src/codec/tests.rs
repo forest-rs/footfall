@@ -10,13 +10,12 @@ use footfall_core::{
     LabelKey, MarkerKind, MarkerPhase, ScopeToken, SourceLocation,
 };
 use footfall_runtime::{CounterKind, Snapshot, SnapshotMetadata, ThreadSnapshot};
-use std::io::ErrorKind;
 
 use super::{
-    Cursor, MAX_CONTEXT_ENTRIES_PER_CONTEXT, MAX_ROWS_PER_ENVELOPE, MAX_SESSION_ENVELOPE_BYTES,
-    MAX_SESSION_STRING_BYTES, VarintDecoder, decode_envelope, decode_u64, encode_envelope,
-    encode_header, encode_i64, encode_owned_envelope, encode_u8, encode_u32, encode_u64,
-    encode_varint, varint_len,
+    CodecError, Cursor, MAX_CONTEXT_ENTRIES_PER_CONTEXT, MAX_ROWS_PER_ENVELOPE,
+    MAX_SESSION_ENVELOPE_BYTES, MAX_SESSION_STRING_BYTES, VarintDecoder, decode_envelope,
+    decode_u64, encode_envelope, encode_header, encode_i64, encode_owned_envelope, encode_u8,
+    encode_u32, encode_u64, encode_varint, varint_len,
 };
 use crate::{
     Chunking, Envelope, EnvelopeHeader, OwnedArgEntry, OwnedClockTicks, OwnedContextEntry,
@@ -668,7 +667,7 @@ fn cursor_detects_trailing_bytes() {
     let mut encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
     encoded.push(99);
     let error = decode_envelope(&encoded).expect_err("decoder should reject trailing bytes");
-    assert_eq!(error.kind(), ErrorKind::InvalidData);
+    assert!(matches!(error, CodecError::Malformed { .. }), "{error:?}");
 }
 
 #[test]
@@ -676,7 +675,7 @@ fn decoder_rejects_oversized_envelope_frames() {
     let bytes = vec![0_u8; MAX_SESSION_ENVELOPE_BYTES + 1];
     let error = decode_envelope(&bytes).expect_err("decoder should reject oversized frames");
 
-    assert_eq!(error.kind(), ErrorKind::InvalidData);
+    assert!(matches!(error, CodecError::Malformed { .. }), "{error:?}");
 }
 
 #[test]
@@ -691,7 +690,7 @@ fn decoder_rejects_oversized_strings_before_payload_allocation() {
 
     let error = decode_envelope(&bytes).expect_err("decoder should reject oversized strings");
 
-    assert_eq!(error.kind(), ErrorKind::InvalidData);
+    assert!(matches!(error, CodecError::Malformed { .. }), "{error:?}");
 }
 
 #[test]
@@ -706,7 +705,7 @@ fn decoder_rejects_oversized_row_counts_before_allocation() {
 
     let error = decode_envelope(&bytes).expect_err("decoder should reject oversized row counts");
 
-    assert_eq!(error.kind(), ErrorKind::InvalidData);
+    assert!(matches!(error, CodecError::Malformed { .. }), "{error:?}");
 }
 
 #[test]
@@ -725,7 +724,7 @@ fn decoder_rejects_oversized_context_entry_counts_before_allocation() {
     let error =
         decode_envelope(&bytes).expect_err("decoder should reject oversized context entries");
 
-    assert_eq!(error.kind(), ErrorKind::InvalidData);
+    assert!(matches!(error, CodecError::Malformed { .. }), "{error:?}");
 }
 
 #[test]
@@ -788,13 +787,17 @@ fn decoder_rejects_incompatible_codec_versions() {
     different_major[0..2].copy_from_slice(&(super::CODEC_VERSION.major() + 1).to_le_bytes());
     let error = decode_envelope(&different_major)
         .expect_err("decoder should reject a different major version");
-    assert_eq!(error.kind(), ErrorKind::InvalidData);
+    assert!(
+        matches!(&error, CodecError::Incompatible(incompatible)
+            if incompatible.produced().major() == super::CODEC_VERSION.major() + 1),
+        "{error:?}"
+    );
 
     let mut newer_minor = encoded.clone();
     newer_minor[2..4].copy_from_slice(&(super::CODEC_VERSION.minor() + 1).to_le_bytes());
     let error =
         decode_envelope(&newer_minor).expect_err("decoder should reject a newer minor version");
-    assert_eq!(error.kind(), ErrorKind::InvalidData);
+    assert!(matches!(error, CodecError::Incompatible(_)), "{error:?}");
 
     decode_envelope(&encoded).expect("decoder should accept the supported version");
 }
@@ -831,7 +834,7 @@ fn integers_are_leb128_and_reject_overflow() {
             .iter()
             .find_map(|&byte| decoder.push(byte).err())
             .expect("too long");
-        assert_eq!(error.kind(), ErrorKind::InvalidData);
+        assert!(matches!(error, CodecError::Malformed { .. }), "{error:?}");
     }
 }
 
@@ -902,4 +905,37 @@ fn typical_events_stay_compact() {
         })
         .sum();
     assert_eq!(located - unlocated, once);
+}
+
+/// A failure says whether the envelope could not be encoded, the bytes are
+/// malformed, or a newer protocol produced them, and an `io::Error` made from
+/// it still does: a truncated envelope is bad data, not a closed stream.
+#[test]
+fn codec_errors_say_what_failed() {
+    use std::io::{self, ErrorKind};
+
+    let threads = |name: String| {
+        OwnedSessionEnvelope::new(
+            EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+            OwnedSessionPayload::Threads(vec![ThreadSnapshot::new(1, Some(name))]),
+        )
+    };
+    let too_long = "x".repeat(MAX_SESSION_STRING_BYTES + 1);
+    let error = encode_owned_envelope(&threads(too_long)).expect_err("over the limit");
+    assert!(matches!(error, CodecError::Unencodable { .. }), "{error:?}");
+    assert_eq!(io::Error::from(error).kind(), ErrorKind::InvalidInput);
+
+    let encoded = encode_owned_envelope(&threads(String::from("render"))).expect("encodes");
+    let error = decode_envelope(&encoded[..encoded.len() - 1]).expect_err("truncated");
+    assert!(matches!(error, CodecError::Malformed { .. }), "{error:?}");
+    let error = io::Error::from(error);
+    assert_eq!(error.kind(), ErrorKind::InvalidData);
+    assert!(crate::IncompatibleVersion::of(&error).is_none());
+
+    let mut newer = encoded;
+    newer[2..4].copy_from_slice(&(super::CODEC_VERSION.minor() + 1).to_le_bytes());
+    let error = io::Error::from(decode_envelope(&newer).expect_err("newer"));
+    assert_eq!(error.kind(), ErrorKind::InvalidData);
+    let incompatible = crate::IncompatibleVersion::of(&error).expect("still an incompatibility");
+    assert_eq!(incompatible.supported(), super::CODEC_VERSION);
 }
