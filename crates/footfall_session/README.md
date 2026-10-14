@@ -13,6 +13,10 @@ It does not participate in hot-path emission. Transports such as
 [consumer contract](https://github.com/forest-rs/footfall/blob/main/docs/session-consumer-contract.md)
 describes what a consumer can rely on.
 
+The codec and capture files need `std`, the default feature. Without it,
+on `alloc` alone, the crate still has `OwnedSnapshot`, publishing envelopes
+to a `Consumer`, and reassembling them.
+
 Part of [Footfall](https://github.com/forest-rs/footfall). For instrumenting
 code, start with the [`footfall`](https://docs.rs/footfall) crate.
 
