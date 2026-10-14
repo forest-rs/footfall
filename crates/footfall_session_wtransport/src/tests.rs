@@ -84,3 +84,25 @@ fn clients_bind_in_the_servers_address_family() {
         format!("{:?}", IpBindConfig::InAddrAnyDual)
     );
 }
+
+/// An envelope that arrived whole but runs short is a malformed response,
+/// not a closed connection.
+#[test]
+fn a_short_envelope_is_malformed() {
+    use footfall_session::codec::{decode_envelope, encode_owned_envelope};
+    use footfall_session::{Drops, EnvelopeHeader, OwnedSessionEnvelope, OwnedSessionPayload};
+
+    let envelope = OwnedSessionEnvelope::new(
+        EnvelopeHeader::new(footfall_session::PROTOCOL_VERSION, 0),
+        OwnedSessionPayload::SnapshotEnd(Drops::new()),
+    );
+    let encoded = encode_owned_envelope(&envelope).expect("encodes");
+    let error = decode_envelope(&encoded[..encoded.len() - 1]).expect_err("short");
+    assert!(
+        matches!(
+            crate::client::codec_error(error),
+            crate::ClientError::Malformed { .. }
+        ),
+        "a short envelope is malformed"
+    );
+}

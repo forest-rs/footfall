@@ -58,7 +58,7 @@ use crate::{
     Chunking, Consumer, Envelope, IncompatibleVersion, OwnedSessionEnvelope, OwnedSessionPayload,
     OwnedSnapshot, PROTOCOL_VERSION, ProtocolVersion,
     codec::{
-        MAX_SESSION_ENVELOPE_BYTES, VarintDecoder, decode_envelope, encode_envelope,
+        CodecError, MAX_SESSION_ENVELOPE_BYTES, VarintDecoder, decode_envelope, encode_envelope,
         encode_owned_envelope, encode_varint,
     },
     publish_snapshot,
@@ -355,18 +355,16 @@ impl<R: Read> CaptureReader<R> {
             let mut frame = vec![0_u8; len];
             self.read_exact(&mut frame)?;
             self.offset += len_bytes + u64::try_from(len).unwrap_or(u64::MAX);
-            let envelope = decode_envelope(&frame).map_err(|error| {
+            let envelope = decode_envelope(&frame).map_err(|error| match error {
                 // An incompatibility stays one, for the reader to tell apart.
-                if IncompatibleVersion::of(&error).is_some() {
-                    return error;
-                }
-                io::Error::new(
-                    error.kind(),
+                CodecError::Incompatible(_) => io::Error::from(error),
+                error => io::Error::new(
+                    io::ErrorKind::InvalidData,
                     format!(
                         "snapshot {} at byte {}: {error}",
                         self.snapshots, self.offset
                     ),
-                )
+                ),
             })?;
             let ends = matches!(envelope.payload(), OwnedSessionPayload::SnapshotEnd(_));
             envelopes.push(envelope);
