@@ -8,3 +8,10 @@ AGENTS.md
 /footfall-*.json
 *.ffcap
 !/examples/captures/*.ffcap
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*
