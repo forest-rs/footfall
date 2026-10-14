@@ -15,7 +15,7 @@ members = [
     "examples",
     "tools/footfall_cli",
 ]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 version = "0.1.0"
