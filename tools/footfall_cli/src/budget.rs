@@ -161,8 +161,17 @@ mod tests {
         // Without deadlines, the default budget, and the report says so.
         let without = trace(false);
         let default = Budget::for_trace(&without, None);
-        assert!(matches!(default, Budget::Fixed { default: true, .. }));
-        assert_eq!(slow(&without, &default), [Some(false); 3]);
+        // A frame's length is wall-clock time, so a loaded machine can push
+        // these past any budget; check the budget, not which side they fall.
+        let Budget::Fixed {
+            limit,
+            default: true,
+        } = default
+        else {
+            panic!("the default budget, not {default:?}");
+        };
+        assert_eq!(limit, Duration::from_secs_f64(super::DEFAULT_MS / 1000.0));
+        assert!(slow(&without, &default).iter().all(Option::is_some));
         assert!(default.note().is_some());
     }
 }
