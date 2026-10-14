@@ -3,7 +3,7 @@
 All notable changes to the published Footfall crates are recorded here. The
 crates share one version.
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-10-14)
 
 The first release.
 
