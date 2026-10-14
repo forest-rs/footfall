@@ -14,7 +14,7 @@ description = "Footfall snapshots outside the process: owned snapshots, a compac
 
 [features]
 default = ["std"]
-std = ["footfall_core/std", "dep:footfall_runtime"]
+std = ["footfall_core/std", "dep:footfall_runtime", "footfall_runtime/std"]
 
 [dependencies]
 footfall_core.workspace = true

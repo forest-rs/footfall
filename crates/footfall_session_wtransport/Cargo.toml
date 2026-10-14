@@ -14,7 +14,7 @@ description = "Serve Footfall sessions over local WebTransport, and discover, fe
 
 [dependencies]
 footfall_core.workspace = true
-footfall_runtime.workspace = true
+footfall_runtime = { features = ["std"], workspace = true }
 footfall_session = { features = ["std"], workspace = true }
 tokio = { features = ["fs", "macros", "rt", "sync", "time"], version = "1.51.1" }
 tracing = "0.1.41"

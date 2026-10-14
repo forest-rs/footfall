@@ -31,7 +31,6 @@ env:
     --exclude footfall_cli
     --exclude footfall_export
     --exclude footfall_fanout
-    --exclude footfall_runtime
     --exclude footfall_session
     --exclude footfall_session_wtransport
     --exclude footfall_tracing

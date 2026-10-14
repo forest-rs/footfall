@@ -19,7 +19,7 @@ tracing-core = "0.1.34"
 tracing-subscriber = { default-features = false, features = ["registry", "std"], version = "0.3.20" }
 
 [dev-dependencies]
-footfall_runtime.workspace = true
+footfall_runtime = { features = ["std"], workspace = true }
 tracing = "0.1.41"
 
 [lib]
