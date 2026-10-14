@@ -6,7 +6,6 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 publish = false
 description = "Runnable examples for Footfall: instrumenting, serving, attaching, and showing a capture live in Tracy."
 
