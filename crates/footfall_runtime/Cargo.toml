@@ -12,8 +12,13 @@ keywords.workspace = true
 categories.workspace = true
 description = "Bounded in-process capture for Footfall: counters, a window of recent events, and cursor reads that never drain."
 
+[features]
+default = ["std"]
+# The runtime itself; without it, only the snapshot types.
+std = ["footfall_core/std"]
+
 [dependencies]
-footfall_core = { features = ["std"], workspace = true }
+footfall_core = { features = ["alloc"], workspace = true }
 hashbrown.workspace = true
 
 [lib]

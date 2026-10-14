@@ -11,6 +11,10 @@ Capacity is fixed when the runtime is created. The oldest events are evicted
 to make room, and whatever else does not fit is dropped and counted in every
 snapshot.
 
+The `Runtime` needs `std`, the default feature. Without it the crate has
+only `Snapshot` and the types it holds, which need only `alloc`, so a
+program without `std` can still build snapshots and hand them on.
+
 Part of [Footfall](https://github.com/forest-rs/footfall). For instrumenting
 code, start with the [`footfall`](https://docs.rs/footfall) crate.
 

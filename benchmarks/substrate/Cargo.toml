@@ -17,7 +17,7 @@ footfall = { features = ["std"], workspace = true }
 criterion = { default-features = false, features = ["cargo_bench_support"], version = "0.8.2" }
 footfall_export.workspace = true
 footfall_fanout.workspace = true
-footfall_runtime.workspace = true
+footfall_runtime = { features = ["std"], workspace = true }
 footfall_tracing.workspace = true
 tracing = "0.1.41"
 tracing-subscriber = { default-features = false, features = ["registry", "std"], version = "0.3.20" }
