@@ -27,7 +27,7 @@
 //! and `frame_end_numbered`, and the work runs under the owner's handle.
 
 use footfall::{
-    ClockDesc, ClockReading, CounterDesc, DropReason, EventDesc, FlowId, FramePoint,
+    BeginsAt, ClockDesc, ClockReading, CounterDesc, DropReason, EventDesc, FlowId, FramePoint,
     FramePointKind, LabelKey, RegisteredContext, ResourceId, ResourceKindDesc, ScopeDesc,
     TickPeriod, TimelineDesc, TimelineSpan, TimingBasis, args, clock_sync, context, counter_add,
     flow_begin, flow_end, flow_step, frame_begin_numbered, frame_end_numbered, frame_point,
@@ -115,6 +115,8 @@ pub struct Renderer {
     workers: Vec<Worker>,
     finished: mpsc::Receiver<()>,
     gpu: Gpu,
+    /// When the next frame is due, when a paced loop runs the renderer.
+    due: Option<Instant>,
 }
 
 impl Renderer {
@@ -152,6 +154,7 @@ impl Renderer {
             workers,
             finished,
             gpu: Gpu::new(),
+            due: None,
         }
     }
 
@@ -161,15 +164,19 @@ impl Renderer {
         let interval = Duration::from_secs(1) / fps.max(1);
         let start = Instant::now();
         let mut rendered = 0_u64;
+        let mut wake = start;
         while !stop.load(Ordering::Relaxed) && frames.is_none_or(|frames| rendered < frames) {
+            self.due = Some(wake);
             self.frame();
             rendered += 1;
             // Keep the pace, but never try to catch up after a slow frame.
             let due = start + interval * u32::try_from(rendered).unwrap_or(u32::MAX);
-            match due.checked_duration_since(Instant::now()) {
-                Some(wait) => thread::sleep(wait),
-                None => thread::sleep(Duration::from_millis(1)),
-            }
+            let now = Instant::now();
+            let wait = due
+                .checked_duration_since(now)
+                .unwrap_or(Duration::from_millis(1));
+            wake = now + wait;
+            thread::sleep(wait);
         }
     }
 
@@ -180,6 +187,11 @@ impl Renderer {
         // The renderer's own frame number, so later observations of this
         // frame, such as when it was shown, can find it.
         frame_begin_numbered(self.frame, window);
+        // A paced loop wakes for each frame: say when it was due, so a late
+        // wake shows as a frame begun late.
+        if let Some(due) = self.due.take() {
+            self.gpu.scheduled(self.frame, due);
+        }
         // Like a swapchain, the display holds only so many frames: wait for
         // one to be shown before building another.
         self.gpu.wait_for_drawable(window);
@@ -452,6 +464,18 @@ impl Gpu {
     fn next_refresh(at: Duration) -> Duration {
         let refreshes = at.as_nanos().div_ceil(REFRESH.as_nanos());
         REFRESH * u32::try_from(refreshes).unwrap_or(u32::MAX)
+    }
+
+    /// Records that frame `number` was due to begin at `due`, when the loop
+    /// woke for it.
+    fn scheduled(&self, number: u64, due: Instant) {
+        frame_point(&FramePoint::at(
+            number,
+            FramePointKind::Scheduled(BeginsAt::Time),
+            &HOST_CLOCK,
+            TickPeriod::NANOSECOND,
+            Self::host_ticks(due.saturating_duration_since(self.start)),
+        ));
     }
 
     /// Records when frame `number` should be shown, and the latest it can
