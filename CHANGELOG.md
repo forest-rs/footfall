@@ -59,6 +59,17 @@ crates share one version.
   were `(1 << 32) + id`, and Perfetto keeps only 32 bits of a thread id,
   so a GPU timeline landed on a thread's track and took its name.
 
+### Integrations
+
+- `footfall_tracy` draws frame pacing live. Each frame stream's frame
+  opportunities are a Tracy frame set, whose frame graph shows each skipped
+  callback as a long frame, with a plot of the wait between them. Each
+  frame's CPU work, between its numbered markers, is a zone on a `frames
+  built` row as soon as it ends, and each shown frame's time on screen a
+  zone on a `frames on screen` row, in the frame scheduler's clock. Plots
+  show each frame's latency from its work to the screen and its slack
+  before its deadline.
+
 ### Tools
 
 - `footfall analyze pacing` reports each stream's frame opportunities and

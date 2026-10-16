@@ -23,6 +23,14 @@
 //!   row, with their spans as GPU zones; see [Timelines](#timelines)
 //! - a frame's target and presented [frame points](footfall_core::FramePoint)
 //!   become a `frame lateness (ms)` plot, and dropped frames messages
+//! - each frame stream's [frame opportunities](footfall_core::FrameOpportunity)
+//!   become a frame set, `frame opportunities, stream N`, whose frames are the
+//!   waits between them, with a plot of those waits
+//! - each frame's CPU work, between its numbered markers, becomes a GPU zone
+//!   on `frames built, stream N` as soon as it ends, and each shown frame's
+//!   time on screen a zone on `frames on screen, stream N`, both in the frame
+//!   scheduler's clock; with plots of each frame's latency from its work to
+//!   the screen and of its slack before its deadline
 //!
 //! Flow events are currently ignored by this backend because Tracy does not expose a strong native
 //! equivalent to Perfetto-style causal links.
@@ -61,9 +69,9 @@ pub use timeline::TimelineCounts;
 
 use footfall_core::{
     Args, Backend, ClockReading, Context, ContextHandle, CounterDesc, CounterDescId, DropReason,
-    EventDesc, FramePoint, InstallBackendError, LabelValue, MarkerKind, MarkerPhase, ResourceId,
-    ResourceKindDesc, ScopeDesc, ScopeDescId, ScopeToken, SourceLocation, TimelineSpan, Unit,
-    install_backend,
+    EventDesc, FrameNumber, FrameOpportunity, FramePoint, FrameStream, InstallBackendError,
+    LabelValue, MarkerKind, MarkerPhase, ResourceId, ResourceKindDesc, ScopeDesc, ScopeDescId,
+    ScopeToken, SourceLocation, TimelineSpan, Unit, install_backend,
 };
 use hashbrown::HashMap;
 use std::{
@@ -96,6 +104,21 @@ pub struct TracyBackend {
     /// messages.
     contexts: Mutex<HashMap<ContextHandle, String>>,
     timelines: Mutex<Timelines>,
+    streams: Mutex<HashMap<FrameStream, StreamPlots>>,
+    /// Each frame stream's latest opportunity.
+    opportunities: Mutex<HashMap<FrameStream, ClockReading>>,
+}
+
+/// One frame stream in Tracy: a frame set whose frames are the waits
+/// between its opportunities, and plots of those waits, of each frame's
+/// latency from its work to the screen, and of each frame's slack before
+/// its deadline.
+#[derive(Clone, Copy)]
+struct StreamPlots {
+    opportunities: FrameName,
+    interval: PlotName,
+    latency: PlotName,
+    slack: PlotName,
 }
 
 impl TracyBackend {
@@ -117,6 +140,8 @@ impl TracyBackend {
             locations: Mutex::new(HashMap::new()),
             contexts: Mutex::new(HashMap::new()),
             timelines: Mutex::new(Timelines::default()),
+            streams: Mutex::new(HashMap::new()),
+            opportunities: Mutex::new(HashMap::new()),
         }
     }
 
@@ -485,6 +510,49 @@ impl Backend for TracyBackend {
         self.handle_marker(kind, phase);
     }
 
+    fn numbered_marker(
+        &self,
+        kind: MarkerKind,
+        phase: MarkerPhase,
+        number: FrameNumber,
+        _context: ContextHandle,
+    ) {
+        self.register_current_thread();
+        if kind == MarkerKind::Frame {
+            // When the frame's work began or ended, for its life on the
+            // frame rows once it is shown.
+            self.lock_timelines().frame_marker(
+                &self.client,
+                number,
+                phase,
+                std::time::Instant::now(),
+            );
+        }
+        self.handle_marker(kind, phase);
+    }
+
+    fn frame_opportunity(&self, opportunity: &FrameOpportunity) {
+        self.register_current_thread();
+        let stream = opportunity.stream();
+        let plots = self.stream_plots(stream);
+        // A frame set whose frames are the waits between opportunities, so
+        // Tracy's frame graph shows each skipped one as a long frame.
+        self.client.secondary_frame_mark(plots.opportunities);
+        let time = opportunity.time();
+        let before = self
+            .opportunities
+            .lock()
+            .expect("tracy opportunity mutex should not be poisoned")
+            .insert(stream, time);
+        if let Some(before) = before
+            && before.clock() == time.clock()
+            && time.ticks() >= before.ticks()
+        {
+            let nanos = time.period().ticks_to_nanos(time.ticks() - before.ticks());
+            self.plot_millis(plots.interval, i128::from(nanos));
+        }
+    }
+
     // Flows are ignored: Tracy has no native causal-link primitive.
 
     fn clock_sync(&self, reading: ClockReading) {
@@ -505,9 +573,23 @@ impl Backend for TracyBackend {
 
     fn frame_point(&self, point: &FramePoint) {
         self.register_current_thread();
-        let outcome = self.lock_timelines().frame_point(point);
+        let outcomes = self.lock_timelines().frame_point(&self.client, point);
+        for outcome in outcomes {
+            self.show_point_outcome(outcome);
+        }
+    }
+
+    fn message(&self, desc: &'static EventDesc, context: ContextHandle, text: &str, args: &Args) {
+        self.register_current_thread();
+        let message = message_text(desc, &self.context_text(context), text, args);
+        self.client.message(&message, self.callstack_depth);
+    }
+}
+
+impl TracyBackend {
+    /// Shows what a frame point produced: a plot point or a message.
+    fn show_point_outcome(&self, outcome: PointOutcome) {
         match outcome {
-            PointOutcome::None => {}
             PointOutcome::Lateness(nanos) => {
                 let plot = *LATENESS_PLOT.get_or_init(|| {
                     let plot = PlotName::new_leak(String::from("frame lateness (ms)"));
@@ -539,13 +621,48 @@ impl Backend for TracyBackend {
                     self.callstack_depth,
                 );
             }
+            PointOutcome::Latency(stream, nanos) => {
+                let plot = self.stream_plots(stream).latency;
+                self.plot_millis(plot, nanos);
+            }
+            PointOutcome::Slack(stream, nanos) => {
+                let plot = self.stream_plots(stream).slack;
+                self.plot_millis(plot, nanos);
+            }
         }
     }
 
-    fn message(&self, desc: &'static EventDesc, context: ContextHandle, text: &str, args: &Args) {
-        self.register_current_thread();
-        let message = message_text(desc, &self.context_text(context), text, args);
-        self.client.message(&message, self.callstack_depth);
+    fn plot_millis(&self, plot: PlotName, nanos: i128) {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a plot shows milliseconds to well under a nanosecond"
+        )]
+        self.client.plot(plot, nanos as f64 / 1_000_000.0);
+    }
+
+    /// The frame set and plots of frame stream `stream`, made the first time
+    /// it is shown.
+    fn stream_plots(&self, stream: FrameStream) -> StreamPlots {
+        let mut streams = self
+            .streams
+            .lock()
+            .expect("tracy stream mutex should not be poisoned");
+        *streams.entry(stream).or_insert_with(|| {
+            let plot = |what: &str| {
+                let plot = PlotName::new_leak(format!("{what}, stream {stream} (ms)"));
+                self.client.plot_config(
+                    plot,
+                    PlotConfiguration::default().format(PlotFormat::Number),
+                );
+                plot
+            };
+            StreamPlots {
+                opportunities: FrameName::new_leak(format!("frame opportunities, stream {stream}")),
+                interval: plot("frame opportunity interval"),
+                latency: plot("frame latency"),
+                slack: plot("frame slack before deadline"),
+            }
+        })
     }
 }
 
