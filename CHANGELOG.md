@@ -18,6 +18,25 @@ crates share one version.
 
 ### Consuming
 
+- `Trace::pacing` judges when each frame began against when it could have:
+  at its scheduled time, or at the first of its stream's opportunities
+  from then on. `FramePacing::began_late` says how much later it began,
+  and `FramePacing::opportunity_late` how much later than due the
+  opportunity it waited for came, when the platform skipped the one it was
+  meant for. Late frames have two new causes, `SkippedOpportunity` and
+  `BeganLate`, judged after `MissedDeadline`, and `Why` carries both
+  conditions and whether the begin could be judged. A frame that waited
+  for a skipped display-link callback, begun a refresh late and shown a
+  refresh late though submitted by its deadline, was `AfterSubmit` and
+  unresolved; it is now `SkippedOpportunity`, observed.
+  `Pacing::opportunities` counts the opportunities recorded and skipped,
+  `Pacing::opportunity_intervals` their spacing, and
+  `Pacing::begin_lateness` how late the frames that began late began.
+- Breaking: `Why` and the counts `Pacing` returns (`OutcomeCounts`,
+  `LateCauseCounts`, `SupportCounts`, `DeadlineCounts`, `BasisCounts`,
+  `PredictionError`, `WastedWork`, and the new `OpportunityCounts`) are
+  `#[non_exhaustive]`, so later releases can add to them. Their fields
+  stay public to read.
 - The session protocol is `1.1`: it adds the frame opportunity observation
   and the scheduled frame point kind. Captures written at `1.0` still read
   the same.

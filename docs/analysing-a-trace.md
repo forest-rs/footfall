@@ -97,9 +97,11 @@ whole, wherever they ran; `Trace::frame_spans` lists them.
 ## Frame Pacing
 
 `Trace::pacing(tolerance)` joins each numbered frame's CPU work, its GPU
-work, and the frame points a frame scheduler or display reported into a
-`FramePacing`: its deadline, its predicted, target, and expected display
-times, when it was shown, how long its GPU was busy, and an `Outcome`.
+work, the frame points a frame scheduler or display reported, and the
+frame opportunities the platform offered its stream into a `FramePacing`:
+when it was scheduled to begin and whether it began late, its deadline,
+its predicted, target, and expected display times, when it was shown, how
+long its GPU was busy, and an `Outcome`.
 Frames are numbered within frame streams, such as one per window; each
 frame is judged against the frame before it in its own stream, and
 `Pacing::in_stream` narrows the answers to one stream's frames.
@@ -118,6 +120,8 @@ A late frame's `LateCause` is the first of these the trace shows, in order:
 | Cause | The frame |
 |---|---|
 | `MissedDeadline` | had its CPU work submitted after its deadline |
+| `SkippedOpportunity` | was to begin at a frame opportunity, and the platform skipped the one it was meant for, so it began at a later one |
+| `BeganLate` | began more than `tolerance` after it could have: after its scheduled time, or after the opportunity it was to begin at |
 | `Backlog` | was in time, but the frame before it was still being shown at this one's target |
 | `Gpu` | was in time, but its GPU work finished after its target |
 | `Display` | was submitted and rendered in time with nothing ahead of it: the compositor or display held it |
@@ -127,16 +131,46 @@ A late frame's `LateCause` is the first of these the trace shows, in order:
 So the first frame of a run of late frames carries the cause, and the ones
 behind it say `Backlog`.
 
+When a frame began is judged from its `Scheduled` point and its begin
+marker. A frame scheduled to begin at a time (`BeginsAt::Time`) could have
+begun then; one scheduled to begin at an opportunity
+(`BeginsAt::Opportunity`) could have begun at the first of its stream's
+frame opportunities from then on. `FramePacing::began_late` says how much
+later than that it began, when more than the tolerance: a timer that woke
+late, or a program busy when its opportunity came.
+`FramePacing::opportunity_late` says, for a frame that waited for an
+opportunity, how much later than due that opportunity came, when it came
+at least half an interval after the opportunity before it said the next
+would: the platform skipped the one the frame was meant for. A frame that
+began at the opportunity it got did not begin late, even when that
+opportunity came late. `FramePacing::begin_judged` says whether the trace
+had what judging the begin needs; without opportunities for its stream, a
+frame that waits for them is not judged. Whether its opportunity came
+needs no begin marker, so a frame dropped before it began, such as one
+that expired waiting, still says when the platform skipped the
+opportunity it waited for.
+
+`Pacing::opportunities` counts the opportunities recorded and how many the
+platform skipped between them, from the interval each gave or its stream's
+median spacing, leaving out waits across lost events.
+`Pacing::opportunity_intervals` is the time from each to the next, steady
+at the refresh interval while the platform offers every refresh, and
+`Pacing::begin_lateness` how late the frames that began late began,
+whether or not they were shown late. A stutter with skipped opportunities
+under it is the platform's; one under frames that began late is the
+program's.
+
 The cause is the leading explanation, not proof. `FramePacing::why` says
 what the trace shows: every condition that held (submitted after the
-deadline, GPU work finishing after the target, the frame before still
-waiting), whether the submission time was reported or read from the end
-marker, whether GPU work was recorded, how the submission and presentation
+deadline, the opportunity it was meant for skipped, a late begin, GPU work
+finishing after the target, the frame before still waiting), whether the
+submission time was reported or read from the end marker, whether when it
+began could be judged, whether GPU work was recorded, how the submission and presentation
 times were known, and how strongly the trace supports the cause:
 
 | `Support` | Meaning |
 |---|---|
-| `Observed` | The trace recorded the condition, from times that were not estimates: a late submission, or recorded GPU work finishing after the target |
+| `Observed` | The trace recorded the condition, from times that were not estimates: a late submission, a skipped opportunity, a late begin, or recorded GPU work finishing after the target |
 | `Inferred` | It rests on something not observed: a queue read from the frame before's presentation, or an estimated submission or presentation time |
 | `Unresolved` | The program's part looked in time, and what came after was not observed |
 

@@ -2051,3 +2051,247 @@ fn a_missed_deadline_shown_by_an_estimated_submission_is_inferred() {
     );
     assert_eq!(pacing.counts().late_support.observed_unstated, 0);
 }
+
+impl Recording {
+    /// Records, at `at` µs, a frame opportunity of `stream` at `time` µs of
+    /// the host clock, with an interval in µs.
+    fn opportunity(&mut self, at: u64, stream: FrameStream, time: u64, interval: Option<u64>) {
+        self.record(
+            at,
+            MAIN,
+            Observation::FrameOpportunity {
+                stream,
+                time: ClockTicks::from(ClockReading::new(
+                    &HOST,
+                    time * 1000,
+                    TickPeriod::NANOSECOND,
+                )),
+                interval: interval.map(|micros| micros * 1000),
+                args: Args::none(),
+            },
+        );
+    }
+
+    /// Records a frame scheduled at `scheduled` µs, begun at `begin`, ended
+    /// at `end`, with its deadline, target, and presentation.
+    #[expect(clippy::too_many_arguments, reason = "a test helper")]
+    fn scheduled_frame(
+        &mut self,
+        number: u64,
+        begins_at: footfall_core::BeginsAt,
+        scheduled: u64,
+        begin: u64,
+        end: u64,
+        deadline: u64,
+        target: u64,
+        presented: u64,
+    ) {
+        use footfall_core::FramePointKind::{Deadline, Presented, Scheduled, Target};
+        self.numbered_frame(number, begin, end);
+        self.frame_point(end, number, Scheduled(begins_at), &HOST, Some(scheduled));
+        self.frame_point(end, number, Deadline, &HOST, Some(deadline));
+        self.frame_point(end, number, Target, &HOST, Some(target));
+        self.frame_point(end, number, Presented, &HOST, Some(presented));
+    }
+}
+
+#[test]
+fn late_frames_say_whether_the_platform_or_the_program_began_them_late() {
+    use footfall_analysis::{LateCause, Outcome, Support};
+    use footfall_core::BeginsAt::{Opportunity, Time};
+    let mut recording = Recording::new(9);
+    recording.clock_sync(0, &HOST, 0);
+    // A display link every 10 ms, which skips the one at 20 ms.
+    for time in [0, 10_000, 30_000, 40_000, 50_000, 60_000] {
+        recording.opportunity(time, FrameStream::DEFAULT, time, Some(10_000));
+    }
+    // Begun at the opportunity it waited for, and shown on time.
+    recording.scheduled_frame(
+        1,
+        Opportunity,
+        5_000,
+        10_000,
+        12_000,
+        18_000,
+        20_000,
+        20_000,
+    );
+    // Meant for the opportunity at 20 ms, which never came: begun at the
+    // next, and shown a refresh late, though submitted by its deadline.
+    recording.scheduled_frame(
+        2,
+        Opportunity,
+        15_000,
+        30_000,
+        32_000,
+        38_000,
+        30_000,
+        40_000,
+    );
+    // Its opportunity came at 40 ms, but the program began it at the next.
+    recording.scheduled_frame(
+        3,
+        Opportunity,
+        35_000,
+        50_000,
+        52_000,
+        58_000,
+        50_000,
+        60_000,
+    );
+    // Woken by a timer 3 ms after it was scheduled to begin.
+    recording.scheduled_frame(4, Time, 61_000, 64_000, 66_000, 68_000, 70_000, 80_000);
+    let trace = Trace::from_snapshot(&recording.snapshot(90_000));
+    let pacing = trace.pacing(us(500));
+
+    let on_time = pacing.frame(1).expect("frame 1");
+    assert_eq!(on_time.outcome(), Outcome::OnTime);
+    assert!(on_time.begin_judged());
+    assert_eq!(
+        (on_time.began_late(), on_time.opportunity_late()),
+        (None, None)
+    );
+    assert_eq!(on_time.scheduled(), Some(us(5_000)));
+    assert_eq!(on_time.begins_at(), Some(Opportunity));
+
+    let skipped = pacing.frame(2).expect("frame 2");
+    assert_eq!(
+        skipped.outcome(),
+        Outcome::Late {
+            by: us(10_000),
+            cause: LateCause::SkippedOpportunity,
+        }
+    );
+    let why = skipped.why().expect("a late frame says why");
+    assert_eq!(why.support, Support::Observed);
+    assert_eq!(why.opportunity_late, Some(us(10_000)));
+    assert_eq!(why.began_late, None, "it began at the opportunity it got");
+    assert_eq!(why.submitted_late, None);
+
+    let busy = pacing.frame(3).expect("frame 3");
+    assert_eq!(
+        busy.outcome(),
+        Outcome::Late {
+            by: us(10_000),
+            cause: LateCause::BeganLate,
+        }
+    );
+    assert_eq!(busy.began_late(), Some(us(10_000)));
+    assert_eq!(busy.opportunity_late(), None);
+
+    let woke_late = pacing.frame(4).expect("frame 4");
+    assert_eq!(woke_late.began_late(), Some(us(3_000)));
+    assert!(matches!(
+        woke_late.outcome(),
+        Outcome::Late {
+            cause: LateCause::BeganLate,
+            ..
+        }
+    ));
+
+    let counts = pacing.counts();
+    assert_eq!(
+        (
+            counts.late_causes.skipped_opportunity,
+            counts.late_causes.began_late
+        ),
+        (1, 2)
+    );
+    let opportunities = pacing.opportunities();
+    assert_eq!(
+        (
+            opportunities.recorded,
+            opportunities.skipped,
+            opportunities.unplaced
+        ),
+        (6, 1, 0)
+    );
+    assert_eq!(pacing.opportunity_intervals().max(), us(20_000));
+    assert_eq!(pacing.begin_lateness().count(), 2);
+}
+
+#[test]
+fn a_frame_that_expired_waiting_says_its_opportunity_never_came() {
+    use footfall_core::BeginsAt::Opportunity;
+    use footfall_core::DropReason;
+    use footfall_core::FramePointKind::{Dropped, Scheduled};
+    let mut recording = Recording::new(11);
+    recording.clock_sync(0, &HOST, 0);
+    for time in [0, 10_000, 30_000] {
+        recording.opportunity(time, FrameStream::DEFAULT, time, Some(10_000));
+    }
+    // Held for the opportunity at 20 ms, which never came, it was dropped at
+    // the next without beginning.
+    recording.frame_point(30_000, 1, Scheduled(Opportunity), &HOST, Some(15_000));
+    recording.frame_point(30_000, 1, Dropped(DropReason::MissedDeadline), &HOST, None);
+    let trace = Trace::from_snapshot(&recording.snapshot(40_000));
+    let frame = trace.pacing(us(500)).frame(1).cloned().expect("the frame");
+    assert!(matches!(
+        frame.outcome(),
+        footfall_analysis::Outcome::Dropped { .. }
+    ));
+    assert_eq!(frame.opportunity_late(), Some(us(10_000)));
+    assert!(!frame.begin_judged(), "it never began");
+    assert_eq!(frame.began_late(), None);
+}
+
+#[test]
+fn opportunities_are_counted_per_stream_and_judged_only_where_recorded() {
+    use footfall_analysis::LateCause;
+    use footfall_core::BeginsAt::Opportunity;
+    let mut recording = Recording::new(10);
+    recording.clock_sync(0, &HOST, 0);
+    let window = FrameStream::new(1);
+    let inspector = FrameStream::new(2);
+    // Without intervals, the median spacing says when the next was due.
+    for time in [0, 10_000, 20_000, 40_000] {
+        recording.opportunity(time, window, time, None);
+    }
+    // Events lost between these two leave the wait between them unjudged.
+    recording.opportunity(41_000, inspector, 41_000, Some(10_000));
+    let lost = recording.marker(50_000, MarkerPhase::Begin);
+    recording.opportunity(71_000, inspector, 71_000, Some(10_000));
+    // A frame of a third stream, which recorded no opportunities, cannot be
+    // judged on when it began.
+    let unrecorded = FrameStream::new(3).frame(1);
+    recording.record(
+        1_000,
+        MAIN,
+        Observation::FrameMarker {
+            kind: MarkerKind::Frame,
+            phase: MarkerPhase::Begin,
+            number: Some(unrecorded),
+            context_id: ContextId::new(0),
+        },
+    );
+    recording.record(
+        3_000,
+        MAIN,
+        Observation::FrameMarker {
+            kind: MarkerKind::Frame,
+            phase: MarkerPhase::End,
+            number: Some(unrecorded),
+            context_id: ContextId::new(0),
+        },
+    );
+    use footfall_core::FramePointKind::{Deadline, Presented, Scheduled, Target};
+    recording.frame_point(3_000, unrecorded, Scheduled(Opportunity), &HOST, Some(0));
+    recording.frame_point(3_000, unrecorded, Deadline, &HOST, Some(8_000));
+    recording.frame_point(3_000, unrecorded, Target, &HOST, Some(10_000));
+    recording.frame_point(3_000, unrecorded, Presented, &HOST, Some(20_000));
+    let snapshot = recording.window(0, recording.next(), &[lost], 90_000);
+    let trace = Trace::from_snapshot(&snapshot);
+    let pacing = trace.pacing(us(500));
+
+    let opportunities = pacing.opportunities();
+    assert_eq!((opportunities.recorded, opportunities.skipped), (6, 1));
+    let window_only = pacing.in_stream(window).opportunities();
+    assert_eq!((window_only.recorded, window_only.skipped), (4, 1));
+    assert_eq!(pacing.in_stream(inspector).opportunities().skipped, 0);
+
+    let frame = pacing.frame(unrecorded).expect("the frame");
+    assert!(!frame.begin_judged());
+    let why = frame.why().expect("a late frame says why");
+    assert!(!why.begin_judged);
+    assert_eq!(why.cause, LateCause::AfterSubmit);
+}

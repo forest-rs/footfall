@@ -12,7 +12,7 @@ use crate::time::{TimeRange, nanos};
 use core::fmt;
 use core::time::Duration;
 use footfall_core::{
-    ClockId, ContextId, CounterDescId, FlowId, FlowPhase, FrameNumber, FramePointKind,
+    ClockId, ContextId, CounterDescId, FlowId, FlowPhase, FrameNumber, FramePointKind, FrameStream,
     InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId,
     ScopeToken, TimelineId, TimingBasis,
 };
@@ -62,6 +62,9 @@ pub struct Trace {
     /// Frame points, by the frame's number: the kind, the time read from
     /// another clock, and when the point was recorded.
     frame_points: BTreeMap<FrameNumber, Vec<HeldPoint>>,
+    /// Frame opportunities, by the frame stream they were for, in the
+    /// order they were recorded.
+    frame_opportunities: BTreeMap<FrameStream, Vec<HeldOpportunity>>,
     /// Placed timeline spans reported with a frame number, by that number.
     frame_spans: HashMap<FrameNumber, Vec<SpanId>>,
     /// Timeline spans whose clock has no path to the runtime's yet, with
@@ -129,6 +132,18 @@ pub(crate) struct HeldPoint {
     pub(crate) time: Option<OwnedClockTicks>,
     pub(crate) basis: TimingBasis,
     pub(crate) args: Vec<OwnedArgEntry>,
+    /// When it was recorded.
+    pub(crate) at: Duration,
+}
+
+/// A frame opportunity as a trace holds it.
+#[derive(Clone, Debug)]
+pub(crate) struct HeldOpportunity {
+    /// When, in another clock's ticks.
+    pub(crate) time: OwnedClockTicks,
+    /// The interval the platform meant to leave before the next, in the
+    /// same clock's ticks.
+    pub(crate) interval: Option<u64>,
     /// When it was recorded.
     pub(crate) at: Duration,
 }
@@ -841,6 +856,21 @@ impl Trace {
                         at,
                     });
             }
+            OwnedObservation::FrameOpportunity {
+                stream,
+                time,
+                interval,
+                ..
+            } => {
+                self.frame_opportunities
+                    .entry(*stream)
+                    .or_default()
+                    .push(HeldOpportunity {
+                        time: time.clone(),
+                        interval: *interval,
+                        at,
+                    });
+            }
             _ => {}
         }
     }
@@ -1194,6 +1224,11 @@ impl Trace {
                 || numbered.contains_key(&(0, *number))
                 || frame_spans.contains_key(number)
         });
+        for opportunities in self.frame_opportunities.values_mut() {
+            opportunities.retain(|opportunity| opportunity.at >= before);
+        }
+        self.frame_opportunities
+            .retain(|_, opportunities| !opportunities.is_empty());
         self.unplaced.retain(|(_, _, at, _)| *at >= before);
         self.provisional.retain(|(_, _, at, _)| *at >= before);
         self.clocks
@@ -1331,6 +1366,10 @@ impl Trace {
 
     pub(crate) const fn frame_points(&self) -> &BTreeMap<FrameNumber, Vec<HeldPoint>> {
         &self.frame_points
+    }
+
+    pub(crate) const fn frame_opportunities(&self) -> &BTreeMap<FrameStream, Vec<HeldOpportunity>> {
+        &self.frame_opportunities
     }
 
     pub(crate) fn numbered_frames(&self) -> impl Iterator<Item = FrameNumber> + '_ {

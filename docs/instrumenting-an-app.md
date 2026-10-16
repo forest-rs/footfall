@@ -404,6 +404,41 @@ on estimates. Record `Submitted` when the frame was handed to the
 compositor or swapchain, which can differ from when its CPU work ended, and
 `Sampled`, the time its content was made for, such as the animation time.
 
+Say when each frame was meant to begin, and what it waited for. Record
+each frame opportunity the platform offers as it arrives, with
+`frame_opportunity`: every display-link callback, vblank notification, or
+compositor frame callback, including those at which no frame began, with
+the interval the platform means to leave before the next, such as the
+refresh interval. And record the `Scheduled` point when the frame is
+planned: the earliest time its work was meant to begin, and whether it
+`BeginsAt::Time`, when the program wakes for it, or
+`BeginsAt::Opportunity`, at the first opportunity from then on. Analysis
+then tells a frame the program began late from one whose opportunity the
+platform skipped, and counts the opportunities skipped.
+
+```rust
+use footfall::{
+    BeginsAt, ClockDesc, FrameOpportunity, FramePoint, FramePointKind, FrameStream, TickPeriod,
+};
+
+static HOST: ClockDesc = ClockDesc::new("host");
+let period = TickPeriod::new(125, 3); // Mach absolute time
+let (now, refresh) = (1_000_000_u64, 200_000_u64); // 120 Hz
+
+// In every display-link callback:
+footfall::frame_opportunity(
+    &FrameOpportunity::at(FrameStream::DEFAULT, &HOST, period, now).with_interval(refresh),
+);
+// When planning frame 1234 to begin at the next callback:
+footfall::frame_point(&FramePoint::at(
+    1234,
+    FramePointKind::Scheduled(BeginsAt::Opportunity),
+    &HOST,
+    period,
+    now + refresh / 2,
+));
+```
+
 Numbers the scheduler worked from, such as its pipeline depth or safety
 margin, belong with the frame they describe: attach them to that frame's
 point with `FramePoint::with_args` rather than setting a gauge when the
