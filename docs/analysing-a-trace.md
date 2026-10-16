@@ -180,6 +180,10 @@ leading explanation. A time recorded without a basis
 (`TimingBasis::Unknown`) is taken at its word, so a cause it shows can be
 `Observed`; `Why::unstated_basis` says when one does.
 
+`Outcome`, `LateCause`, `Support`, and `Why` display as a few words, a
+`Why` with every condition that held, as in `the platform skipped its
+opportunity, observed; its opportunity came 8.33 ms late`.
+
 `OutcomeCounts::late_support` counts late frames by support, and how many
 of the observed rest on unstated times (`observed_unstated`), so an answer
 can say how much of it rests on inference. Only some drops are misses (`DropReason::is_miss`):

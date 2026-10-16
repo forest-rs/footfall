@@ -4,6 +4,8 @@
 //! Work on timelines that are not CPU threads, and what frame schedulers
 //! and displays report about frames.
 
+use core::fmt;
+
 use crate::{
     Args, ClockDesc, ClockReading, ContextHandle, FlowId, FrameNumber, FrameStream, ScopeDesc,
     TickPeriod, TimelineDesc,
@@ -278,6 +280,22 @@ pub enum DropReason {
     /// It was submitted, and the platform reported that it was never shown,
     /// without saying why: replaced by a later frame, or lost.
     NotPresented,
+}
+
+impl fmt::Display for DropReason {
+    /// Says why, in a few words, such as `missed its deadline`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Unknown => "for a reason not known",
+            Self::Discarded => "discarded",
+            Self::Superseded => "superseded",
+            Self::MissedDeadline => "missed its deadline",
+            Self::SurfaceUnavailable => "no surface",
+            Self::OutputUnavailable => "no display",
+            Self::Replaced => "replaced by a later frame",
+            Self::NotPresented => "not presented",
+        })
+    }
 }
 
 impl DropReason {

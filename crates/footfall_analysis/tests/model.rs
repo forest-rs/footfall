@@ -2167,6 +2167,14 @@ fn late_frames_say_whether_the_platform_or_the_program_began_them_late() {
     assert_eq!(why.opportunity_late, Some(us(10_000)));
     assert_eq!(why.began_late, None, "it began at the opportunity it got");
     assert_eq!(why.submitted_late, None);
+    assert_eq!(
+        skipped.outcome().to_string(),
+        "late by 10.00 ms: the platform skipped its opportunity"
+    );
+    assert_eq!(
+        why.to_string(),
+        "the platform skipped its opportunity, observed; its opportunity came 10.00 ms late"
+    );
 
     let busy = pacing.frame(3).expect("frame 3");
     assert_eq!(
@@ -2181,6 +2189,10 @@ fn late_frames_say_whether_the_platform_or_the_program_began_them_late() {
 
     let woke_late = pacing.frame(4).expect("frame 4");
     assert_eq!(woke_late.began_late(), Some(us(3_000)));
+    assert_eq!(
+        woke_late.why().map(ToString::to_string).as_deref(),
+        Some("began late, observed; began 3.00 ms late")
+    );
     assert!(matches!(
         woke_late.outcome(),
         Outcome::Late {
@@ -2291,6 +2303,21 @@ fn opportunities_are_counted_per_stream_and_judged_only_where_recorded() {
 
     let frame = pacing.frame(unrecorded).expect("the frame");
     assert!(!frame.begin_judged());
+    assert_eq!(
+        frame.why().map(ToString::to_string).as_deref(),
+        Some("late after submit, no GPU work to tell, unresolved; when it began was not judged")
+    );
+    assert_eq!(
+        footfall_analysis::Outcome::Dropped {
+            reason: footfall_core::DropReason::MissedDeadline
+        }
+        .to_string(),
+        "dropped: missed its deadline"
+    );
+    assert_eq!(
+        footfall_analysis::Outcome::Early { by: us(850) }.to_string(),
+        "early by 850 µs"
+    );
     let why = frame.why().expect("a late frame says why");
     assert!(!why.begin_judged);
     assert_eq!(why.cause, LateCause::AfterSubmit);

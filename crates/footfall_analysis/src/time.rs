@@ -151,6 +151,23 @@ pub(crate) fn merge_ranges(mut ranges: Vec<TimeRange>) -> Vec<TimeRange> {
 }
 
 /// Converts a runtime timestamp, in nanoseconds, to a trace time.
+/// Shows a duration for people: microseconds below a millisecond,
+/// milliseconds to two places below a second, seconds above.
+pub(crate) struct Shown(pub(crate) Duration);
+
+impl fmt::Display for Shown {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let nanos = self.0.as_nanos();
+        if nanos < 1_000_000 {
+            write!(f, "{} µs", nanos / 1_000)
+        } else if nanos < 1_000_000_000 {
+            write!(f, "{:.2} ms", self.0.as_secs_f64() * 1e3)
+        } else {
+            write!(f, "{:.2} s", self.0.as_secs_f64())
+        }
+    }
+}
+
 pub(crate) const fn nanos(at: u64) -> Duration {
     Duration::from_nanos(at)
 }
