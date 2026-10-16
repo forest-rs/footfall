@@ -26,7 +26,8 @@
 //!    backend, emissions are discarded at almost no cost.
 //! 3. **Read.** `Runtime::snapshot` returns everything captured, and
 //!    `Runtime::snapshot_since` with a cursor returns only what is new.
-//! 4. **Use it elsewhere.** `export` writes a snapshot as a Chrome trace;
+//! 4. **Use it elsewhere.** `export` writes a snapshot as a Perfetto trace
+//!    or a Chrome trace;
 //!    `session::capture` saves snapshots to a file; `wtransport` serves the
 //!    runtime so tools can fetch or subscribe to it live.
 //! 5. **Analyze.** `analysis` turns any snapshot, in process, live, or from

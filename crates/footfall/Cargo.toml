@@ -16,7 +16,7 @@ alloc = ["footfall_core/alloc"]
 std = ["alloc", "footfall_core/std"]
 # Bounded in-process capture with snapshots: `footfall::runtime`.
 runtime = ["std", "dep:footfall_runtime", "footfall_runtime/std"]
-# Chrome Trace JSON export: `footfall::export`.
+# Perfetto and Chrome Trace JSON export: `footfall::export`.
 export = ["session", "dep:footfall_export"]
 # Session envelopes, the codec, and capture files: `footfall::session`.
 session = ["std", "dep:footfall_session", "footfall_session/std"]

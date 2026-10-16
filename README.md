@@ -20,7 +20,7 @@ by thread and call stack.
   WebTransport; any number of them can follow it live without draining it.
 - **Analyzable anywhere.** The same snapshot form comes from the process
   itself, a live session, or a capture file, and turns into spans, frames,
-  per-frame counter changes, or a Chrome trace for Perfetto.
+  per-frame counter changes, or a trace for Perfetto.
 - **Bridged.** Existing `tracing` spans and events flow in unchanged, and a
   Tracy backend shows everything live in Tracy.
 
@@ -132,7 +132,7 @@ https://127.0.0.1:43091/footfall/session · main
 | `footfall` | | The entry point: the instrumentation API, and every part below as a module |
 | `footfall_core` | | The instrumentation API and its reference documentation |
 | `footfall_runtime` | `runtime` | Bounded in-process capture with snapshots and cursors |
-| `footfall_export` | `export` | Chrome Trace JSON for Perfetto and `chrome://tracing` |
+| `footfall_export` | `export` | Perfetto traces, and Chrome Trace JSON for `chrome://tracing` |
 | `footfall_session` | `session` | Snapshots for consumers, the envelope codec, capture files |
 | `footfall_analysis` | `analysis` | Traces of snapshots: span queries, frames, comparisons, timelines |
 | `footfall_session_wtransport` | `wtransport` | Serve and attach to sessions over local WebTransport |

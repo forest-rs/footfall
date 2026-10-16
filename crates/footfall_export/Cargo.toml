@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Chrome Trace JSON export of Footfall snapshots, for Perfetto and chrome://tracing."
+description = "Perfetto and Chrome Trace JSON export of Footfall snapshots."
 
 [dependencies]
 footfall_core = { features = ["std"], workspace = true }

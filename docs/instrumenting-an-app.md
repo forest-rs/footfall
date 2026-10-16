@@ -25,7 +25,7 @@ footfall = { version = "0.1", features = ["runtime", "export"] }
 - no features: descriptors, contexts, and emission calls. This is the only
   Footfall dependency an instrumented library needs.
 - `runtime`: bounded local collection, as `footfall::runtime`
-- `export`: write a capture as Chrome Trace JSON for Perfetto, as
+- `export`: write a capture as a Perfetto trace, or as Chrome Trace JSON, as
   `footfall::export`
 - `wtransport`: a local attach path for tools, as `footfall::wtransport`
 - `tracing`: forward `tracing` spans and events, as `footfall::tracing_layer`
@@ -156,7 +156,7 @@ use footfall::runtime::Runtime;
 
 fn write_trace(runtime: &Runtime) -> std::io::Result<()> {
     let snapshot = runtime.snapshot();
-    footfall::export::write_chrome_trace_file(&snapshot.into(), "trace.json")
+    footfall::export::write_perfetto_trace_file(&snapshot.into(), "trace.pftrace")
 }
 ```
 
@@ -173,9 +173,12 @@ fn capture_region(runtime: &Runtime, work: impl FnOnce()) -> footfall::runtime::
 }
 ```
 
-Open `trace.json` in [Perfetto](https://ui.perfetto.dev) or
-`chrome://tracing`. Scopes appear as slices on one track per thread, counters
-as counter tracks, and contexts and arguments as slice arguments.
+Open `trace.pftrace` in [Perfetto](https://ui.perfetto.dev). Scopes appear
+as slices on one track per thread, counters as counter tracks, contexts and
+arguments as slice arguments, GPU work on its own tracks, and each frame
+stream as a group of tracks showing every frame's life. For
+`chrome://tracing`, write Chrome Trace JSON with `write_chrome_trace_file`
+instead.
 
 To record a run to a capture file that the [`footfall`
 command](../tools/footfall_cli/README.md) reads, without serving a session,
