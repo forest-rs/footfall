@@ -85,6 +85,8 @@ crates share one version.
 
 ### Tools
 
+- `footfall export` writes a Perfetto trace, `.pftrace`, by default;
+  `--format json` writes Chrome Trace JSON as before.
 - `footfall analyze pacing` reports each stream's frame opportunities and
   how many the platform skipped, how many frames began later than they
   could have, and the two new late causes; `--json` carries them, with

@@ -6,6 +6,7 @@ AGENTS.md
 
 # Output of the examples
 /footfall-*.json
+/footfall-*.pftrace
 *.ffcap
 !/examples/captures/*.ffcap
 

@@ -33,7 +33,7 @@ By pass
   pass="opaque"          34.0 ms  render 34.0 ms
   pass="transparent"     22.0 ms  render 22.0 ms
 ...
-Wrote footfall-quickstart.json; open it at https://ui.perfetto.dev.
+Wrote footfall-quickstart.pftrace; open it at https://ui.perfetto.dev.
 ```
 
 To see a live session, start the demo in one terminal and watch it from

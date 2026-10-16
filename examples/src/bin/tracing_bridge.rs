@@ -22,7 +22,7 @@ use std::time::Duration;
 use tracing::{debug, info, info_span};
 use tracing_subscriber::layer::SubscriberExt as _;
 
-const TRACE_PATH: &str = "footfall-tracing.json";
+const TRACE_PATH: &str = "footfall-tracing.pftrace";
 
 fn main() -> std::io::Result<()> {
     let runtime = Runtime::builder()
@@ -71,7 +71,7 @@ fn main() -> std::io::Result<()> {
         .count();
     println!("{messages} `tracing` events became Footfall messages.");
 
-    footfall::export::write_chrome_trace_file(&snapshot, TRACE_PATH)?;
+    footfall::export::write_perfetto_trace_file(&snapshot, TRACE_PATH)?;
     println!(
         "\nWrote {HINT}{TRACE_PATH}{HINT:#}; open it at {HINT}https://ui.perfetto.dev{HINT:#}."
     );

@@ -4,7 +4,7 @@
 //! The `footfall` command: watch a running session live, record it to a
 //! capture file, and work with the capture later: summarize it, ask why its
 //! slow frames were slow, see its frame pacing, compare it with another run,
-//! or export it as one Chrome trace.
+//! or export it as one trace for Perfetto.
 //!
 //! ```sh
 //! footfall top
@@ -94,14 +94,37 @@ enum Command {
         )]
         require: Vec<String>,
     },
-    /// Join a capture's windows into one Chrome trace for Perfetto.
+    /// Join a capture's windows into one trace for Perfetto.
     Export {
         /// The capture file to read.
         file: PathBuf,
-        /// Where to write the trace; defaults to the capture's name with `.json`.
+        /// Where to write the trace; defaults to the capture's name with
+        /// `.pftrace`, or `.json` for a Chrome trace.
         #[arg(long, short)]
         output: Option<PathBuf>,
+        /// The trace format: Perfetto's own, which keeps every time to the
+        /// nanosecond, or Chrome trace JSON, which more tools read.
+        #[arg(long, value_enum, default_value_t = TraceFormat::Perfetto)]
+        format: TraceFormat,
     },
+}
+
+/// A trace format `footfall export` writes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
+enum TraceFormat {
+    /// Perfetto's protobuf trace format.
+    Perfetto,
+    /// Chrome trace event JSON.
+    Json,
+}
+
+impl TraceFormat {
+    const fn extension(self) -> &'static str {
+        match self {
+            Self::Perfetto => "pftrace",
+            Self::Json => "json",
+        }
+    }
 }
 
 /// The questions `footfall analyze` answers about captures.
@@ -201,9 +224,13 @@ async fn main() {
             json,
             require,
         } => check(&file, json, &require),
-        Command::Export { file, output } => {
-            let output = output.unwrap_or_else(|| file.with_extension("json"));
-            export(&file, &output)
+        Command::Export {
+            file,
+            output,
+            format,
+        } => {
+            let output = output.unwrap_or_else(|| file.with_extension(format.extension()));
+            export(&file, &output, format)
         }
     };
     if let Err(error) = result {
@@ -1087,9 +1114,12 @@ fn track_label(track: &footfall::analysis::Track) -> String {
     }
 }
 
-fn export(path: &Path, output: &Path) -> Result<()> {
+fn export(path: &Path, output: &Path, format: TraceFormat) -> Result<()> {
     let snapshot = read_joined(path)?;
-    footfall::export::write_chrome_trace_file(&snapshot, output)?;
+    match format {
+        TraceFormat::Perfetto => footfall::export::write_perfetto_trace_file(&snapshot, output)?,
+        TraceFormat::Json => footfall::export::write_chrome_trace_file(&snapshot, output)?,
+    }
     println!(
         "Wrote {HINT}{}{HINT:#} ({} events); open it at {HINT}https://ui.perfetto.dev{HINT:#}.",
         output.display(),
