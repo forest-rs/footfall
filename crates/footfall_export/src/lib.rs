@@ -87,6 +87,14 @@ pub fn write_chrome_trace_json(snapshot: &OwnedSnapshot, writer: &mut impl Write
         .iter()
         .map(|event| event.thread_id())
         .collect();
+    // Tracks that are not threads take the ids after every thread's: Perfetto
+    // keeps only 32 bits of a thread id, so they must stay small.
+    let mut next_tid = threads.last().map_or(AGGREGATE_TID, |last| *last) + 1;
+    let mut track_tid = || {
+        let tid = next_tid;
+        next_tid += 1;
+        tid
+    };
     for thread_id in threads {
         let name = snapshot
             .thread(thread_id)
@@ -113,11 +121,15 @@ pub fn write_chrome_trace_json(snapshot: &OwnedSnapshot, writer: &mut impl Write
             _ => None,
         })
         .collect();
+    let timeline_tids: BTreeMap<TimelineId, u64> = timelines
+        .keys()
+        .map(|timeline_id| (*timeline_id, track_tid()))
+        .collect();
     for (timeline_id, (name, kind)) in &timelines {
         events.push(build_metadata_event(
             "thread_name",
             trace_pid(snapshot),
-            timeline_tid(*timeline_id),
+            timeline_tids[timeline_id],
             "name",
             &format!("{} {name}", timeline_kind_name(*kind)),
         ));
@@ -139,9 +151,13 @@ pub fn write_chrome_trace_json(snapshot: &OwnedSnapshot, writer: &mut impl Write
     let mut unplaced_timeline_spans = 0_u64;
     for event in snapshot.events() {
         let exported = match event.observation() {
-            OwnedObservation::TimelineSpan { span } => {
-                build_timeline_span(snapshot, &clocks, span, &mut events)?
-            }
+            OwnedObservation::TimelineSpan { span } => build_timeline_span(
+                snapshot,
+                &clocks,
+                timeline_tids[&span.timeline_id()],
+                span,
+                &mut events,
+            )?,
             _ => build_timed_observation(snapshot, event, &mut scope_tracks)?,
         };
         match exported {
@@ -567,11 +583,6 @@ enum Exported {
     Skipped,
 }
 
-/// The Chrome trace track of a timeline: past every thread id.
-fn timeline_tid(timeline_id: TimelineId) -> u64 {
-    (1 << 32) + timeline_id.get()
-}
-
 fn timeline_kind_name(kind: TimelineKind) -> &'static str {
     match kind {
         TimelineKind::Gpu => "GPU",
@@ -586,6 +597,7 @@ fn timeline_kind_name(kind: TimelineKind) -> &'static str {
 fn build_timeline_span(
     snapshot: &OwnedSnapshot,
     clocks: &Clocks,
+    tid: u64,
     span: &OwnedTimelineWork,
     events: &mut Vec<String>,
 ) -> Result<Exported, fmt::Error> {
@@ -597,7 +609,6 @@ fn build_timeline_span(
         return Ok(Exported::UnplacedTimelineSpan);
     };
     let (begin, end) = (begin.nanos(), end.nanos().max(begin.nanos()));
-    let tid = timeline_tid(span.timeline_id());
     let context = snapshot
         .context(span.context_id())
         .map_or(&[][..], |context| context.entries());
@@ -1145,7 +1156,8 @@ mod tests {
             .event(TimedObservation::new(2_000, 2, 1, gpu(&NEVER_SYNCED, 0, 1)))
             .build();
         let json = to_chrome_trace_json(&snapshot.into());
-        let tid = (1_u64 << 32) + GRAPHICS.id().get();
+        // The track after the one thread's.
+        let tid = 2;
         assert!(
             json.contains(&format!(
                 "\"name\":\"shadows\",\"cat\":\"timeline\",\"ph\":\"X\",\"ts\":1.250,\"dur\":0.500,\"pid\":1,\"tid\":{tid},\"args\":{{\"frame\":7,"
@@ -1159,6 +1171,17 @@ mod tests {
             "\"ph\":\"f\",\"bp\":\"e\",\"ts\":1.250,\"pid\":1,\"tid\":{tid},\"id\":3"
         )));
         assert!(json.contains("footfall_unplaced_timeline_spans"));
+        assert_thread_ids_fit(&json);
+    }
+
+    /// Asserts that every thread id in `json` fits in the 32 bits Perfetto
+    /// keeps of one, so no track lands on another's.
+    fn assert_thread_ids_fit(json: &str) {
+        for tid in json.split("\"tid\":").skip(1) {
+            let digits: String = tid.chars().take_while(char::is_ascii_digit).collect();
+            let tid: u64 = digits.parse().expect("a thread id");
+            assert!(u32::try_from(tid).is_ok(), "thread id {tid} does not fit");
+        }
     }
     static RECORD_AT: SourceLocation = SourceLocation::new("app::record", "src/app.rs", 42);
 

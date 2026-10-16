@@ -44,6 +44,9 @@ crates share one version.
 - The session protocol is `1.1`: it adds the frame opportunity observation
   and the scheduled frame point kind. Captures written at `1.0` still read
   the same.
+- The Chrome trace export gives timeline tracks small thread ids. They
+  were `(1 << 32) + id`, and Perfetto keeps only 32 bits of a thread id,
+  so a GPU timeline landed on a thread's track and took its name.
 
 ### Tools
 
