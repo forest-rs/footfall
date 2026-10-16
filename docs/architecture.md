@@ -210,15 +210,18 @@ works on the next frame.
 
 Whether a frame was on time is reported by the frame scheduler and display,
 in their clock, often frames after the frame's work. A frame point records
-one such time against the frame's number as it becomes known: its
-deadline, the platform's predicted display time, the scheduler's target,
-the display time expected at submit, when it was presented, or that it was
-dropped and why. Analysis converts the points through the clock conversion
-when pacing is asked for, joins them with the numbered frame's CPU markers
-and its GPU timeline spans, and gives each frame an outcome that separates
-late from dropped from not known. A late frame carries its cause, judged
-from its deadline, its GPU work, and the frame before it; a drop separates
-misses from frames the program chose not to show.
+one such time against the frame's number as it becomes known: when it was
+scheduled to begin, its deadline, the platform's predicted display time,
+the scheduler's target, the display time expected at submit, when it was
+presented, or that it was dropped and why. A frame opportunity records,
+against a frame stream, each chance the platform gave to begin a frame,
+such as a display-link callback, whether or not one began. Analysis
+converts both through the clock conversion when pacing is asked for, joins
+them with the numbered frame's CPU markers and its GPU timeline spans, and
+gives each frame an outcome that separates late from dropped from not
+known. A late frame carries its cause, judged from when it began against
+when it could have, its deadline, its GPU work, and the frame before it; a
+drop separates misses from frames the program chose not to show.
 
 ## Invariants
 

@@ -11,14 +11,16 @@ use crate::time::{TimeRange, nanos};
 use crate::trace::Trace;
 use core::time::Duration;
 use footfall_core::{
-    DropReason, FrameNumber, FramePointKind, FrameStream, TimelineId, TimelineKind, TimingBasis,
+    BeginsAt, DropReason, FrameNumber, FramePointKind, FrameStream, TimelineId, TimelineKind,
+    TimingBasis,
 };
 use footfall_session::OwnedArgEntry;
 use std::collections::BTreeSet;
 
-/// One numbered frame's pacing: its CPU work, its GPU work, its deadline,
-/// the times it was predicted, meant, and expected to be shown, when it was
-/// shown, and what that adds up to, as [`Pacing::frames`] returns it.
+/// One numbered frame's pacing: when it was meant to begin and when it did,
+/// its CPU work, its GPU work, its deadline, the times it was predicted,
+/// meant, and expected to be shown, when it was shown, and what that adds
+/// up to, as [`Pacing::frames`] returns it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FramePacing {
     number: FrameNumber,
@@ -33,6 +35,8 @@ pub struct FramePacing {
     presented: Option<Duration>,
     submitted: Option<Duration>,
     sampled: Option<Duration>,
+    scheduled: Option<(Duration, BeginsAt)>,
+    began: Began,
     dropped: Option<DropReason>,
     unplaced_points: u64,
     /// The bases and args the points that had them came with.
@@ -94,6 +98,15 @@ impl Outcome {
     }
 }
 
+/// When a frame began, judged against when it could have; see
+/// [`FramePacing::began_late`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct Began {
+    judged: bool,
+    late: Option<Duration>,
+    opportunity_late: Option<Duration>,
+}
+
 /// What made a frame late, as [`Outcome::Late`] says: the first of these the
 /// trace shows, in this order.
 ///
@@ -106,6 +119,16 @@ impl Outcome {
 pub enum LateCause {
     /// Its CPU work was submitted after its deadline.
     MissedDeadline,
+    /// It was to begin at a frame opportunity, and the platform skipped
+    /// the one it was meant for, so it began at a later one: the
+    /// opportunity it began at came at least half an interval after it was
+    /// due. See [`FramePacing::opportunity_late`].
+    SkippedOpportunity,
+    /// It began more than the tolerance after it could have: after its
+    /// scheduled time, such as a timer that woke late, or after the frame
+    /// opportunity it was to begin at, such as a program busy elsewhere.
+    /// See [`FramePacing::began_late`].
+    BeganLate,
     /// It was submitted in time, but the frame before it was still waiting
     /// to be shown at this one's target: frames queued ahead pushed it back.
     /// The queue itself is not observed, so this is
@@ -167,6 +190,59 @@ impl FramePacing {
         self.gpu_busy
     }
 
+    /// Returns the earliest time the frame's work was meant to begin, from
+    /// its [`Scheduled`](FramePointKind::Scheduled) point.
+    #[must_use]
+    pub fn scheduled(&self) -> Option<Duration> {
+        self.scheduled.map(|(at, _)| at)
+    }
+
+    /// Returns whether the frame was to begin at its scheduled time or at
+    /// the first frame opportunity from then on.
+    #[must_use]
+    pub fn begins_at(&self) -> Option<BeginsAt> {
+        self.scheduled.map(|(_, begins_at)| begins_at)
+    }
+
+    /// Returns how long after it could have the frame's work began, when
+    /// that was more than the tolerance: after its scheduled time, for a
+    /// frame that was to begin then, or after the first frame opportunity
+    /// of its stream from its scheduled time on, for one that was to begin
+    /// at an opportunity. A frame that began at the opportunity it was
+    /// meant for did not begin late, even if that opportunity came late;
+    /// see [`opportunity_late`](Self::opportunity_late).
+    #[must_use]
+    pub const fn began_late(&self) -> Option<Duration> {
+        self.began.late
+    }
+
+    /// Returns how much later than it was due the frame opportunity the
+    /// frame was to begin at came, when the platform skipped at least one:
+    /// when it came at least half an interval after the first time from
+    /// the frame's scheduled time on that the opportunity before it said
+    /// the next would come, its interval, or the stream's median spacing
+    /// without one, apart.
+    ///
+    /// It needs only the frame's scheduled point and its stream's
+    /// opportunities, not its begin marker, so it also says why a frame
+    /// dropped before it began was dropped, such as one that expired
+    /// waiting for an opportunity that never came.
+    #[must_use]
+    pub const fn opportunity_late(&self) -> Option<Duration> {
+        self.began.opportunity_late
+    }
+
+    /// Returns whether the trace held what judging when the frame began
+    /// needs: its scheduled point and begin marker, and, for a frame that
+    /// was to begin at an opportunity, its stream's opportunities from its
+    /// scheduled time on. Without them, [`began_late`](Self::began_late)
+    /// says nothing; [`opportunity_late`](Self::opportunity_late) needs no
+    /// begin marker.
+    #[must_use]
+    pub const fn begin_judged(&self) -> bool {
+        self.began.judged
+    }
+
     /// Returns the frame's deadline, the latest time its work could be
     /// submitted and still be shown at its target.
     #[must_use]
@@ -214,11 +290,15 @@ impl FramePacing {
     }
 
     /// Returns the time of the frame's point of `kind`: its
+    /// [`Scheduled`](FramePointKind::Scheduled),
     /// [`Predicted`](FramePointKind::Predicted),
     /// [`Target`](FramePointKind::Target),
     /// [`Expected`](FramePointKind::Expected),
-    /// [`Deadline`](FramePointKind::Deadline), or
-    /// [`Presented`](FramePointKind::Presented) time.
+    /// [`Deadline`](FramePointKind::Deadline),
+    /// [`Submitted`](FramePointKind::Submitted),
+    /// [`Sampled`](FramePointKind::Sampled), or
+    /// [`Presented`](FramePointKind::Presented) time. A scheduled time is
+    /// returned whatever [`BeginsAt`] `kind` carries.
     #[must_use]
     pub const fn time_of(&self, kind: FramePointKind) -> Option<Duration> {
         match kind {
@@ -229,6 +309,10 @@ impl FramePacing {
             FramePointKind::Presented => self.presented,
             FramePointKind::Submitted => self.submitted,
             FramePointKind::Sampled => self.sampled,
+            FramePointKind::Scheduled(_) => match self.scheduled {
+                Some((at, _)) => Some(at),
+                None => None,
+            },
             _ => None,
         }
     }
@@ -275,22 +359,26 @@ impl FramePacing {
     }
 
     /// Returns how the recorder came by the frame's time of `kind`, such as
-    /// whether its presentation time was observed or estimated.
+    /// whether its presentation time was observed or estimated. A
+    /// [`Scheduled`](FramePointKind::Scheduled) kind finds the frame's
+    /// scheduled point whatever [`BeginsAt`] it carries.
     #[must_use]
     pub fn basis(&self, kind: FramePointKind) -> TimingBasis {
         self.details
             .iter()
-            .find(|(held, ..)| *held == kind)
+            .find(|(held, ..)| same_kind(*held, kind))
             .map_or(TimingBasis::Unknown, |(_, basis, _)| *basis)
     }
 
     /// Returns what the recorder knew about the frame at its point of
-    /// `kind`, such as a scheduler's state when it planned the frame.
+    /// `kind`, such as a scheduler's state when it planned the frame. A
+    /// [`Scheduled`](FramePointKind::Scheduled) kind finds the frame's
+    /// scheduled point whatever [`BeginsAt`] it carries.
     #[must_use]
     pub fn args(&self, kind: FramePointKind) -> &[OwnedArgEntry] {
         self.details
             .iter()
-            .find(|(held, ..)| *held == kind)
+            .find(|(held, ..)| same_kind(*held, kind))
             .map_or(&[], |(.., args)| args)
     }
 
@@ -330,6 +418,30 @@ pub struct Pacing {
     intervals: Vec<(FrameStream, Duration)>,
     interval_breaks: u64,
     gaps: Vec<TimeRange>,
+    opportunities: Vec<StreamOpportunities>,
+}
+
+/// One frame stream's opportunities, placed in the trace's time.
+#[derive(Clone, Debug, PartialEq)]
+struct StreamOpportunities {
+    stream: FrameStream,
+    /// Each opportunity's time, and the interval the platform meant to
+    /// leave after it, in order of time.
+    times: Vec<(Duration, Option<Duration>)>,
+    /// The median time between them, for opportunities recorded without an
+    /// interval.
+    median: Duration,
+    /// How many could not be placed, because their clock has no path to
+    /// the runtime's.
+    unplaced: u64,
+}
+
+impl StreamOpportunities {
+    /// The interval the platform meant to leave after the opportunity at
+    /// `index`.
+    fn interval_after(&self, index: usize) -> Duration {
+        self.times[index].1.unwrap_or(self.median)
+    }
 }
 
 impl Pacing {
@@ -381,6 +493,12 @@ impl Pacing {
             intervals,
             interval_breaks,
             gaps: self.gaps.clone(),
+            opportunities: self
+                .opportunities
+                .iter()
+                .filter(|opportunities| opportunities.stream == stream)
+                .cloned()
+                .collect(),
         }
     }
 
@@ -413,6 +531,8 @@ impl Pacing {
                     let causes = &mut counts.late_causes;
                     match cause {
                         LateCause::MissedDeadline => causes.missed_deadline += 1,
+                        LateCause::SkippedOpportunity => causes.skipped_opportunity += 1,
+                        LateCause::BeganLate => causes.began_late += 1,
                         LateCause::Backlog => causes.backlog += 1,
                         LateCause::Gpu => causes.gpu += 1,
                         LateCause::Display => causes.display += 1,
@@ -525,6 +645,55 @@ impl Pacing {
         counts
     }
 
+    /// Returns how many frame opportunities the trace recorded, how many
+    /// the platform skipped between them, and how many could not be
+    /// placed.
+    ///
+    /// An opportunity skipped is one that did not come when the one
+    /// before it said the next would: the wait to the next, divided by the
+    /// interval it gave (or the stream's median spacing without one) and
+    /// rounded, less one. Waits across events lost from the trace are not
+    /// counted.
+    #[must_use]
+    pub fn opportunities(&self) -> OpportunityCounts {
+        let mut counts = OpportunityCounts::default();
+        for stream in &self.opportunities {
+            counts.recorded += stream.times.len() as u64;
+            counts.unplaced += stream.unplaced;
+            for (index, pair) in stream.times.windows(2).enumerate() {
+                let (from, to) = (pair[0].0, pair[1].0);
+                let interval = stream.interval_after(index);
+                if interval.is_zero() || self.gaps.iter().any(|gap| gap.overlaps(from, to)) {
+                    continue;
+                }
+                let wait = (to - from).as_nanos();
+                let intervals = (wait + interval.as_nanos() / 2) / interval.as_nanos();
+                counts.skipped += u64::try_from(intervals.saturating_sub(1)).unwrap_or(u64::MAX);
+            }
+        }
+        counts
+    }
+
+    /// Returns the time from each frame opportunity to the next in its
+    /// stream. It is steady at the refresh interval while the platform
+    /// offers every refresh.
+    #[must_use]
+    pub fn opportunity_intervals(&self) -> DurationStats {
+        DurationStats::of(
+            self.opportunities
+                .iter()
+                .flat_map(|stream| stream.times.windows(2).map(|pair| pair[1].0 - pair[0].0)),
+        )
+    }
+
+    /// Returns how much later than they could have the frames that began
+    /// late began, whether or not they were shown on time; see
+    /// [`FramePacing::began_late`].
+    #[must_use]
+    pub fn begin_lateness(&self) -> DurationStats {
+        DurationStats::of(self.frames.iter().filter_map(FramePacing::began_late))
+    }
+
     /// Returns how much later than their targets the late frames were shown.
     #[must_use]
     pub fn lateness(&self) -> DurationStats {
@@ -609,6 +778,7 @@ impl Pacing {
 
 /// How many frames had each [`Outcome`], as [`Pacing::counts`] returns them.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct OutcomeCounts {
     /// Frames shown at their targets.
     pub on_time: u64,
@@ -655,6 +825,7 @@ impl OutcomeCounts {
 /// How many frames were submitted by their deadlines, as
 /// [`Pacing::deadlines`] returns them.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct DeadlineCounts {
     /// Submitted by their deadlines.
     pub met: u64,
@@ -673,6 +844,7 @@ impl DeadlineCounts {
 /// How many times had each [`TimingBasis`], as
 /// [`Pacing::presentation_basis`] returns them.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct BasisCounts {
     /// Observed as they happened.
     pub observed: u64,
@@ -687,9 +859,10 @@ pub struct BasisCounts {
 #[non_exhaustive]
 pub enum Support {
     /// The trace recorded the condition itself: the frame was submitted
-    /// after its deadline, or its recorded GPU work finished after its
-    /// target, and neither the times that show it nor the presentation
-    /// time was an estimate. Deadlines and targets are plans, not
+    /// after its deadline, the platform skipped the opportunity it was to
+    /// begin at, it began later than it could have, or its recorded GPU
+    /// work finished after its target, and neither the times that show it
+    /// nor the presentation time was an estimate. Deadlines and targets are plans, not
     /// observations; they are taken as given.
     ///
     /// The condition was observed; that it is what made the frame late
@@ -711,6 +884,7 @@ pub enum Support {
 /// one can: a frame can be submitted late and have slow GPU work too. The
 /// conditions say each that held, and the stages say what was observed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct Why {
     /// The leading explanation: the first condition that held.
     pub cause: LateCause,
@@ -718,6 +892,16 @@ pub struct Why {
     pub support: Support,
     /// How long after its deadline the frame was submitted, when it was.
     pub submitted_late: Option<Duration>,
+    /// How much later than it was due the frame opportunity it was to
+    /// begin at came, when the platform skipped at least one; see
+    /// [`FramePacing::opportunity_late`].
+    pub opportunity_late: Option<Duration>,
+    /// How long after it could have it began, when more than the
+    /// tolerance; see [`FramePacing::began_late`].
+    pub began_late: Option<Duration>,
+    /// Whether the trace held what judging when it began needs; see
+    /// [`FramePacing::begin_judged`].
+    pub begin_judged: bool,
     /// Whether the submission time came from a
     /// [`Submitted`](FramePointKind::Submitted) point rather than the frame's
     /// end marker.
@@ -756,6 +940,7 @@ impl Why {
 /// How many late frames' causes had each [`Support`], as
 /// [`OutcomeCounts::late_support`] holds them.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct SupportCounts {
     /// Their causes were observed.
     pub observed: u64,
@@ -771,9 +956,15 @@ pub struct SupportCounts {
 /// How many late frames had each [`LateCause`], as
 /// [`OutcomeCounts::late_causes`] holds them.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct LateCauseCounts {
     /// Submitted after their deadlines.
     pub missed_deadline: u64,
+    /// Begun at a later frame opportunity, because the platform skipped
+    /// the one they were meant for.
+    pub skipped_opportunity: u64,
+    /// Begun later than they could have.
+    pub began_late: u64,
     /// Pushed back by frames queued ahead.
     pub backlog: u64,
     /// Their GPU work finished after their targets.
@@ -786,9 +977,24 @@ pub struct LateCauseCounts {
     pub unknown: u64,
 }
 
+/// How many frame opportunities a trace recorded and the platform skipped,
+/// as [`Pacing::opportunities`] returns them.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct OpportunityCounts {
+    /// Opportunities the trace recorded and placed.
+    pub recorded: u64,
+    /// Opportunities the platform skipped between them.
+    pub skipped: u64,
+    /// Opportunities left out because their clock has no path to the
+    /// runtime's.
+    pub unplaced: u64,
+}
+
 /// How far off a kind of predicted time was from when frames were shown, as
 /// [`Pacing::prediction_error`] returns it.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct PredictionError {
     /// How far off, either way, for every frame with both times.
     pub off: DurationStats,
@@ -812,6 +1018,7 @@ impl PredictionError {
 /// Work spent on frames that were never shown, as [`Pacing::wasted`]
 /// returns it.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct WastedWork {
     /// How many frames were never shown.
     pub frames: u64,
@@ -847,6 +1054,8 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
                 presented: None,
                 submitted: None,
                 sampled: None,
+                scheduled: None,
+                began: Began::default(),
                 dropped: None,
                 unplaced_points: 0,
                 details: Vec::new(),
@@ -856,7 +1065,7 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
             for point in trace.frame_points().get(&number).into_iter().flatten() {
                 let (kind, time) = (&point.kind, &point.time);
                 if point.basis != TimingBasis::Unknown || !point.args.is_empty() {
-                    raw.details.retain(|(held, ..)| held != kind);
+                    raw.details.retain(|(held, ..)| !same_kind(*held, *kind));
                     raw.details.push((*kind, point.basis, point.args.clone()));
                 }
                 let at = match time {
@@ -879,6 +1088,12 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
                     FramePointKind::Sampled => &mut raw.sampled,
                     FramePointKind::Dropped(reason) => {
                         raw.dropped = Some(*reason);
+                        continue;
+                    }
+                    FramePointKind::Scheduled(begins_at) => {
+                        if let Some(at) = at {
+                            raw.scheduled = Some((at, *begins_at));
+                        }
                         continue;
                     }
                     _ => continue,
@@ -908,6 +1123,14 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
             raw
         })
         .collect();
+    let gaps: Vec<TimeRange> = trace.gaps().iter().map(crate::Gap::range).collect();
+    let opportunities = stream_opportunities(trace);
+    for frame in &mut frames {
+        let stream = opportunities
+            .iter()
+            .find(|opportunities| opportunities.stream == frame.number.stream());
+        frame.began = began(frame, stream, &gaps, tolerance);
+    }
     for index in 0..frames.len() {
         // The frame just before in the same stream, if the trace holds it.
         let before = index
@@ -918,7 +1141,6 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
         frames[index].outcome = judged;
         frames[index].why = why;
     }
-    let gaps: Vec<TimeRange> = trace.gaps().iter().map(crate::Gap::range).collect();
     let (intervals, interval_breaks) = intervals(&frames, &gaps);
     Pacing {
         frames,
@@ -926,6 +1148,111 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
         intervals,
         interval_breaks,
         gaps,
+        opportunities,
+    }
+}
+
+/// Whether two point kinds are the same kind, whatever a scheduled point
+/// begins at.
+fn same_kind(a: FramePointKind, b: FramePointKind) -> bool {
+    match (a, b) {
+        (FramePointKind::Scheduled(_), FramePointKind::Scheduled(_)) => true,
+        _ => a == b,
+    }
+}
+
+/// Places each stream's frame opportunities in the trace's time.
+fn stream_opportunities(trace: &Trace) -> Vec<StreamOpportunities> {
+    trace
+        .frame_opportunities()
+        .iter()
+        .map(|(stream, held)| {
+            let mut unplaced = 0;
+            let mut times: Vec<(Duration, Option<Duration>)> = held
+                .iter()
+                .filter_map(|opportunity| {
+                    let time = &opportunity.time;
+                    let Some(at) = trace.clocks().to_runtime(time.clock_id(), time.ticks()) else {
+                        unplaced += 1;
+                        return None;
+                    };
+                    let interval = opportunity
+                        .interval
+                        .map(|ticks| Duration::from_nanos(time.period().ticks_to_nanos(ticks)));
+                    Some((nanos(at.nanos()), interval))
+                })
+                .collect();
+            times.sort_by_key(|(at, _)| *at);
+            let median =
+                DurationStats::of(times.windows(2).map(|pair| pair[1].0 - pair[0].0)).median();
+            StreamOpportunities {
+                stream: *stream,
+                times,
+                median,
+                unplaced,
+            }
+        })
+        .collect()
+}
+
+/// Judges when a frame began against when it could have: at its scheduled
+/// time, or at the first of its stream's opportunities from then on. For
+/// one that was to begin at an opportunity, also judges whether that
+/// opportunity came when the one before it said it would.
+fn began(
+    frame: &FramePacing,
+    opportunities: Option<&StreamOpportunities>,
+    gaps: &[TimeRange],
+    tolerance: Duration,
+) -> Began {
+    let Some((scheduled, begins_at)) = frame.scheduled else {
+        return Began::default();
+    };
+    // A frame dropped before it began has no begin marker, but whether its
+    // opportunity came can still be judged.
+    let began = frame.work.map(|work| work.start());
+    let late_by = |could: Duration| {
+        began
+            .and_then(|began| began.checked_sub(could))
+            .filter(|by| *by > tolerance)
+    };
+    match begins_at {
+        BeginsAt::Time => Began {
+            judged: began.is_some(),
+            late: late_by(scheduled),
+            opportunity_late: None,
+        },
+        BeginsAt::Opportunity => {
+            let Some(stream) = opportunities else {
+                return Began::default();
+            };
+            let first = stream.times.partition_point(|(at, _)| *at < scheduled);
+            let Some(&(offered, _)) = stream.times.get(first) else {
+                return Began::default();
+            };
+            let opportunity_late = first.checked_sub(1).and_then(|before| {
+                let from = stream.times[before].0;
+                let interval = stream.interval_after(before);
+                if interval.is_zero() || gaps.iter().any(|gap| gap.overlaps(from, offered)) {
+                    return None;
+                }
+                // The first time from the scheduled one on that the
+                // opportunity before said the next would come.
+                let steps = scheduled
+                    .saturating_sub(from)
+                    .as_nanos()
+                    .div_ceil(interval.as_nanos())
+                    .max(1);
+                let due = from + interval * u32::try_from(steps).ok()?;
+                offered.checked_sub(due).filter(|by| *by * 2 >= interval)
+            });
+            Began {
+                judged: began.is_some(),
+                late: late_by(offered),
+                opportunity_late,
+            }
+        }
+        _ => Began::default(),
     }
 }
 
@@ -1037,6 +1364,10 @@ fn outcome(
         .filter(|by| !by.is_zero());
     let (cause, support) = if submitted_late.is_some() {
         (LateCause::MissedDeadline, Support::Observed)
+    } else if raw.began.opportunity_late.is_some() {
+        (LateCause::SkippedOpportunity, Support::Observed)
+    } else if raw.began.late.is_some() {
+        (LateCause::BeganLate, Support::Observed)
     } else if behind_previous {
         (LateCause::Backlog, Support::Inferred)
     } else if gpu_late.is_some() {
@@ -1067,6 +1398,9 @@ fn outcome(
         cause,
         support,
         submitted_late,
+        opportunity_late: raw.began.opportunity_late,
+        began_late: raw.began.late,
+        begin_judged: raw.began.judged,
         submit_reported: raw.submitted.is_some(),
         submitted: submitted_basis,
         gpu_late,
