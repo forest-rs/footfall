@@ -11,8 +11,8 @@ use crate::{
 };
 use footfall_core::{
     Args, Backend, ClockId, ClockReading, Context, ContextHandle, ContextId, CounterDesc,
-    CounterDescId, EventDesc, EventDescId, FlowId, FlowPhase, FrameNumber, FramePoint,
-    InstallBackendError, InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId,
+    CounterDescId, EventDesc, EventDescId, FlowId, FlowPhase, FrameNumber, FrameOpportunity,
+    FramePoint, InstallBackendError, InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId,
     ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, ScopeToken, TimelineId, TimelineSpan,
     install_backend, set_max_level,
 };
@@ -1070,7 +1070,8 @@ impl DescriptorIds {
                 }
                 Observation::FramePoint {
                     time: Some(time), ..
-                } => {
+                }
+                | Observation::FrameOpportunity { time, .. } => {
                     time.clock_id = ClockId::new(self.dense(time.clock_id.get()));
                 }
                 Observation::TimelineSpan { span } => {
@@ -1539,6 +1540,22 @@ impl Backend for Runtime {
                 time: point.time().map(ClockTicks::from),
                 basis: point.basis(),
                 args: *point.args(),
+            },
+            at_nanos,
+        );
+    }
+
+    fn frame_opportunity(&self, opportunity: &FrameOpportunity) {
+        if !self.level().captures_markers() {
+            return;
+        }
+        let at_nanos = self.now_nanos();
+        self.push_event_at(
+            Observation::FrameOpportunity {
+                stream: opportunity.stream(),
+                time: ClockTicks::from(opportunity.time()),
+                interval: opportunity.interval(),
+                args: *opportunity.args(),
             },
             at_nanos,
         );

@@ -88,7 +88,7 @@ pub use snapshot::{
 };
 
 /// Current protocol version for Footfall session messages.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(1, 1);
 
 /// Semantic protocol version for a stream of session messages.
 ///
@@ -155,7 +155,7 @@ impl ProtocolVersion {
 /// // A capture header from a protocol 2.0 producer.
 /// let bytes = b"FFALLCAP\x02\x00\x00\x00";
 /// let Err(error) = CaptureReader::new(&bytes[..]) else {
-///     panic!("this reader speaks 1.0");
+///     panic!("this reader speaks 1.1");
 /// };
 /// let incompatible = IncompatibleVersion::of(&error).expect("not damaged");
 /// assert_eq!(incompatible.produced().major(), 2);

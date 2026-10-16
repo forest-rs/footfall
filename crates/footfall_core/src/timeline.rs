@@ -5,8 +5,8 @@
 //! and displays report about frames.
 
 use crate::{
-    Args, ClockDesc, ClockReading, ContextHandle, FlowId, FrameNumber, ScopeDesc, TickPeriod,
-    TimelineDesc,
+    Args, ClockDesc, ClockReading, ContextHandle, FlowId, FrameNumber, FrameStream, ScopeDesc,
+    TickPeriod, TimelineDesc,
 };
 
 /// One finished piece of work on a timeline that is not a CPU thread, such
@@ -200,6 +200,25 @@ pub enum FramePointKind {
     /// animations were sampled at. Compared with when the frame was shown,
     /// it says whether the frame showed the right moment.
     Sampled,
+    /// The earliest time the frame scheduler meant the frame's work to
+    /// begin, and whether it was to begin then or at the first
+    /// [frame opportunity](FrameOpportunity) from then on. Compared with
+    /// the frame's begin marker and its stream's opportunities, it says
+    /// whether the frame began late, and whether the program or the
+    /// platform made it late.
+    Scheduled(BeginsAt),
+}
+
+/// When a frame was to begin, as [`FramePointKind::Scheduled`] carries it.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum BeginsAt {
+    /// At the scheduled time itself: the program begins the frame then,
+    /// such as when a timer it set wakes it.
+    Time,
+    /// At the first [`FrameOpportunity`] of the frame's stream from the
+    /// scheduled time on, such as the next display-link callback.
+    Opportunity,
 }
 
 /// How whoever recorded a [`FramePoint`] came by its time, as
@@ -386,6 +405,103 @@ impl FramePoint {
     }
 
     /// Returns what the recorder knew about the frame at this point.
+    #[must_use]
+    pub const fn args(&self) -> &Args {
+        &self.args
+    }
+}
+
+/// A chance the platform gave the program to begin a frame of one frame
+/// stream, such as a display-link callback, a vblank notification, a
+/// compositor's frame callback, or a browser's animation frame, recorded
+/// with [`frame_opportunity`](crate::frame_opportunity) as it arrives.
+///
+/// A frame scheduler decides at each opportunity whether to begin a frame,
+/// and a frame that waits for one, [`BeginsAt::Opportunity`], begins at the
+/// first from its [scheduled](FramePointKind::Scheduled) time. Recording
+/// every opportunity, including those at which no frame began, lets
+/// analysis tell a frame the program began late from one whose opportunity
+/// never came, and count the opportunities the platform skipped.
+///
+/// Its time is ticks of a clock other than the backend's, typically the
+/// host clock the frame scheduler uses; relate it with
+/// [`clock_sync`](crate::clock_sync).
+///
+/// ```
+/// use footfall_core::{ClockDesc, FrameOpportunity, FrameStream, TickPeriod};
+///
+/// static HOST: ClockDesc = ClockDesc::new("host");
+/// let period = TickPeriod::new(125, 3);
+///
+/// // In the display-link callback, for a 120 Hz display.
+/// footfall_core::frame_opportunity(
+///     &FrameOpportunity::at(FrameStream::DEFAULT, &HOST, period, 400_000)
+///         .with_interval(200_000),
+/// );
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrameOpportunity {
+    stream: FrameStream,
+    time: ClockReading,
+    interval: Option<u64>,
+    args: Args,
+}
+
+impl FrameOpportunity {
+    /// Says the platform offered to begin a frame of `stream` at `ticks` of
+    /// `clock`, each tick lasting `period`.
+    #[must_use]
+    pub const fn at(
+        stream: FrameStream,
+        clock: &'static ClockDesc,
+        period: TickPeriod,
+        ticks: u64,
+    ) -> Self {
+        Self {
+            stream,
+            time: ClockReading::new(clock, ticks, period),
+            interval: None,
+            args: Args::none(),
+        }
+    }
+
+    /// Says how many ticks of the clock the platform means to leave before
+    /// the next opportunity, such as the display's refresh interval.
+    /// Analysis takes a longer wait as opportunities the platform skipped.
+    #[must_use]
+    pub const fn with_interval(mut self, ticks: u64) -> Self {
+        self.interval = Some(ticks);
+        self
+    }
+
+    /// Attaches what the recorder knew at the opportunity, such as the
+    /// output it was for.
+    #[must_use]
+    pub const fn with_args(mut self, args: Args) -> Self {
+        self.args = args;
+        self
+    }
+
+    /// Returns the frame stream the opportunity was for.
+    #[must_use]
+    pub const fn stream(&self) -> FrameStream {
+        self.stream
+    }
+
+    /// Returns when, as a reading of another clock.
+    #[must_use]
+    pub const fn time(&self) -> ClockReading {
+        self.time
+    }
+
+    /// Returns how many ticks of the clock the platform meant to leave
+    /// before the next opportunity, if given.
+    #[must_use]
+    pub const fn interval(&self) -> Option<u64> {
+        self.interval
+    }
+
+    /// Returns what the recorder knew at the opportunity.
     #[must_use]
     pub const fn args(&self) -> &Args {
         &self.args

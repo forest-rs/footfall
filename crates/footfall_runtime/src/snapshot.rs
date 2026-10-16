@@ -11,9 +11,9 @@ use alloc::{boxed::Box, string::String, vec::Vec};
 use crate::{MESSAGE_TEXT_MAX_BYTES, Runtime, RuntimeBuilder, current_thread_id};
 use footfall_core::{
     Args, ClockId, ClockReading, Context, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase,
-    FrameNumber, FramePointKind, InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId,
-    ResourceKindId, ScopeDescId, ScopeToken, SourceLocation, TickPeriod, TimelineId, TimelineKind,
-    TimelineSpan, TimingBasis, Unit,
+    FrameNumber, FramePointKind, FrameStream, InstrumentationLevel, MarkerKind, MarkerPhase,
+    ResourceId, ResourceKindId, ScopeDescId, ScopeToken, SourceLocation, TickPeriod, TimelineId,
+    TimelineKind, TimelineSpan, TimingBasis, Unit,
 };
 #[cfg(doc)]
 use footfall_core::{Backend, ContextHandle};
@@ -1267,6 +1267,19 @@ pub enum Observation {
         /// What the recorder knew about the frame at this point.
         args: Args,
     },
+    /// A chance the platform gave the program to begin a frame; see
+    /// [`footfall_core::frame_opportunity`].
+    FrameOpportunity {
+        /// The frame stream it was for.
+        stream: FrameStream,
+        /// When, as a reading of another clock.
+        time: ClockTicks,
+        /// How many ticks of that clock the platform meant to leave before
+        /// the next opportunity, if given.
+        interval: Option<u64>,
+        /// What the recorder knew at the opportunity.
+        args: Args,
+    },
 }
 
 /// Finished work on a timeline that is not a CPU thread, as
@@ -1465,7 +1478,8 @@ impl Observation {
             Self::ScopeEnd { .. }
             | Self::ClockSync { .. }
             | Self::ClockPair { .. }
-            | Self::FramePoint { .. } => None,
+            | Self::FramePoint { .. }
+            | Self::FrameOpportunity { .. } => None,
         }
     }
 
@@ -1484,7 +1498,8 @@ impl Observation {
             Self::ScopeEnd { .. }
             | Self::ClockSync { .. }
             | Self::ClockPair { .. }
-            | Self::FramePoint { .. } => None,
+            | Self::FramePoint { .. }
+            | Self::FrameOpportunity { .. } => None,
         }
     }
 }

@@ -202,7 +202,7 @@ async fn a_server_on_an_incompatible_version_is_named() {
     match error {
         ClientError::Incompatible { server, client } => {
             assert_eq!((server.major(), server.minor()), (9, 0));
-            assert_eq!((client.major(), client.minor()), (1, 0));
+            assert_eq!(client, footfall_session::PROTOCOL_VERSION);
         }
         other => panic!("expected Incompatible, got {other:?}"),
     }

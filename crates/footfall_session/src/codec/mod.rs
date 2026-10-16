@@ -22,10 +22,10 @@ use core::fmt;
 use hashbrown::{HashMap, HashSet};
 
 use footfall_core::{
-    ClockId, ContextId, CounterDescId, DropReason, EventDescId, FlowId, FlowPhase, FrameNumber,
-    FramePointKind, FrameStream, InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId,
-    ResourceKindId, ScopeDescId, ScopeToken, TickPeriod, TimelineId, TimelineKind, TimingBasis,
-    Unit,
+    BeginsAt, ClockId, ContextId, CounterDescId, DropReason, EventDescId, FlowId, FlowPhase,
+    FrameNumber, FramePointKind, FrameStream, InstrumentationLevel, MarkerKind, MarkerPhase,
+    ResourceId, ResourceKindId, ScopeDescId, ScopeToken, TickPeriod, TimelineId, TimelineKind,
+    TimingBasis, Unit,
 };
 use footfall_runtime::CounterKind;
 
@@ -964,6 +964,22 @@ pub(crate) fn encode_borrowed_observation(
                 second.period(),
             )?;
         }
+        footfall_runtime::Observation::FrameOpportunity {
+            stream,
+            time,
+            interval,
+            args,
+        } => {
+            encode_u8(bytes, 13);
+            encode_frame_opportunity(
+                bytes,
+                names,
+                *stream,
+                &OwnedClockTicks::from(time),
+                *interval,
+            )?;
+            encode_borrowed_args(bytes, *args)?;
+        }
         _ => return Err(unsupported("observation")),
     }
     Ok(())
@@ -1198,6 +1214,16 @@ pub(crate) fn encode_observation(
             encode_frame_point(bytes, names, *number, *kind, *basis, time.as_ref())?;
             encode_args(bytes, args)?;
         }
+        OwnedObservation::FrameOpportunity {
+            stream,
+            time,
+            interval,
+            args,
+        } => {
+            encode_u8(bytes, 13);
+            encode_frame_opportunity(bytes, names, *stream, time, *interval)?;
+            encode_args(bytes, args)?;
+        }
         OwnedObservation::TimelineSpan { span } => {
             encode_u8(bytes, 11);
             encode_timeline(bytes, names, span)?;
@@ -1312,6 +1338,27 @@ pub(crate) fn decode_observation(
                 kind,
                 time,
                 basis,
+                args,
+            })
+        }
+        13 => {
+            let part = |cursor: &mut Cursor<'_>, what: &str| {
+                u32::try_from(decode_u64(cursor)?)
+                    .map_err(|_| CodecError::malformed(format!("frame stream {what} out of range")))
+            };
+            let id = part(cursor, "id")?;
+            let generation = part(cursor, "generation")?;
+            let time = decode_clock(cursor, names)?;
+            let interval = if decode_bool(cursor, "frame opportunity interval tag")? {
+                Some(decode_u64(cursor)?)
+            } else {
+                None
+            };
+            let args = decode_args(cursor)?;
+            Ok(OwnedObservation::FrameOpportunity {
+                stream: FrameStream::new(id).with_generation(generation),
+                time,
+                interval,
                 args,
             })
         }
@@ -1436,6 +1483,17 @@ fn encode_frame_point(
         FramePointKind::Expected => encode_u8(bytes, 5),
         FramePointKind::Submitted => encode_u8(bytes, 6),
         FramePointKind::Sampled => encode_u8(bytes, 7),
+        FramePointKind::Scheduled(begins_at) => {
+            encode_u8(bytes, 8);
+            encode_u8(
+                bytes,
+                match begins_at {
+                    BeginsAt::Time => 0,
+                    BeginsAt::Opportunity => 1,
+                    _ => return Err(unsupported("frame begin")),
+                },
+            );
+        }
         _ => return Err(unsupported("frame point kind")),
     }
     encode_u8(
@@ -1452,6 +1510,29 @@ fn encode_frame_point(
         Some(time) => {
             encode_u8(bytes, 1);
             encode_owned_clock(bytes, names, time)?;
+        }
+    }
+    Ok(())
+}
+
+/// Writes a frame opportunity up to its args: its frame stream's id and
+/// generation, the clock reading, and a presence tag followed by the
+/// interval when it has one.
+fn encode_frame_opportunity(
+    bytes: &mut Vec<u8>,
+    names: &mut NameWriter,
+    stream: FrameStream,
+    time: &OwnedClockTicks,
+    interval: Option<u64>,
+) -> Result<()> {
+    encode_u64(bytes, u64::from(stream.id()));
+    encode_u64(bytes, u64::from(stream.generation()));
+    encode_owned_clock(bytes, names, time)?;
+    match interval {
+        None => encode_u8(bytes, 0),
+        Some(interval) => {
+            encode_u8(bytes, 1);
+            encode_u64(bytes, interval);
         }
     }
     Ok(())
@@ -1481,6 +1562,15 @@ fn decode_frame_point_kind(cursor: &mut Cursor<'_>) -> Result<FramePointKind> {
         5 => Ok(FramePointKind::Expected),
         6 => Ok(FramePointKind::Submitted),
         7 => Ok(FramePointKind::Sampled),
+        8 => Ok(FramePointKind::Scheduled(match decode_u8(cursor)? {
+            0 => BeginsAt::Time,
+            1 => BeginsAt::Opportunity,
+            value => {
+                return Err(CodecError::malformed(format!(
+                    "unknown frame begin: {value}"
+                )));
+            }
+        })),
         value => Err(CodecError::malformed(format!(
             "unknown frame point kind: {value}"
         ))),
