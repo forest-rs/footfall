@@ -16,8 +16,8 @@
 //! ```
 
 use footfall_core::{
-    ContextId, FlowPhase, FrameNumber, FrameStream, MarkerKind, MarkerPhase, ResourceId,
-    ScopeToken, TimelineId, TimelineKind, Unit,
+    ContextId, DropReason, FlowPhase, FrameNumber, FramePointKind, FrameStream, MarkerKind,
+    MarkerPhase, ResourceId, ScopeToken, TimelineId, TimelineKind, Unit,
 };
 use footfall_runtime::CounterKind;
 use footfall_session::{
@@ -148,6 +148,40 @@ pub fn write_chrome_trace_json(snapshot: &OwnedSnapshot, writer: &mut impl Write
         .into_iter()
         .map(|stream| (stream, track_tid()))
         .collect();
+    let clocks = Clocks::from_snapshot(snapshot);
+    let frames = paced_frames(snapshot, &clocks);
+    // In the order a frame meets them: built, due, then shown.
+    let frame_tids: BTreeMap<FrameStream, FrameTracks> = frames
+        .keys()
+        .map(|stream| {
+            let built = track_tid();
+            let targets = track_tid();
+            let on_screen = track_tid();
+            (
+                *stream,
+                FrameTracks {
+                    built,
+                    targets,
+                    on_screen,
+                },
+            )
+        })
+        .collect();
+    for (stream, tracks) in &frame_tids {
+        for (tid, what) in [
+            (tracks.built, "frames built"),
+            (tracks.targets, "frame targets"),
+            (tracks.on_screen, "frames on screen"),
+        ] {
+            events.push(build_metadata_event(
+                "thread_name",
+                trace_pid(snapshot),
+                tid,
+                "name",
+                &format!("{what}, stream {stream}"),
+            ));
+        }
+    }
     for (stream, tid) in &opportunity_streams {
         events.push(build_metadata_event(
             "thread_name",
@@ -168,7 +202,7 @@ pub fn write_chrome_trace_json(snapshot: &OwnedSnapshot, writer: &mut impl Write
         events.push(build_histogram_event(snapshot, histogram)?);
     }
 
-    let clocks = Clocks::from_snapshot(snapshot);
+    build_frame_tracks(snapshot, &frames, &frame_tids, &mut events)?;
     let mut scope_tracks = HashMap::<ScopeToken, u64>::new();
     let mut unmatched_scope_ends = 0_u64;
     let mut unplaced_timeline_spans = 0_u64;
@@ -625,6 +659,251 @@ enum Exported {
     UnplacedFrameOpportunity,
     /// Nothing: an observation kind this exporter does not know.
     Skipped,
+}
+
+/// What a stream's frame points say about one frame, placed in the
+/// snapshot's time; the latest point of each kind wins.
+#[derive(Clone, Copy, Debug, Default)]
+struct PacedFrame {
+    /// When its CPU work began and ended, from its numbered markers.
+    begin: Option<u64>,
+    end: Option<u64>,
+    scheduled: Option<u64>,
+    deadline: Option<u64>,
+    target: Option<u64>,
+    presented: Option<u64>,
+    dropped: Option<DropReason>,
+}
+
+/// The Chrome trace tracks of one frame stream's frames.
+#[derive(Clone, Copy, Debug)]
+struct FrameTracks {
+    /// Each frame's CPU work, and its deadline.
+    built: u64,
+    /// Each frame's target.
+    targets: u64,
+    /// How long each shown frame stayed on screen.
+    on_screen: u64,
+}
+
+/// Each frame stream's numbered frames, by number, from their numbered
+/// frame markers and frame points.
+fn paced_frames(
+    snapshot: &OwnedSnapshot,
+    clocks: &Clocks,
+) -> BTreeMap<FrameStream, BTreeMap<u64, PacedFrame>> {
+    let mut frames: BTreeMap<FrameStream, BTreeMap<u64, PacedFrame>> = BTreeMap::new();
+    for event in snapshot.events() {
+        if let OwnedObservation::FrameMarker {
+            kind: MarkerKind::Frame,
+            phase,
+            number: Some(number),
+            ..
+        } = event.observation()
+        {
+            let frame = frames
+                .entry(number.stream())
+                .or_default()
+                .entry(number.number())
+                .or_default();
+            match phase {
+                MarkerPhase::Begin => frame.begin = Some(event.at_nanos()),
+                MarkerPhase::End => frame.end = Some(event.at_nanos()),
+            }
+            continue;
+        }
+        let OwnedObservation::FramePoint {
+            number, kind, time, ..
+        } = event.observation()
+        else {
+            continue;
+        };
+        let at = time
+            .as_ref()
+            .and_then(|time| clocks.to_runtime(time.clock_id(), time.ticks()))
+            .map(|converted| converted.nanos());
+        let frame = frames
+            .entry(number.stream())
+            .or_default()
+            .entry(number.number())
+            .or_default();
+        match kind {
+            FramePointKind::Scheduled(_) => frame.scheduled = at.or(frame.scheduled),
+            FramePointKind::Deadline => frame.deadline = at.or(frame.deadline),
+            FramePointKind::Target => frame.target = at.or(frame.target),
+            FramePointKind::Presented => frame.presented = at.or(frame.presented),
+            FramePointKind::Dropped(reason) => frame.dropped = Some(*reason),
+            _ => {}
+        }
+    }
+    // Only streams a frame scheduler reported on: numbered markers alone
+    // are already on their threads.
+    frames.retain(|_, frames| {
+        frames
+            .values()
+            .any(|frame| frame.target.is_some() || frame.presented.is_some())
+    });
+    frames
+}
+
+/// Builds each stream's frame tracks: a slice per frame from its begin
+/// marker to its end marker on the built track, with an instant at its
+/// deadline; an instant at each frame's target on the targets track; and a
+/// slice per shown frame from its presentation to the next one's on the
+/// on-screen track. So a frame built late ends after its deadline, a late
+/// frame's slice on screen starts after its target, and a frame left on
+/// screen for longer is a longer slice. The targets and on-screen tracks'
+/// events never overlap, so Perfetto lays each out on one row. A dropped
+/// frame is an instant on the on-screen track at its target.
+fn build_frame_tracks(
+    snapshot: &OwnedSnapshot,
+    frames: &BTreeMap<FrameStream, BTreeMap<u64, PacedFrame>>,
+    tids: &BTreeMap<FrameStream, FrameTracks>,
+    events: &mut Vec<String>,
+) -> fmt::Result {
+    for (stream, frames) in frames {
+        let FrameTracks {
+            built,
+            targets: planned,
+            on_screen,
+        } = tids[stream];
+        let instant = |tid: u64, name: &str, number: u64, at: u64, extra: &str| {
+            let mut json = String::new();
+            json.push('{');
+            write_json_field_str(&mut json, "name", name)?;
+            json.push(',');
+            write_json_field_str(&mut json, "cat", "frame")?;
+            json.push(',');
+            write_json_field_str(&mut json, "ph", "i")?;
+            json.push_str(",\"s\":\"t\",");
+            write_json_field_time(&mut json, "ts", wall_nanos(snapshot, at))?;
+            json.push(',');
+            write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
+            json.push(',');
+            write_json_field_u64(&mut json, "tid", tid)?;
+            json.push_str(",\"args\":{");
+            write_frame_fields(&mut json, "frame", stream.frame(number))?;
+            json.push_str(extra);
+            json.push_str("}}");
+            Ok::<_, fmt::Error>(json)
+        };
+        for (&number, frame) in frames {
+            if let (Some(begin), Some(end)) = (frame.begin, frame.end) {
+                let mut json = String::new();
+                json.push('{');
+                write_json_field_str(&mut json, "name", &format!("frame {number}"))?;
+                json.push(',');
+                write_json_field_str(&mut json, "cat", "frame")?;
+                json.push(',');
+                write_json_field_str(&mut json, "ph", "X")?;
+                json.push(',');
+                write_json_field_time(&mut json, "ts", wall_nanos(snapshot, begin))?;
+                json.push(',');
+                write_json_field_time(&mut json, "dur", end.saturating_sub(begin))?;
+                json.push(',');
+                write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
+                json.push(',');
+                write_json_field_u64(&mut json, "tid", built)?;
+                json.push_str(",\"args\":{");
+                write_frame_fields(&mut json, "frame", stream.frame(number))?;
+                if let Some(deadline) = frame.deadline {
+                    // How long before its deadline its work ended, negative
+                    // when after, in microseconds.
+                    let left = i128::from(deadline) - i128::from(end);
+                    write!(
+                        json,
+                        ",\"left_before_deadline_us\":{:.3}",
+                        left as f64 / 1_000.0
+                    )?;
+                }
+                json.push_str("}}");
+                events.push(json);
+            }
+            if let Some(deadline) = frame.deadline {
+                events.push(instant(
+                    built,
+                    &format!("frame {number} deadline"),
+                    number,
+                    deadline,
+                    "",
+                )?);
+            }
+            let Some(target) = frame.target else {
+                continue;
+            };
+            let mut extra = String::new();
+            if let Some(scheduled) = frame.scheduled {
+                // How long before its target the frame was to begin.
+                extra.push(',');
+                write_json_field_time(
+                    &mut extra,
+                    "scheduled_before_target_us",
+                    target.saturating_sub(scheduled),
+                )?;
+            }
+            events.push(instant(
+                planned,
+                &format!("frame {number} target"),
+                number,
+                target,
+                &extra,
+            )?);
+            if let Some(reason) = frame.dropped {
+                let mut extra = String::from(",");
+                write_json_field_str(&mut extra, "reason", &reason.to_string())?;
+                events.push(instant(
+                    on_screen,
+                    &format!("frame {number} dropped"),
+                    number,
+                    target,
+                    &extra,
+                )?);
+            }
+        }
+        let mut shown: Vec<(u64, u64, Option<u64>)> = frames
+            .iter()
+            .filter_map(|(&number, frame)| Some((frame.presented?, number, frame.target)))
+            .collect();
+        shown.sort_unstable();
+        for pair in shown.windows(2) {
+            let ((presented, number, target), (next, ..)) = (pair[0], pair[1]);
+            let mut json = String::new();
+            json.push('{');
+            write_json_field_str(&mut json, "name", &format!("frame {number}"))?;
+            json.push(',');
+            write_json_field_str(&mut json, "cat", "frame")?;
+            json.push(',');
+            write_json_field_str(&mut json, "ph", "X")?;
+            json.push(',');
+            // Whole microseconds, so one slice's end is exactly the next
+            // one's start: Perfetto reads a fractional time as a double,
+            // which at wall-clock times keeps only about a quarter of a
+            // microsecond, and would read two slices that meet as
+            // overlapping.
+            let (begin, end) = (
+                wall_nanos(snapshot, presented) / 1_000,
+                wall_nanos(snapshot, next) / 1_000,
+            );
+            write_json_field_u64(&mut json, "ts", begin)?;
+            json.push(',');
+            write_json_field_u64(&mut json, "dur", end - begin)?;
+            json.push(',');
+            write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
+            json.push(',');
+            write_json_field_u64(&mut json, "tid", on_screen)?;
+            json.push_str(",\"args\":{");
+            write_frame_fields(&mut json, "frame", stream.frame(number))?;
+            if let Some(target) = target {
+                // How long after its target it was shown, negative when
+                // before, in microseconds.
+                let after = i128::from(presented) - i128::from(target);
+                write!(json, ",\"after_target_us\":{:.3}", after as f64 / 1_000.0)?;
+            }
+            json.push_str("}}");
+            events.push(json);
+        }
+    }
+    Ok(())
 }
 
 /// Builds a frame opportunity as an instant on its stream's track, with its
@@ -1264,6 +1543,106 @@ mod tests {
             assert!(u32::try_from(tid).is_ok(), "thread id {tid} does not fit");
         }
     }
+    #[test]
+    fn frames_become_targets_and_slices_on_screen() {
+        use footfall_core::{
+            BeginsAt, ClockDesc, ClockReading, DropReason, FramePointKind, TickPeriod,
+        };
+        use footfall_runtime::ClockTicks;
+        static HOST: ClockDesc = ClockDesc::new("host");
+        let point = |number: u64, kind, ticks: Option<u64>| Observation::FramePoint {
+            number: FrameNumber::from(number),
+            kind,
+            time: ticks.map(|ticks| {
+                ClockTicks::from(ClockReading::new(&HOST, ticks, TickPeriod::NANOSECOND))
+            }),
+            basis: footfall_core::TimingBasis::Unknown,
+            args: Args::none(),
+        };
+        let mut builder =
+            Snapshot::builder(SnapshotMetadata::new("app")).event(TimedObservation::new(
+                0,
+                0,
+                1,
+                Observation::ClockSync {
+                    clock: ClockTicks::from(ClockReading::new(&HOST, 0, TickPeriod::NANOSECOND)),
+                },
+            ));
+        let scheduled = FramePointKind::Scheduled(BeginsAt::Opportunity);
+        let points = [
+            // Frame 1, planned from 1 µs to be shown at 10 µs, and shown then.
+            point(1, scheduled, Some(1_000)),
+            point(1, FramePointKind::Target, Some(10_000)),
+            point(1, FramePointKind::Presented, Some(10_000)),
+            // Frame 2, shown 4 µs after its target.
+            point(2, scheduled, Some(11_000)),
+            point(2, FramePointKind::Target, Some(20_000)),
+            point(2, FramePointKind::Presented, Some(24_000)),
+            // Frame 3, dropped.
+            point(3, FramePointKind::Target, Some(30_000)),
+            point(3, FramePointKind::Dropped(DropReason::MissedDeadline), None),
+            // Frame 4 ends frame 2's time on screen.
+            point(4, FramePointKind::Presented, Some(40_000)),
+        ];
+        // Frame 2's work ran from 12 µs to 17 µs, 1 µs before its deadline.
+        let marker = |phase| Observation::FrameMarker {
+            kind: MarkerKind::Frame,
+            phase,
+            number: Some(FrameNumber::from(2)),
+            context_id: ContextId::new(0),
+        };
+        builder = builder
+            .event(TimedObservation::new(
+                12_000,
+                1,
+                1,
+                marker(MarkerPhase::Begin),
+            ))
+            .event(TimedObservation::new(
+                17_000,
+                2,
+                1,
+                marker(MarkerPhase::End),
+            ));
+        let points = points
+            .into_iter()
+            .chain([point(2, FramePointKind::Deadline, Some(18_000))]);
+        for (sequence, observation) in (3..).zip(points) {
+            builder = builder.event(TimedObservation::new(50_000, sequence, 1, observation));
+        }
+        let json = to_chrome_trace_json(&builder.build().into());
+        // The tracks after the one thread's.
+        let (built, targets, on_screen) = (2, 3, 4);
+        for expected in [
+            format!("\"tid\":{built},\"args\":{{\"name\":\"frames built, stream 0\"}}"),
+            format!(
+                "\"name\":\"frame 2\",\"cat\":\"frame\",\"ph\":\"X\",\"ts\":12.000,\"dur\":5.000,\"pid\":1,\"tid\":{built},\"args\":{{\"frame\":2,\"left_before_deadline_us\":1.000}}"
+            ),
+            format!(
+                "\"name\":\"frame 2 deadline\",\"cat\":\"frame\",\"ph\":\"i\",\"s\":\"t\",\"ts\":18.000,\"pid\":1,\"tid\":{built}"
+            ),
+            format!("\"tid\":{targets},\"args\":{{\"name\":\"frame targets, stream 0\"}}"),
+            format!("\"tid\":{on_screen},\"args\":{{\"name\":\"frames on screen, stream 0\"}}"),
+            format!(
+                "\"name\":\"frame 2 target\",\"cat\":\"frame\",\"ph\":\"i\",\"s\":\"t\",\"ts\":20.000,\"pid\":1,\"tid\":{targets},\"args\":{{\"frame\":2,\"scheduled_before_target_us\":9.000}}"
+            ),
+            format!(
+                "\"name\":\"frame 1\",\"cat\":\"frame\",\"ph\":\"X\",\"ts\":10,\"dur\":14,\"pid\":1,\"tid\":{on_screen},\"args\":{{\"frame\":1,\"after_target_us\":0.000}}"
+            ),
+            // On screen from its late presentation until frame 4 replaced
+            // it, since frame 3 was dropped.
+            format!(
+                "\"name\":\"frame 2\",\"cat\":\"frame\",\"ph\":\"X\",\"ts\":24,\"dur\":16,\"pid\":1,\"tid\":{on_screen},\"args\":{{\"frame\":2,\"after_target_us\":4.000}}"
+            ),
+            format!(
+                "\"name\":\"frame 3 dropped\",\"cat\":\"frame\",\"ph\":\"i\",\"s\":\"t\",\"ts\":30.000,\"pid\":1,\"tid\":{on_screen},\"args\":{{\"frame\":3,\"reason\":\"missed its deadline\"}}"
+            ),
+        ] {
+            assert!(json.contains(&expected), "{expected} missing from {json}");
+        }
+        assert_thread_ids_fit(&json);
+    }
+
     #[test]
     fn frame_opportunities_become_instants_on_a_track_per_stream() {
         use footfall_core::{ClockDesc, ClockReading, FrameStream, TickPeriod};
