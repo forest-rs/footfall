@@ -5,6 +5,23 @@ crates share one version.
 
 ## Unreleased
 
+### Instrumenting
+
+- `frame_opportunity` records each chance the platform gives the program
+  to begin a frame, such as a display-link callback, against the frame
+  stream it was for, with the interval the platform means to leave before
+  the next one. `FramePointKind::Scheduled` records the earliest time a
+  frame's work was meant to begin, and whether it begins at that time or
+  at the first opportunity from then on. `Backend::frame_opportunity`
+  receives opportunities, and `footfall_fanout` passes them to both of
+  its backends.
+
+### Consuming
+
+- The session protocol is `1.1`: it adds the frame opportunity observation
+  and the scheduled frame point kind. Captures written at `1.0` still read
+  the same.
+
 ### Tools
 
 - `footfall check` says what a capture gives the analyses: frame markers

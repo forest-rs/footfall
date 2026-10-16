@@ -146,12 +146,10 @@ The workspace also holds the [benchmarks](benchmarks/substrate) and the
 
 ## Status
 
-Footfall is not yet published. The session protocol is `1.0` and will be
-frozen at the first release; until then it may still change. From then on,
-captures stay readable by later releases at the same protocol major
-version, or fail with an error naming the version that wrote them; see
-[capture files](docs/session-wire-format.md#capture-files). The minimum
-supported Rust version is 1.88.
+The session protocol is `1.1`. Captures stay readable by later releases at
+the same protocol major version, or fail with an error naming the version
+that wrote them; see [capture files](docs/session-wire-format.md#capture-files).
+The minimum supported Rust version is 1.88.
 
 ## License
 

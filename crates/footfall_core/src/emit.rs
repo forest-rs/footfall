@@ -7,7 +7,7 @@ use crate::InstrumentationLevel;
 use crate::max_level;
 use crate::{
     Args, ClockReading, Context, ContextHandle, CounterDesc, EventDesc, FlowId, FrameNumber,
-    FramePoint, ResourceId, ResourceKindDesc, ScopeDesc, TimelineSpan,
+    FrameOpportunity, FramePoint, ResourceId, ResourceKindDesc, ScopeDesc, TimelineSpan,
 };
 #[cfg(feature = "std")]
 use std::sync::OnceLock;
@@ -335,6 +335,12 @@ pub trait Backend: Send + Sync {
         let _ = point;
     }
 
+    /// Observes a chance the platform gave the program to begin a frame;
+    /// see [`FrameOpportunity`].
+    fn frame_opportunity(&self, opportunity: &FrameOpportunity) {
+        let _ = opportunity;
+    }
+
     /// Observes one phase of a causal flow.
     fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: ContextHandle) {
         let _ = (flow_id, phase, context);
@@ -620,6 +626,14 @@ pub fn timeline_span(span: &TimelineSpan) {
 #[cfg_attr(not(footfall_compile_out), inline)]
 pub fn frame_point(point: &FramePoint) {
     dispatch!(when max_level().captures_markers() => frame_point(point));
+}
+
+/// Records a chance the platform gave the program to begin a frame, such
+/// as a display-link callback, as it arrives; see [`FrameOpportunity`].
+#[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
+pub fn frame_opportunity(opportunity: &FrameOpportunity) {
+    dispatch!(when max_level().captures_markers() => frame_opportunity(opportunity));
 }
 
 /// Starts a causal flow under a semantic context.

@@ -19,7 +19,7 @@ pub(crate) const SUBSCRIBE_MAGIC: &[u8; 8] = b"FFALLU01";
 /// Shortest interval a server waits between subscription snapshots, so a
 /// client cannot ask it to spin.
 pub(crate) const MIN_SUBSCRIPTION_INTERVAL: Duration = Duration::from_millis(10);
-pub(crate) const CODEC_VERSION: ProtocolVersion = ProtocolVersion::new(1, 0);
+pub(crate) const CODEC_VERSION: ProtocolVersion = footfall_session::PROTOCOL_VERSION;
 pub(crate) const RESPONSE_DISCOVERY: u8 = 0;
 pub(crate) const RESPONSE_SNAPSHOT: u8 = 1;
 pub(crate) const RESPONSE_ERROR: u8 = 2;

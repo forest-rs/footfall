@@ -8,8 +8,8 @@ use hashbrown::{HashMap, HashSet};
 
 use footfall_core::{
     ClockId, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, FrameNumber, FramePointKind,
-    LabelValue, MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken,
-    SourceLocation, TickPeriod, TimelineId, TimelineKind, TimingBasis, Unit,
+    FrameStream, LabelValue, MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId,
+    ScopeToken, SourceLocation, TickPeriod, TimelineId, TimelineKind, TimingBasis, Unit,
 };
 use footfall_runtime::{
     ClockTicks, ContextSnapshot, CounterKind, CounterSnapshot, Drops, EventCursor, EventWindow,
@@ -1092,6 +1092,19 @@ pub enum OwnedObservation {
         /// What the recorder knew about the frame at this point.
         args: Vec<OwnedArgEntry>,
     },
+    /// A chance the platform gave the program to begin a frame; see
+    /// `footfall_core::frame_opportunity`.
+    FrameOpportunity {
+        /// The frame stream it was for.
+        stream: FrameStream,
+        /// When, as a reading of another clock.
+        time: OwnedClockTicks,
+        /// How many ticks of that clock the platform meant to leave before
+        /// the next opportunity, if given.
+        interval: Option<u64>,
+        /// What the recorder knew at the opportunity.
+        args: Vec<OwnedArgEntry>,
+    },
 }
 
 /// Finished work on a timeline that is not a CPU thread, as
@@ -1892,6 +1905,17 @@ fn owned_observation(observation: &Observation) -> Option<OwnedObservation> {
             kind: *kind,
             time: time.as_ref().map(OwnedClockTicks::from),
             basis: *basis,
+            args: owned_args(*args),
+        },
+        Observation::FrameOpportunity {
+            stream,
+            time,
+            interval,
+            args,
+        } => OwnedObservation::FrameOpportunity {
+            stream: *stream,
+            time: time.into(),
+            interval: *interval,
             args: owned_args(*args),
         },
         _ => return None,

@@ -555,6 +555,44 @@ mod tests {
     }
 
     #[test]
+    fn runtime_snapshots_write_frame_opportunities_and_scheduled_points() {
+        use footfall_core::{
+            BeginsAt, ClockDesc, FrameOpportunity, FramePoint, FramePointKind, FrameStream,
+            TickPeriod,
+        };
+        static HOST: ClockDesc = ClockDesc::new("host");
+        let runtime = Runtime::default();
+        let stream = FrameStream::new(2).with_generation(1);
+        runtime.frame_opportunity(
+            &FrameOpportunity::at(stream, &HOST, TickPeriod::NANOSECOND, 1_000).with_interval(100),
+        );
+        runtime.frame_point(&FramePoint::at(
+            stream.frame(4),
+            FramePointKind::Scheduled(BeginsAt::Opportunity),
+            &HOST,
+            TickPeriod::NANOSECOND,
+            1_050,
+        ));
+        runtime.frame_opportunity(&FrameOpportunity::at(
+            stream,
+            &HOST,
+            TickPeriod::NANOSECOND,
+            1_100,
+        ));
+        let snapshot = runtime.snapshot();
+
+        let mut writer = CaptureWriter::new(Vec::new()).expect("header writes");
+        writer.write_snapshot(&snapshot).expect("snapshot writes");
+        let bytes = writer.finish().expect("capture finishes");
+        let read: Vec<_> = CaptureReader::new(bytes.as_slice())
+            .expect("header reads")
+            .collect::<Result<_, _>>()
+            .expect("snapshots read");
+        assert_eq!(read, [OwnedSnapshot::from(&snapshot)]);
+        assert_eq!(read[0].events().len(), 3);
+    }
+
+    #[test]
     fn recorders_write_each_event_once_and_say_what_was_evicted() {
         let runtime = Runtime::builder().event_capacity(4).build();
         mark(&runtime);
@@ -708,17 +746,19 @@ mod tests {
 
     #[test]
     fn captures_from_incompatible_versions_say_so_and_are_never_misread() {
-        // Today's capture reads.
-        let current = capture_at((1, 0), (1, 0));
-        let snapshots: Vec<_> = CaptureReader::new(current.as_slice())
-            .expect("header reads")
-            .collect::<Result<_, _>>()
-            .expect("snapshots read");
-        assert_eq!(snapshots.len(), 1);
+        // Today's capture reads, and so does one an older minor wrote.
+        for version in [(1, 1), (1, 0)] {
+            let capture = capture_at(version, version);
+            let snapshots: Vec<_> = CaptureReader::new(capture.as_slice())
+                .expect("header reads")
+                .collect::<Result<_, _>>()
+                .expect("snapshots read");
+            assert_eq!(snapshots.len(), 1);
+        }
 
         // A newer minor or another major is refused at the header, saying
         // which version wrote it.
-        for header in [(1, 1), (2, 0), (0, 9)] {
+        for header in [(1, 2), (2, 0), (0, 9)] {
             let bytes = capture_at(header, (1, 0));
             let error = CaptureReader::new(bytes.as_slice()).expect_err("refused");
             assert_eq!(error.kind(), ErrorKind::InvalidData);
@@ -732,7 +772,7 @@ mod tests {
         }
 
         // An envelope newer than its file's header is refused too.
-        let bytes = capture_at((1, 0), (1, 1));
+        let bytes = capture_at((1, 1), (1, 2));
         let error = CaptureReader::new(bytes.as_slice())
             .expect("the header is current")
             .next()
@@ -740,7 +780,7 @@ mod tests {
             .expect_err("its envelope is refused");
         assert_eq!(
             IncompatibleVersion::of(&error).map(IncompatibleVersion::produced),
-            Some(ProtocolVersion::new(1, 1))
+            Some(ProtocolVersion::new(1, 2))
         );
 
         // A damaged capture is not an incompatible one.

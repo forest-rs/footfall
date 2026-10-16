@@ -149,7 +149,7 @@ Each encoded envelope is a header, a `u8` payload tag, and the payload:
 | payload tag | `u8` |
 | payload | per tag |
 
-The current protocol version is `1.0`. Payload tags, in publication order:
+The current protocol version is `1.1`. Payload tags, in publication order:
 
 | Tag | Payload | Occurs |
 |---|---|---|
@@ -288,7 +288,8 @@ thread id, then a `u8` observation tag and its fields:
 | `9` | clock sync | clock |
 | `10` | clock pair | clock, clock |
 | `11` | timeline span | timeline id `u64`, timeline name `name` and kind `u8` (`0` GPU, `1` display, `2` other; written with the name), scope id `u64`, name `name`, location `location`, context id `u64`, begin `clock`, length in ticks `u64`, frame `frame`, flow `u64` (the id plus one, or `0` for none), args |
-| `12` | frame point | frame `frame` (never none), kind `u8` (`0` deadline, `1` target, `2` presented, `3` dropped, `4` predicted, `5` expected, `6` submitted, `7` sampled), for a dropped frame its reason `u8` (`0` unknown, `1` discarded, `2` superseded, `3` missed deadline, `4` surface unavailable, `5` output unavailable, `6` replaced, `7` not presented), timing basis `u8` (`0` unknown, `1` observed, `2` estimated), time tag `u8` (`0` none, `1` present) and, when present, `clock`, args |
+| `12` | frame point | frame `frame` (never none), kind `u8` (`0` deadline, `1` target, `2` presented, `3` dropped, `4` predicted, `5` expected, `6` submitted, `7` sampled, `8` scheduled), for a scheduled frame what it begins at `u8` (`0` the time, `1` an opportunity), for a dropped frame its reason `u8` (`0` unknown, `1` discarded, `2` superseded, `3` missed deadline, `4` surface unavailable, `5` output unavailable, `6` replaced, `7` not presented), timing basis `u8` (`0` unknown, `1` observed, `2` estimated), time tag `u8` (`0` none, `1` present) and, when present, `clock`, args |
+| `13` | frame opportunity | frame stream id `u64` and generation `u64`, time `clock`, interval tag `u8` (`0` none, `1` present) and, when present, the interval in the clock's ticks `u64`, args |
 
 A counter sample is a counter's or gauge's value at a frame end, recorded
 for each one the frame updated; a counter's change over a frame is the
@@ -319,8 +320,20 @@ A frame point is a time a frame scheduler or display knows about the frame
 the program numbered, recorded when it becomes known, often frames later:
 the frame's deadline, the platform's predicted display time, its target
 display time, the display time expected at submit, when it was presented,
-or, usually with no time, that it was dropped and why. Its row's time is
-when it was recorded.
+or, usually with no time, that it was dropped and why. A scheduled point
+is the earliest time the frame's work was meant to begin, and says whether
+it begins at that time or at the first frame opportunity from then on. Its
+row's time is when it was recorded.
+
+A frame opportunity is a chance the platform gave the program to begin a
+frame of one frame stream, such as a display-link callback, recorded as it
+arrives. Its interval, when given, is how many ticks of its clock the
+platform meant to leave before the next one. Its row's time is when it was
+recorded.
+
+Version `1.1` added the scheduled frame point kind and the frame
+opportunity observation. A `1.0` envelope has neither, and decodes the same
+as before.
 
 `args` is a `u8` entry count, at most `footfall_core::ARGS_INLINE_CAPACITY`,
 followed by that many entries of key `string` and label value. Message text is
@@ -415,8 +428,9 @@ both decoding and what they say.
 
 ## Compatibility Rule
 
-The protocol stays at `1.0` until Footfall is first published, so changes
-before then do not bump it. After that, changes that add payload tags, reorder
+The protocol was `1.0` when Footfall was first published, and changes
+before then did not bump it. Since then, changes that add payload tags,
+observation tags, or frame point kinds, reorder
 snapshot publication, change field encoding, or change the meaning of existing
 tags require a protocol version bump: a minor bump when older data still
 decodes and means the same, a major bump when it does not. Consumers must

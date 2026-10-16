@@ -55,7 +55,7 @@ fn encoded_envelopes_match_golden_fixtures() {
         )]),
     );
     let encoded = encode_owned_envelope(&counters).expect("encoding should succeed");
-    assert_eq!(to_hex(&encoded), "0100000002040103036f7073010100070e");
+    assert_eq!(to_hex(&encoded), "0100010002040103036f7073010100070e");
 
     // Timestamps and sequence numbers are deltas from the previous row, and a
     // descriptor's name, with a scope's source location, is written only the
@@ -105,7 +105,7 @@ fn encoded_envelopes_match_golden_fixtures() {
     // The first row's location is present (`01`), then its function
     // "record", file "app.rs", and line 300 (`ac02`); the second row, of the
     // same descriptor, carries neither name nor location.
-    let expected = "010000000306031e08020005067265636f7264\
+    let expected = "010001000306031e08020005067265636f7264\
                     01067265636f7264066170702e7273ac02\
                     010901056974656d7300030202020005010a000502030109";
     let encoded = encode_owned_envelope(&events).expect("encoding should succeed");
@@ -169,7 +169,7 @@ fn encoded_envelopes_match_golden_fixtures() {
     let encoded = encode_owned_envelope(&unlocated).expect("encoding should succeed");
     assert_eq!(
         to_hex(&encoded),
-        "010000000006010000010001067265636f726400000100"
+        "010001000006010000010001067265636f726400000100"
     );
     assert_eq!(
         decode_envelope(&encoded).expect("decoding should succeed"),
@@ -192,7 +192,7 @@ fn encoded_envelopes_match_golden_fixtures() {
             ],
         )]),
     );
-    let expected = "01000000010201010002056672616d65000706726561736f6e030a696e76616c69646174\
+    let expected = "01000100010201010002056672616d65000706726561736f6e030a696e76616c69646174\
                     65";
     let encoded = encode_owned_envelope(&contexts).expect("encoding should succeed");
     assert_eq!(to_hex(&encoded), expected.replace(' ', ""));
@@ -234,7 +234,7 @@ fn snapshot_framing_envelopes_match_golden_fixtures() {
     );
     assert_eq!(
         to_hex(&encode_owned_envelope(&start).expect("encoding should succeed")),
-        "0100000000000464656d6f00888e98a8c0e0808101000905302e312e3002104020000014\
+        "0100010000000464656d6f00888e98a8c0e0808101000905302e312e3002104020000014\
          010301010200000001"
     );
 
@@ -247,7 +247,7 @@ fn snapshot_framing_envelopes_match_golden_fixtures() {
     );
     assert_eq!(
         to_hex(&encode_owned_envelope(&threads).expect("encoding should succeed")),
-        "0100000001010203010672656e6465720400"
+        "0100010001010203010672656e6465720400"
     );
 
     let end = OwnedSessionEnvelope::new(
@@ -262,7 +262,7 @@ fn snapshot_framing_envelopes_match_golden_fixtures() {
     );
     assert_eq!(
         to_hex(&encode_owned_envelope(&end).expect("encoding should succeed")),
-        "010000000207010200030400"
+        "010001000207010200030400"
     );
 
     for envelope in [start, threads, end] {
@@ -405,7 +405,7 @@ fn markers_match_their_golden_fixture() {
     // generation when numbered, context.
     assert_eq!(
         to_hex(&encoded),
-        "01000000000602\
+        "01000100000602\
          0000010500000000\
          0a02010500012a020000"
     );
@@ -460,7 +460,7 @@ fn clock_readings_match_their_golden_fixture() {
     // host, whose name was already written, 24,000,240 ticks, 125/3.
     assert_eq!(
         to_hex(&encoded),
-        "01000000000602\
+        "01000100000602\
          0000010900\
          04686f737480ecb80b7d03\
          1202010a0103677075d8360101\
@@ -511,7 +511,7 @@ fn timeline_spans_match_their_golden_fixture() {
     // flow 3 written one more; no args.
     assert_eq!(
         to_hex(&encoded),
-        "01000000000601\
+        "01000100000601\
          0000010b\
          000367707500\
          0106736861646f7700\
@@ -576,10 +576,85 @@ fn frame_points_match_their_golden_fixture() {
     // args `00`.
     assert_eq!(
         to_hex(&encoded),
-        "01000000000602\
+        "01000100000602\
          0000010c080000020101\
          0004686f7374e807010100\
          0a02010c0901030302000000"
+    );
+    assert_eq!(
+        decode_envelope(&encoded).expect("decoding should succeed"),
+        envelope
+    );
+}
+
+/// A frame opportunity carries its frame stream's id and generation, a
+/// clock reading, a tagged interval, and args; a scheduled point carries
+/// what the frame begins at after its kind.
+#[test]
+fn frame_opportunities_and_scheduled_points_match_their_golden_fixture() {
+    let host = |ticks| {
+        OwnedClockTicks::new(
+            footfall_core::ClockId::new(0),
+            String::from("host"),
+            ticks,
+            footfall_core::TickPeriod::NANOSECOND,
+        )
+    };
+    let envelope = OwnedSessionEnvelope::new(
+        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+        OwnedSessionPayload::Events(vec![
+            OwnedTimedObservation::new(
+                0,
+                0,
+                1,
+                OwnedObservation::FrameOpportunity {
+                    stream: FrameStream::new(1),
+                    time: host(1_000),
+                    interval: Some(100),
+                    args: Vec::new(),
+                },
+            ),
+            OwnedTimedObservation::new(
+                5,
+                1,
+                1,
+                OwnedObservation::FramePoint {
+                    number: FrameStream::new(1).frame(9),
+                    kind: footfall_core::FramePointKind::Scheduled(
+                        footfall_core::BeginsAt::Opportunity,
+                    ),
+                    time: Some(host(1_050)),
+                    basis: footfall_core::TimingBasis::Unknown,
+                    args: Vec::new(),
+                },
+            ),
+            OwnedTimedObservation::new(
+                6,
+                2,
+                1,
+                OwnedObservation::FrameOpportunity {
+                    stream: FrameStream::DEFAULT,
+                    time: host(1_100),
+                    interval: None,
+                    args: Vec::new(),
+                },
+            ),
+        ]),
+    );
+    let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
+    // Tag `0d`; stream 1 generation 0, clock `00` "host" at 1,000 ticks of
+    // 1/1 ns, interval `01` of 100 ticks `64`, no args `00`. Then tag `0c`;
+    // frame 9 written one more in stream 1 generation 0, scheduled `08` to
+    // begin at an opportunity `01`, basis unknown `00`, time `01` at 1,050
+    // ticks of the host, whose name was already written, no args `00`. Then
+    // tag `0d`; stream 0 generation 0 at 1,100 ticks, no interval `00`, no
+    // args `00`.
+    assert_eq!(
+        to_hex(&encoded),
+        "01000100000603\
+         0000010d01000004686f7374e8070101016400\
+         0a02010c0a010008010001009a08010100\
+         0202010d000000cc0801010000"
     );
     assert_eq!(
         decode_envelope(&encoded).expect("decoding should succeed"),
@@ -610,6 +685,8 @@ fn every_frame_point_kind_round_trips() {
         FramePointKind::Expected,
         FramePointKind::Submitted,
         FramePointKind::Sampled,
+        FramePointKind::Scheduled(footfall_core::BeginsAt::Time),
+        FramePointKind::Scheduled(footfall_core::BeginsAt::Opportunity),
     ]
     .into_iter()
     .chain(reasons.into_iter().map(FramePointKind::Dropped));
@@ -748,7 +825,7 @@ fn counter_samples_match_their_golden_fixture() {
     let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
     // Event row: timestamp and sequence deltas, thread, then tag 8,
     // descriptor id, name, unit (count), context id, kind (gauge), and value.
-    assert_eq!(to_hex(&encoded), "010000000106011204010803036f707301040107");
+    assert_eq!(to_hex(&encoded), "010001000106011204010803036f707301040107");
     assert_eq!(
         decode_envelope(&encoded).expect("decoding should succeed"),
         envelope

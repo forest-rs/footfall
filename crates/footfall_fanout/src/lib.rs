@@ -25,8 +25,8 @@
 
 use footfall_core::{
     Args, Backend, ClockReading, Context, ContextHandle, CounterDesc, EventDesc, FlowId, FlowPhase,
-    FrameNumber, FramePoint, InstallBackendError, MarkerKind, MarkerPhase, ResourceId,
-    ResourceKindDesc, ScopeDesc, ScopeToken, TimelineSpan, install_backend,
+    FrameNumber, FrameOpportunity, FramePoint, InstallBackendError, MarkerKind, MarkerPhase,
+    ResourceId, ResourceKindDesc, ScopeDesc, ScopeToken, TimelineSpan, install_backend,
 };
 use hashbrown::HashMap;
 use std::{
@@ -192,6 +192,11 @@ impl Backend for Fanout {
     fn frame_point(&self, point: &FramePoint) {
         self.primary.frame_point(point);
         self.secondary.frame_point(point);
+    }
+
+    fn frame_opportunity(&self, opportunity: &FrameOpportunity) {
+        self.primary.frame_opportunity(opportunity);
+        self.secondary.frame_opportunity(opportunity);
     }
 
     fn timeline_span(&self, span: &TimelineSpan) {
