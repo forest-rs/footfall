@@ -64,7 +64,8 @@ Each crate owns one thing and says what it does not own.
   otherwise repeat: a `Trace` of one runtime instance with spans on
   per-thread tracks, frames, counter series, and flows; queries and
   comparisons over it; and a statement of what each answer covers.
-- **`footfall_export`** owns projection into Chrome Trace JSON.
+- **`footfall_export`** owns projection into Perfetto's trace format and
+  Chrome Trace JSON.
 - **`footfall_tracing`**, **`footfall_tracy`**, **`footfall_fanout`**, and
   **`footfall_memory`** are adapters and helpers at the edges.
 

@@ -26,6 +26,10 @@ use footfall_session::{
     OwnedTimedObservation, OwnedTimelineWork,
 };
 use hashbrown::HashMap;
+
+mod perfetto;
+
+pub use perfetto::to_perfetto_trace;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::{self, Write},
@@ -301,6 +305,15 @@ pub fn write_chrome_trace_file(
     path: impl AsRef<Path>,
 ) -> std::io::Result<()> {
     fs::write(path, to_chrome_trace_json(snapshot))
+}
+
+/// Writes a Perfetto trace, in Perfetto's protobuf format, to a file path;
+/// see [`to_perfetto_trace`].
+pub fn write_perfetto_trace_file(
+    snapshot: &OwnedSnapshot,
+    path: impl AsRef<Path>,
+) -> std::io::Result<()> {
+    fs::write(path, to_perfetto_trace(snapshot))
 }
 
 /// Track id used for aggregates and capture metadata.

@@ -18,6 +18,19 @@ crates share one version.
 
 ### Consuming
 
+- `footfall_export::to_perfetto_trace` writes Perfetto's own protobuf
+  trace format, which keeps every time to the nanosecond, and
+  `write_perfetto_trace_file` writes it to a file. Threads, timelines, and
+  counters get tracks of their own, flows join the events they connect,
+  and each frame stream is a group of tracks: its frame opportunities,
+  each frame's life from when it was to begin until it was shown, split
+  into waiting, building, and in flight with its deadline and target, on
+  stacked lanes for frames in flight together, and how long each shown
+  frame stayed on screen. Every event of a frame, including its markers and
+  GPU work, carries the frame as its correlation id, so Perfetto colors a
+  frame alike wherever it appears. Chrome Trace JSON stays for other tools; Perfetto
+  reads its times as doubles, which lose sub-microsecond precision at
+  wall-clock times, so nested GPU work in it can be misplaced.
 - The Chrome trace export draws each frame stream's opportunities as
   instants on a track of their own, so Perfetto shows the callbacks the
   platform made, and the ones it skipped, beside the frames. It also draws

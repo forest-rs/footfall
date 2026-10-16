@@ -25,7 +25,7 @@ a tool needs as modules.
 |---|---|---|
 | `std` | | Standard-library conveniences in the instrumentation API |
 | `runtime` | `footfall::runtime` | Bounded in-process capture with snapshots and cursors |
-| `export` | `footfall::export` | Chrome Trace JSON for Perfetto and `chrome://tracing` |
+| `export` | `footfall::export` | Perfetto traces, and Chrome Trace JSON for `chrome://tracing` |
 | `session` | `footfall::session` | Snapshots for consumers, the envelope codec, capture files |
 | `analysis` | `footfall::analysis` | Traces of snapshots: span queries, frames, comparisons, timelines |
 | `wtransport` | `footfall::wtransport` | Serve sessions and attach to them over local WebTransport |
@@ -80,13 +80,14 @@ let snapshot = runtime.snapshot();
 for counter in snapshot.counters() {
     println!("{} = {} {}", counter.name(), counter.value(), counter.unit().as_str());
 }
-let chrome_trace_json = footfall::export::to_chrome_trace_json(&snapshot.into());
-println!("{} bytes of Chrome trace JSON", chrome_trace_json.len());
+let trace = footfall::export::to_perfetto_trace(&snapshot.into());
+println!("{} bytes of Perfetto trace", trace.len());
 ```
 
-Save the JSON to a file, or write one directly with
-`footfall::export::write_chrome_trace_file`, and open it in
-[Perfetto](https://ui.perfetto.dev).
+Save the trace to a file, or write one directly with
+`footfall::export::write_perfetto_trace_file`, and open it in
+[Perfetto](https://ui.perfetto.dev). `to_chrome_trace_json` writes Chrome
+Trace JSON instead, for `chrome://tracing` and other tools that read it.
 
 ## Guides
 
