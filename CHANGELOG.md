@@ -32,6 +32,10 @@ crates share one version.
   `Pacing::opportunities` counts the opportunities recorded and skipped,
   `Pacing::opportunity_intervals` their spacing, and
   `Pacing::begin_lateness` how late the frames that began late began.
+- `Outcome`, `LateCause`, `Support`, `Why`, and `DropReason` display as a
+  few words, such as `late by 8.33 ms: the platform skipped its
+  opportunity`, and a `Why` lists every condition that held, so a program
+  can print a frame's pacing without restating the analysis.
 - Breaking: `Why` and the counts `Pacing` returns (`OutcomeCounts`,
   `LateCauseCounts`, `SupportCounts`, `DeadlineCounts`, `BasisCounts`,
   `PredictionError`, `WastedWork`, and the new `OpportunityCounts`) are

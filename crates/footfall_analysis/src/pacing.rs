@@ -7,8 +7,9 @@
 use crate::frame::FrameId;
 use crate::query::DurationStats;
 use crate::span::TrackKind;
-use crate::time::{TimeRange, nanos};
+use crate::time::{Shown, TimeRange, nanos};
 use crate::trace::Trace;
+use core::fmt;
 use core::time::Duration;
 use footfall_core::{
     BeginsAt, DropReason, FrameNumber, FramePointKind, FrameStream, TimelineId, TimelineKind,
@@ -148,6 +149,39 @@ pub enum LateCause {
     AfterSubmit,
     /// Not known: the trace has no deadline or CPU work for the frame.
     Unknown,
+}
+
+impl fmt::Display for Outcome {
+    /// Says the outcome in a few words, such as `late by 8.33 ms: the
+    /// platform skipped its opportunity`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OnTime => f.write_str("on time"),
+            Self::Early { by } => write!(f, "early by {}", Shown(*by)),
+            Self::Late { by, cause } => write!(f, "late by {}: {cause}", Shown(*by)),
+            Self::Dropped { reason } => write!(f, "dropped: {reason}"),
+            Self::SubmittedLate { by } => {
+                write!(f, "submitted {} after its deadline", Shown(*by))
+            }
+            Self::Unknown => f.write_str("not known"),
+        }
+    }
+}
+
+impl fmt::Display for LateCause {
+    /// Says the cause in a few words, such as `queued behind a late frame`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::MissedDeadline => "submitted after its deadline",
+            Self::SkippedOpportunity => "the platform skipped its opportunity",
+            Self::BeganLate => "began late",
+            Self::Backlog => "queued behind a late frame",
+            Self::Gpu => "GPU finished after the target",
+            Self::Display => "held by the display",
+            Self::AfterSubmit => "late after submit, no GPU work to tell",
+            Self::Unknown => "cause not known",
+        })
+    }
 }
 
 impl FramePacing {
@@ -934,6 +968,49 @@ impl Why {
             || (self.cause == LateCause::MissedDeadline
                 && self.submit_reported
                 && self.submitted == TimingBasis::Unknown)
+    }
+}
+
+impl fmt::Display for Support {
+    /// Says how strongly, in a word: `observed`, `inferred`, or
+    /// `unresolved`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Observed => "observed",
+            Self::Inferred => "inferred",
+            Self::Unresolved => "unresolved",
+        })
+    }
+}
+
+impl fmt::Display for Why {
+    /// Says the cause and how strongly the trace supports it, then every
+    /// condition that held, such as `the platform skipped its opportunity,
+    /// observed; its opportunity came 8.33 ms late`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}, {}", self.cause, self.support)?;
+        if let Some(by) = self.submitted_late {
+            write!(f, "; submitted {} after its deadline", Shown(by))?;
+        }
+        if let Some(by) = self.opportunity_late {
+            write!(f, "; its opportunity came {} late", Shown(by))?;
+        }
+        if let Some(by) = self.began_late {
+            write!(f, "; began {} late", Shown(by))?;
+        }
+        if let Some(by) = self.gpu_late {
+            write!(f, "; GPU finished {} after the target", Shown(by))?;
+        }
+        if self.behind_previous {
+            f.write_str("; the frame before was still waiting")?;
+        }
+        if !self.begin_judged {
+            f.write_str("; when it began was not judged")?;
+        }
+        if self.presented == TimingBasis::Estimated {
+            f.write_str("; shown at an estimated time")?;
+        }
+        Ok(())
     }
 }
 
