@@ -597,6 +597,11 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> 
         let causes = counts.late_causes;
         let named: Vec<String> = [
             (causes.missed_deadline, "missed their deadline"),
+            (
+                causes.skipped_opportunity,
+                "began late: the platform skipped their opportunity",
+            ),
+            (causes.began_late, "began later than they could have"),
             (causes.backlog, "queued behind a late frame"),
             (causes.gpu, "GPU finished after the target"),
             (causes.display, "held by the display"),
@@ -641,6 +646,43 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> 
             format::duration(intervals.median()),
             format::duration(intervals.p99()),
             one.stutters(),
+        );
+    }
+    // What the platform offered each stream, and when frames began.
+    for stream in &streams {
+        let one = pacing.in_stream(*stream);
+        let opportunities = one.opportunities();
+        if opportunities.recorded == 0 {
+            continue;
+        }
+        let which = if streams.len() > 1 {
+            format!("stream {stream}: ")
+        } else {
+            String::new()
+        };
+        let spacing = one.opportunity_intervals();
+        let skipped = if opportunities.skipped == 0 {
+            format!("{GOOD}none skipped{GOOD:#}")
+        } else {
+            format!(
+                "{BAD}{} skipped by the platform{BAD:#}",
+                format::count(opportunities.skipped)
+            )
+        };
+        println!(
+            "  {which}{} opportunities to begin a frame · {skipped} · every {} {DIM}(median){DIM:#}, p99 {}",
+            format::count(opportunities.recorded),
+            format::duration(spacing.median()),
+            format::duration(spacing.p99()),
+        );
+    }
+    let begin_lateness = pacing.begin_lateness();
+    if begin_lateness.count() > 0 {
+        println!(
+            "  {WARN}{} began later than they could have{WARN:#}: median {}, max {}",
+            format::frames(begin_lateness.count()),
+            format::duration(begin_lateness.median()),
+            format::duration(begin_lateness.max()),
         );
     }
     let basis = pacing.presentation_basis();
@@ -721,6 +763,8 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> 
                 format!("late {}", format::duration(by)),
                 match cause {
                     LateCause::MissedDeadline => "deadline",
+                    LateCause::SkippedOpportunity => "skipped opp.",
+                    LateCause::BeganLate => "began late",
                     LateCause::Backlog => "backlog",
                     LateCause::Gpu => "GPU",
                     LateCause::Display => "display",
@@ -796,6 +840,16 @@ fn also(why: &Why) -> String {
         && let Some(by) = why.submitted_late
     {
         also.push(format!("deadline +{}", format::duration(by)));
+    }
+    if why.cause != LateCause::SkippedOpportunity
+        && let Some(by) = why.opportunity_late
+    {
+        also.push(format!("opp. +{}", format::duration(by)));
+    }
+    if why.cause != LateCause::BeganLate
+        && let Some(by) = why.began_late
+    {
+        also.push(format!("began +{}", format::duration(by)));
     }
     if why.cause != LateCause::Gpu
         && let Some(by) = why.gpu_late
