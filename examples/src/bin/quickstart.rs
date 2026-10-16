@@ -28,7 +28,7 @@ static UPLOAD_BYTES: CounterDesc = CounterDesc::bytes("upload_bytes");
 static DRAW_CALLS: CounterDesc = CounterDesc::count("draw_calls");
 
 /// Where the trace is written.
-const TRACE_PATH: &str = "footfall-quickstart.json";
+const TRACE_PATH: &str = "footfall-quickstart.pftrace";
 
 fn main() -> std::io::Result<()> {
     // The application installs a backend once, before emitting.
@@ -77,7 +77,7 @@ fn main() -> std::io::Result<()> {
     report::losses(&snapshot);
 
     // Export the same snapshot for a trace viewer.
-    footfall::export::write_chrome_trace_file(&snapshot, TRACE_PATH)?;
+    footfall::export::write_perfetto_trace_file(&snapshot, TRACE_PATH)?;
     println!(
         "\nWrote {HINT}{TRACE_PATH}{HINT:#}; open it at {HINT}https://ui.perfetto.dev{HINT:#}."
     );

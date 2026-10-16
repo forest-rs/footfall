@@ -15,7 +15,7 @@ footfall analyze pacing demo.ffcap           # which frames were shown late, and
 footfall analyze pacing demo.ffcap --json    # the same, every frame, for other programs
 footfall analyze compare before.ffcap after.ffcap
 footfall analyze span demo.ffcap 13909       # one span and the work around it
-footfall export demo.ffcap                   # one Chrome trace, for Perfetto
+footfall export demo.ffcap                   # one Perfetto trace; --format json for Chrome
 footfall top --file demo.ffcap               # replay a capture in the live view
 ```
 
