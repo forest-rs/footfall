@@ -21,8 +21,9 @@ use footfall_core::{
 };
 use footfall_runtime::CounterKind;
 use footfall_session::{
-    Clocks, OwnedArgEntry, OwnedContextEntry, OwnedCounterSnapshot, OwnedHistogramSnapshot,
-    OwnedLabelValue, OwnedObservation, OwnedSnapshot, OwnedTimedObservation, OwnedTimelineWork,
+    Clocks, OwnedArgEntry, OwnedClockTicks, OwnedContextEntry, OwnedCounterSnapshot,
+    OwnedHistogramSnapshot, OwnedLabelValue, OwnedObservation, OwnedSnapshot,
+    OwnedTimedObservation, OwnedTimelineWork,
 };
 use hashbrown::HashMap;
 use std::{
@@ -134,6 +135,28 @@ pub fn write_chrome_trace_json(snapshot: &OwnedSnapshot, writer: &mut impl Write
             &format!("{} {name}", timeline_kind_name(*kind)),
         ));
     }
+    // Each frame stream the platform offered opportunities to gets a track
+    // of them, like a vsync row.
+    let opportunity_streams: BTreeMap<FrameStream, u64> = snapshot
+        .events()
+        .iter()
+        .filter_map(|event| match event.observation() {
+            OwnedObservation::FrameOpportunity { stream, .. } => Some(*stream),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(|stream| (stream, track_tid()))
+        .collect();
+    for (stream, tid) in &opportunity_streams {
+        events.push(build_metadata_event(
+            "thread_name",
+            trace_pid(snapshot),
+            *tid,
+            "name",
+            &format!("frame opportunities, stream {stream}"),
+        ));
+    }
     events.push(build_capture_window_event(snapshot));
     events.push(build_contexts_event(snapshot)?);
 
@@ -149,6 +172,7 @@ pub fn write_chrome_trace_json(snapshot: &OwnedSnapshot, writer: &mut impl Write
     let mut scope_tracks = HashMap::<ScopeToken, u64>::new();
     let mut unmatched_scope_ends = 0_u64;
     let mut unplaced_timeline_spans = 0_u64;
+    let mut unplaced_frame_opportunities = 0_u64;
     for event in snapshot.events() {
         let exported = match event.observation() {
             OwnedObservation::TimelineSpan { span } => build_timeline_span(
@@ -158,12 +182,25 @@ pub fn write_chrome_trace_json(snapshot: &OwnedSnapshot, writer: &mut impl Write
                 span,
                 &mut events,
             )?,
+            OwnedObservation::FrameOpportunity {
+                stream,
+                time,
+                interval,
+                ..
+            } => build_frame_opportunity(
+                snapshot,
+                &clocks,
+                opportunity_streams[stream],
+                time,
+                *interval,
+            )?,
             _ => build_timed_observation(snapshot, event, &mut scope_tracks)?,
         };
         match exported {
             Exported::Event(json) => events.push(json),
             Exported::UnmatchedScopeEnd => unmatched_scope_ends += 1,
             Exported::UnplacedTimelineSpan => unplaced_timeline_spans += 1,
+            Exported::UnplacedFrameOpportunity => unplaced_frame_opportunities += 1,
             Exported::Skipped => {}
         }
     }
@@ -171,6 +208,10 @@ pub fn write_chrome_trace_json(snapshot: &OwnedSnapshot, writer: &mut impl Write
     for (name, count) in [
         ("footfall_unmatched_scope_ends", unmatched_scope_ends),
         ("footfall_unplaced_timeline_spans", unplaced_timeline_spans),
+        (
+            "footfall_unplaced_frame_opportunities",
+            unplaced_frame_opportunities,
+        ),
     ] {
         if count > 0 {
             events.push(build_internal_counter_event(
@@ -579,8 +620,48 @@ enum Exported {
     /// Nothing: a timeline span whose clock has no sync or pair leading to
     /// the producer's clock.
     UnplacedTimelineSpan,
+    /// Nothing: a frame opportunity whose clock has no sync or pair leading
+    /// to the producer's clock.
+    UnplacedFrameOpportunity,
     /// Nothing: an observation kind this exporter does not know.
     Skipped,
+}
+
+/// Builds a frame opportunity as an instant on its stream's track, with its
+/// time converted through the snapshot's clocks.
+fn build_frame_opportunity(
+    snapshot: &OwnedSnapshot,
+    clocks: &Clocks,
+    tid: u64,
+    time: &OwnedClockTicks,
+    interval: Option<u64>,
+) -> Result<Exported, fmt::Error> {
+    let Some(at) = clocks.to_runtime(time.clock_id(), time.ticks()) else {
+        return Ok(Exported::UnplacedFrameOpportunity);
+    };
+    let mut json = String::new();
+    json.push('{');
+    write_json_field_str(&mut json, "name", "frame opportunity")?;
+    json.push(',');
+    write_json_field_str(&mut json, "cat", "frame")?;
+    json.push(',');
+    write_json_field_str(&mut json, "ph", "i")?;
+    json.push_str(",\"s\":\"t\",");
+    write_json_field_time(&mut json, "ts", wall_nanos(snapshot, at.nanos()))?;
+    json.push(',');
+    write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
+    json.push(',');
+    write_json_field_u64(&mut json, "tid", tid)?;
+    json.push_str(",\"args\":{");
+    if let Some(interval) = interval {
+        write_json_field_u64(
+            &mut json,
+            "interval_ns",
+            time.period().ticks_to_nanos(interval),
+        )?;
+    }
+    json.push_str("}}");
+    Ok(Exported::Event(json))
 }
 
 fn timeline_kind_name(kind: TimelineKind) -> &'static str {
@@ -1183,6 +1264,65 @@ mod tests {
             assert!(u32::try_from(tid).is_ok(), "thread id {tid} does not fit");
         }
     }
+    #[test]
+    fn frame_opportunities_become_instants_on_a_track_per_stream() {
+        use footfall_core::{ClockDesc, ClockReading, FrameStream, TickPeriod};
+        use footfall_runtime::ClockTicks;
+        static HOST: ClockDesc = ClockDesc::new("host");
+        static NEVER_SYNCED: ClockDesc = ClockDesc::new("never synced");
+        let opportunity =
+            |clock: &'static ClockDesc, stream, ticks| Observation::FrameOpportunity {
+                stream,
+                time: ClockTicks::from(ClockReading::new(clock, ticks, TickPeriod::NANOSECOND)),
+                interval: Some(8_333_333),
+                args: Args::none(),
+            };
+        let window = FrameStream::new(4).with_generation(1);
+        let snapshot = Snapshot::builder(SnapshotMetadata::new("app"))
+            .event(TimedObservation::new(
+                1_000,
+                0,
+                1,
+                Observation::ClockSync {
+                    clock: ClockTicks::from(ClockReading::new(
+                        &HOST,
+                        50_000,
+                        TickPeriod::NANOSECOND,
+                    )),
+                },
+            ))
+            .event(TimedObservation::new(
+                2_000,
+                1,
+                1,
+                opportunity(&HOST, window, 51_000),
+            ))
+            .event(TimedObservation::new(
+                2_000,
+                2,
+                1,
+                opportunity(&NEVER_SYNCED, window, 0),
+            ))
+            .build();
+        let json = to_chrome_trace_json(&snapshot.into());
+        // The track after the one thread's.
+        let tid = 2;
+        assert!(
+            json.contains(&format!(
+                "\"name\":\"frame opportunity\",\"cat\":\"frame\",\"ph\":\"i\",\"s\":\"t\",\"ts\":2.000,\"pid\":1,\"tid\":{tid},\"args\":{{\"interval_ns\":8333333}}"
+            )),
+            "{json}"
+        );
+        assert!(
+            json.contains(&format!(
+                "\"tid\":{tid},\"args\":{{\"name\":\"frame opportunities, stream {window}\"}}"
+            )),
+            "{json}"
+        );
+        assert!(json.contains("footfall_unplaced_frame_opportunities"));
+        assert_thread_ids_fit(&json);
+    }
+
     static RECORD_AT: SourceLocation = SourceLocation::new("app::record", "src/app.rs", 42);
 
     #[test]

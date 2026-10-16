@@ -18,6 +18,9 @@ crates share one version.
 
 ### Consuming
 
+- The Chrome trace export draws each frame stream's opportunities as
+  instants on a track of their own, so Perfetto shows the callbacks the
+  platform made, and the ones it skipped, beside the frames.
 - `Trace::pacing` judges when each frame began against when it could have:
   at its scheduled time, or at the first of its stream's opportunities
   from then on. `FramePacing::began_late` says how much later it began,
