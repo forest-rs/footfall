@@ -20,7 +20,15 @@ crates share one version.
 
 - The Chrome trace export draws each frame stream's opportunities as
   instants on a track of their own, so Perfetto shows the callbacks the
-  platform made, and the ones it skipped, beside the frames.
+  platform made, and the ones it skipped, beside the frames. It also draws
+  each stream's frames on three tracks, in the order a frame meets them:
+  `frames built`, a slice for each frame's CPU work between its markers
+  with an instant at its deadline; `frame targets`, an instant at each
+  frame's target; and `frames on screen`, a slice from each shown frame's
+  presentation to the next, with its time after its target, and dropped
+  frames as instants. A frame built late ends after its deadline, a late
+  frame's slice on screen starts after its target, and a stutter is a long
+  slice.
 - `Trace::pacing` judges when each frame began against when it could have:
   at its scheduled time, or at the first of its stream's opportunities
   from then on. `FramePacing::began_late` says how much later it began,
