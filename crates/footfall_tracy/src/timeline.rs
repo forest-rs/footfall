@@ -1,7 +1,8 @@
 // Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Timelines as Tracy GPU contexts, and frame points as a lateness plot.
+//! Timelines and frames as Tracy GPU contexts, and frame points as a
+//! lateness plot.
 //!
 //! Tracy draws a GPU context as its own row, timed by its own clock. Each
 //! timeline and clock pair becomes one context, made on the first span that
@@ -10,10 +11,17 @@
 //! ends, and wants a context's timestamps to arrive in increasing order. So
 //! spans are held until the end of the CPU frame they were reported in, then
 //! sorted, nested by containment, and sent with their timestamps in order.
+//!
+//! A frame stream's frames are drawn the same way, in the frame scheduler's
+//! clock, on two rows whose zones never overlap: each frame's CPU work,
+//! between its numbered markers, as soon as it ends, and each shown frame's
+//! time on screen, once the next is shown. A frame's latency and its slack
+//! before its deadline are left to plots, since a frame's whole life
+//! overlaps the next frames' and Tracy draws a row as one stack.
 
 use footfall_core::{
-    ClockId, ClockReading, DropReason, FrameNumber, FramePoint, FramePointKind, ScopeDesc,
-    TickPeriod, TimelineId, TimelineSpan,
+    ClockId, ClockReading, DropReason, FrameNumber, FramePoint, FramePointKind, FrameStream,
+    MarkerPhase, ScopeDesc, TickPeriod, TimelineId, TimelineSpan,
 };
 use hashbrown::{HashMap, HashSet};
 use std::collections::BTreeMap;
@@ -79,11 +87,40 @@ struct Context {
     last: Option<u64>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Held {
-    scope: &'static ScopeDesc,
+    name: Name,
     begin: u64,
     end: u64,
+}
+
+/// What a held zone is called: a timeline span's scope, or a frame.
+#[derive(Clone, Debug)]
+enum Name {
+    Scope(&'static ScopeDesc),
+    Text(String),
+}
+
+/// A frame's times, from its numbered markers and frame points, until it
+/// is shown or dropped.
+#[derive(Clone, Copy, Debug, Default)]
+struct PendingFrame {
+    /// When its CPU work began and ended, by the backend's clock.
+    begin: Option<Instant>,
+    end: Option<Instant>,
+    deadline: Option<u64>,
+}
+
+/// One frame stream's Tracy rows: the frames built and the frames on
+/// screen, in the frame scheduler's clock.
+#[derive(Default)]
+struct StreamRows {
+    /// The frame scheduler's clock, once a frame point names it.
+    clock: Option<(ClockId, TickPeriod)>,
+    built: Option<Context>,
+    on_screen: Option<Context>,
+    /// The frame on screen, and when it was shown.
+    shown: Option<(FrameNumber, u64)>,
 }
 
 /// Every timeline's state, behind the backend's lock.
@@ -98,17 +135,23 @@ pub(crate) struct Timelines {
     counts: TimelineCounts,
     targets: BTreeMap<FrameNumber, ClockReading>,
     presented: BTreeMap<FrameNumber, ClockReading>,
+    frames: BTreeMap<FrameNumber, PendingFrame>,
+    streams: HashMap<FrameStream, StreamRows>,
 }
 
 /// What a frame point produced for Tracy.
 pub(crate) enum PointOutcome {
-    /// Nothing yet.
-    None,
     /// The frame was shown this many nanoseconds after its target; negative
     /// when early.
     Lateness(i128),
     /// The frame numbered this was dropped, for this reason.
     Dropped(FrameNumber, DropReason),
+    /// A frame of this stream was shown this many nanoseconds after its
+    /// work began.
+    Latency(FrameStream, i128),
+    /// A frame of this stream's work ended this many nanoseconds before its
+    /// deadline; negative when after.
+    Slack(FrameStream, i128),
 }
 
 impl Timelines {
@@ -165,7 +208,7 @@ impl Timelines {
                 || pairs
                     .get(&context.clock)
                     .is_some_and(|pair| pair.second == clock);
-            if placed_by && let Some(now) = ticks_now(syncs, pairs, context.clock, Instant::now()) {
+            if placed_by && let Some(now) = ticks_at(syncs, pairs, context.clock, Instant::now()) {
                 context.gpu.sync_gpu_time(to_i64(now));
             }
         }
@@ -179,7 +222,7 @@ impl Timelines {
         let clock = span.clock().id();
         let key = (timeline.id(), clock);
         if !self.contexts.contains_key(&key) {
-            let Some(now) = ticks_now(&self.syncs, &self.pairs, clock, Instant::now()) else {
+            let Some(now) = ticks_at(&self.syncs, &self.pairs, clock, Instant::now()) else {
                 self.counts.unplaced += 1;
                 return self.reported.insert(timeline.id()).then(|| {
                     format!(
@@ -198,15 +241,9 @@ impl Timelines {
             } else {
                 timeline.name().to_owned()
             };
-            // Footfall does not know which GPU API a timeline's work ran on,
-            // so Tracy's context type is left unset.
-            let Ok(gpu) = client.clone().new_gpu_context(
-                Some(&name),
-                GpuContextType::Invalid,
-                to_i64(now),
-                period_nanos(span.period()),
-            ) else {
-                self.counts.over_limit += 1;
+            let Some(context) =
+                new_context(client, &name, clock, now, span.period(), &mut self.counts)
+            else {
                 return self.reported.insert(timeline.id()).then(|| {
                     format!(
                         "footfall: spans on timeline {} are left out: Tracy allows 255 GPU contexts",
@@ -214,23 +251,14 @@ impl Timelines {
                     )
                 });
             };
-            self.counts.contexts += 1;
-            self.contexts.insert(
-                key,
-                Context {
-                    gpu,
-                    clock,
-                    held: Vec::new(),
-                    last: None,
-                },
-            );
+            self.contexts.insert(key, context);
         }
         let context = self
             .contexts
             .get_mut(&key)
             .expect("the context was just made");
         context.held.push(Held {
-            scope: span.scope(),
+            name: Name::Scope(span.scope()),
             begin: span.begin(),
             end: span.end().max(span.begin()),
         });
@@ -247,32 +275,200 @@ impl Timelines {
         }
     }
 
-    /// Records a frame point, returning what Tracy should show for it.
-    pub(crate) fn frame_point(&mut self, point: &FramePoint) -> PointOutcome {
+    /// Records when the CPU work of the frame numbered `number` began or
+    /// ended, by the backend's clock, and draws the work on its stream's
+    /// built row when it ends, once the stream's clock is known.
+    pub(crate) fn frame_marker(
+        &mut self,
+        client: &Client,
+        number: FrameNumber,
+        phase: MarkerPhase,
+        at: Instant,
+    ) {
+        let frame = self.pending(number);
+        match phase {
+            MarkerPhase::Begin => {
+                frame.begin = Some(at);
+                return;
+            }
+            MarkerPhase::End => frame.end = Some(at),
+        }
+        let Some(begin) = frame.begin else {
+            return;
+        };
+        let stream = number.stream();
+        let Some((clock, period)) = self.streams.get(&stream).and_then(|rows| rows.clock) else {
+            return;
+        };
+        let (Some(begin), Some(end)) = (
+            ticks_at(&self.syncs, &self.pairs, clock, begin),
+            ticks_at(&self.syncs, &self.pairs, clock, at),
+        ) else {
+            self.counts.unplaced += 1;
+            return;
+        };
+        let rows = self.streams.entry(stream).or_default();
+        if rows.built.is_none() {
+            let name = format!("frames built, stream {stream}");
+            rows.built = new_context(client, &name, clock, end, period, &mut self.counts);
+        }
+        if let Some(built) = &mut rows.built {
+            built.held.push(Held {
+                name: Name::Text(format!("frame {}", number.number())),
+                begin,
+                end: end.max(begin),
+            });
+            built.send(&mut self.counts);
+        }
+    }
+
+    /// The times kept for the frame numbered `number`, forgetting the
+    /// lowest-numbered frames beyond [`MAX_FRAMES_WAITING`].
+    fn pending(&mut self, number: FrameNumber) -> &mut PendingFrame {
+        if !self.frames.contains_key(&number) {
+            while self.frames.len() >= MAX_FRAMES_WAITING {
+                self.frames.pop_first();
+            }
+        }
+        self.frames.entry(number).or_default()
+    }
+
+    /// Records a frame point, returning what Tracy should show for it. A
+    /// frame's presentation draws the time on screen of the frame it
+    /// replaced, and gives its latency and slack.
+    pub(crate) fn frame_point(&mut self, client: &Client, point: &FramePoint) -> Vec<PointOutcome> {
         let number = point.number();
+        if let Some(time) = point.time() {
+            self.streams.entry(number.stream()).or_default().clock =
+                Some((time.clock().id(), time.period()));
+            if point.kind() == FramePointKind::Deadline {
+                self.pending(number).deadline = Some(time.ticks());
+            }
+        }
+        let mut outcomes = Vec::new();
         match (point.kind(), point.time()) {
             (FramePointKind::Dropped(reason), _) => {
                 self.targets.remove(&number);
                 self.presented.remove(&number);
-                PointOutcome::Dropped(number, reason)
+                self.frames.remove(&number);
+                outcomes.push(PointOutcome::Dropped(number, reason));
             }
             (FramePointKind::Target, Some(time)) => {
                 if let Some(presented) = self.presented.remove(&number) {
-                    return lateness(time, presented);
+                    outcomes.extend(lateness(time, presented));
+                } else {
+                    keep(&mut self.targets, number, time);
                 }
-                keep(&mut self.targets, number, time);
-                PointOutcome::None
             }
             (FramePointKind::Presented, Some(time)) => {
+                outcomes.extend(self.shown(client, number, time));
                 if let Some(target) = self.targets.remove(&number) {
-                    return lateness(target, time);
+                    outcomes.extend(lateness(target, time));
+                } else {
+                    keep(&mut self.presented, number, time);
                 }
-                keep(&mut self.presented, number, time);
-                PointOutcome::None
             }
-            _ => PointOutcome::None,
+            _ => {}
         }
+        outcomes
     }
+
+    /// Draws the time on screen of the frame that the frame numbered
+    /// `number`, shown at `presented`, replaced, and returns the frame's
+    /// latency and slack.
+    fn shown(
+        &mut self,
+        client: &Client,
+        number: FrameNumber,
+        presented: ClockReading,
+    ) -> Vec<PointOutcome> {
+        let pending = self.frames.remove(&number).unwrap_or_default();
+        let (clock, period, at) = (
+            presented.clock().id(),
+            presented.period(),
+            presented.ticks(),
+        );
+        let work =
+            |at: Option<Instant>| at.and_then(|at| ticks_at(&self.syncs, &self.pairs, clock, at));
+        let stream = number.stream();
+        let (latency, slack) = figures(
+            work(pending.begin),
+            work(pending.end),
+            pending.deadline,
+            at,
+            period,
+        );
+        let mut outcomes = Vec::new();
+        outcomes.extend(latency.map(|nanos| PointOutcome::Latency(stream, nanos)));
+        outcomes.extend(slack.map(|nanos| PointOutcome::Slack(stream, nanos)));
+        let rows = self.streams.entry(stream).or_default();
+        if let Some((before, shown)) = rows.shown.filter(|(_, shown)| *shown <= at) {
+            if rows.on_screen.is_none() {
+                let name = format!("frames on screen, stream {stream}");
+                rows.on_screen = new_context(client, &name, clock, at, period, &mut self.counts);
+            }
+            if let Some(on_screen) = &mut rows.on_screen {
+                on_screen.held.push(Held {
+                    name: Name::Text(format!("frame {}", before.number())),
+                    begin: shown,
+                    end: at,
+                });
+                on_screen.send(&mut self.counts);
+            }
+        }
+        rows.shown = Some((number, at));
+        outcomes
+    }
+}
+
+/// A shown frame's latency, from when its work began to `presented`, and
+/// its slack, from when its work ended to its deadline, in nanoseconds of a
+/// clock with `period`.
+fn figures(
+    begin: Option<u64>,
+    end: Option<u64>,
+    deadline: Option<u64>,
+    presented: u64,
+    period: TickPeriod,
+) -> (Option<i128>, Option<i128>) {
+    let nanos = |from: u64, to: u64| {
+        (i128::from(to) - i128::from(from)) * i128::from(period.nanos())
+            / i128::from(period.ticks())
+    };
+    (
+        begin.map(|begin| nanos(begin, presented)),
+        end.zip(deadline)
+            .map(|(end, deadline)| nanos(end, deadline)),
+    )
+}
+
+/// Makes a GPU context named `name`, timed by `clock`, which reads `now`.
+fn new_context(
+    client: &Client,
+    name: &str,
+    clock: ClockId,
+    now: u64,
+    period: TickPeriod,
+    counts: &mut TimelineCounts,
+) -> Option<Context> {
+    // Footfall does not know which GPU API a timeline's work ran on, so
+    // Tracy's context type is left unset.
+    let Ok(gpu) = client.clone().new_gpu_context(
+        Some(name),
+        GpuContextType::Invalid,
+        to_i64(now),
+        period_nanos(period),
+    ) else {
+        counts.over_limit += 1;
+        return None;
+    };
+    counts.contexts += 1;
+    Some(Context {
+        gpu,
+        clock,
+        held: Vec::new(),
+        last: None,
+    })
 }
 
 impl Context {
@@ -289,13 +485,15 @@ impl Context {
         for step in &plan.steps {
             match *step {
                 Step::Begin(index) => {
-                    let scope = held[plan.order[index]].scope;
-                    let (function, file, line) = scope
-                        .location()
+                    let (name, location) = match &held[plan.order[index]].name {
+                        Name::Scope(scope) => (scope.name(), scope.location()),
+                        Name::Text(name) => (name.as_str(), None),
+                    };
+                    let (function, file, line) = location
                         .map_or(("footfall_timeline", "footfall", 0), |location| {
                             (location.function(), location.file(), location.line())
                         });
-                    match self.gpu.span_alloc(scope.name(), function, file, line) {
+                    match self.gpu.span_alloc(name, function, file, line) {
                         Ok(span) => spans.push(span),
                         // Unreachable: a context sends at most `MAX_HELD`
                         // spans at once, far fewer than the 32,767 Tracy
@@ -366,7 +564,7 @@ fn plan(held: &[Held], after: Option<u64>) -> Plan {
     let mut open: Vec<(usize, u64)> = Vec::new();
     let mut times: Vec<Upload> = Vec::with_capacity(held.len() * 2);
     for (index, &held_index) in order.iter().enumerate() {
-        let span = held[held_index];
+        let span = &held[held_index];
         while let Some(&(open_index, end)) = open.last() {
             if span.end <= end {
                 break;
@@ -409,15 +607,20 @@ fn plan(held: &[Held], after: Option<u64>) -> Plan {
     plan
 }
 
-/// Returns what `clock` reads at `now`: from its own latest sync, or from a
-/// pair with a clock that has one.
-fn ticks_now(
+/// Returns what `clock` read, or reads, at `now`: from its own latest sync,
+/// or from a pair with a clock that has one, before or after the sync.
+fn ticks_at(
     syncs: &HashMap<ClockId, Sync>,
     pairs: &HashMap<ClockId, Pair>,
     clock: ClockId,
     now: Instant,
 ) -> Option<u64> {
-    let elapsed = |sync: &Sync| i128::try_from(now.duration_since(sync.at).as_nanos()).ok();
+    let elapsed = |sync: &Sync| match now.checked_duration_since(sync.at) {
+        Some(after) => i128::try_from(after.as_nanos()).ok(),
+        None => i128::try_from(sync.at.duration_since(now).as_nanos())
+            .ok()
+            .map(|before| -before),
+    };
     if let Some(sync) = syncs.get(&clock) {
         return Some(advance(sync.ticks, sync.period, elapsed(sync)?));
     }
@@ -467,20 +670,20 @@ fn keep(
 
 /// Returns how long after `target` a frame was `presented`, when both are
 /// readings of the same clock.
-fn lateness(target: ClockReading, presented: ClockReading) -> PointOutcome {
+fn lateness(target: ClockReading, presented: ClockReading) -> Option<PointOutcome> {
     if target.clock() != presented.clock() {
-        return PointOutcome::None;
+        return None;
     }
     let nanos = |reading: ClockReading| {
         i128::from(reading.ticks()) * i128::from(reading.period().nanos())
             / i128::from(reading.period().ticks())
     };
-    PointOutcome::Lateness(nanos(presented) - nanos(target))
+    Some(PointOutcome::Lateness(nanos(presented) - nanos(target)))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Held, Pair, Plan, Step, Sync, Upload, advance, plan, ticks_now};
+    use super::{Held, Name, Pair, Plan, Step, Sync, Upload, advance, figures, plan, ticks_at};
     use footfall_core::{ClockDesc, ScopeDesc, TickPeriod};
     use hashbrown::HashMap;
     use std::time::{Duration, Instant};
@@ -492,7 +695,7 @@ mod tests {
 
     fn held(begin: u64, end: u64) -> Held {
         Held {
-            scope: if end - begin > 50 { &FRAME } else { &PASS },
+            name: Name::Scope(if end - begin > 50 { &FRAME } else { &PASS }),
             begin,
             end,
         }
@@ -561,6 +764,43 @@ mod tests {
     }
 
     #[test]
+    fn a_shown_frames_latency_runs_from_its_work_and_its_slack_to_its_deadline() {
+        // Mach ticks: 125 ns per 3.
+        let period = TickPeriod::new(125, 3);
+        assert_eq!(
+            figures(Some(240), Some(312), Some(360), 1_200, period),
+            (Some(40_000), Some(2_000)),
+            "960 ticks are 40 µs; 48 ticks are 2 µs"
+        );
+        assert_eq!(
+            figures(None, Some(400), Some(360), 1_200, period),
+            (None, Some(-1_666)),
+            "work that ended after its deadline has negative slack"
+        );
+    }
+
+    #[test]
+    fn a_clock_reads_back_before_its_sync() {
+        let at = Instant::now();
+        let mut syncs = HashMap::new();
+        syncs.insert(
+            HOST.id(),
+            Sync {
+                ticks: 10_000,
+                period: TickPeriod::NANOSECOND,
+                at,
+            },
+        );
+        let earlier = at
+            .checked_sub(Duration::from_micros(4))
+            .expect("an earlier instant");
+        assert_eq!(
+            ticks_at(&syncs, &HashMap::new(), HOST.id(), earlier),
+            Some(6_000)
+        );
+    }
+
+    #[test]
     fn a_synced_clock_reads_on_from_its_sync() {
         let at = Instant::now();
         let mut syncs = HashMap::new();
@@ -576,8 +816,8 @@ mod tests {
         );
         let pairs = HashMap::new();
         let later = at + Duration::from_micros(10);
-        assert_eq!(ticks_now(&syncs, &pairs, GPU.id(), later), Some(1_240));
-        assert_eq!(ticks_now(&syncs, &pairs, HOST.id(), later), None);
+        assert_eq!(ticks_at(&syncs, &pairs, GPU.id(), later), Some(1_240));
+        assert_eq!(ticks_at(&syncs, &pairs, HOST.id(), later), None);
     }
 
     #[test]
@@ -606,7 +846,7 @@ mod tests {
             },
         );
         let later = at + Duration::from_micros(10);
-        assert_eq!(ticks_now(&syncs, &pairs, GPU.id(), later), Some(1_110_000));
+        assert_eq!(ticks_at(&syncs, &pairs, GPU.id(), later), Some(1_110_000));
     }
 
     #[test]

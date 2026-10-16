@@ -468,6 +468,12 @@ footfall::frame_point(
 footfall::frame_point(&FramePoint::dropped(1235, footfall::DropReason::Superseded));
 ```
 
+Live in Tracy, through `footfall_tracy`, a frame stream's opportunities are
+a frame set, whose frame graph shows each skipped callback as a long frame,
+and its frames are two GPU-context rows, each frame's CPU work and how long
+each shown frame stayed on screen, with plots of each frame's latency from
+its work to the screen and its slack before its deadline.
+
 ## Checking What You Recorded
 
 Run `footfall check` on a capture to see what it gives the analyses. It
