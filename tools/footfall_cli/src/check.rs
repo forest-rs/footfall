@@ -5,7 +5,8 @@
 //! missing.
 //!
 //! Each [`Item`] is one thing an analysis uses: frame markers, frame
-//! numbers, deadlines, submissions, presentations, stated timing bases,
+//! numbers, scheduled starts, frame opportunities, deadlines, submissions,
+//! presentations, stated timing bases,
 //! clock syncs, GPU work, counter samples, completeness, and whether the
 //! output was visible. For each it says whether the capture has it, which
 //! conclusion depends on it, and the call that records it, so integrating a
@@ -16,7 +17,7 @@ use crate::json::Json;
 use core::time::Duration;
 use footfall::DropReason;
 use footfall::analysis::{FramePacing, Pacing, Recorded, Signal, Trace};
-use footfall::{FramePointKind, TimingBasis};
+use footfall::{BeginsAt, FramePointKind, TimingBasis};
 use std::path::Path;
 
 /// The guide that says how to record each item.
@@ -122,9 +123,11 @@ fn ratio(have: u64, of: u64, one: &str, more: &str) -> String {
 }
 
 /// The ids of every item, in the order `check` reports them.
-pub(crate) const IDS: [&str; 11] = [
+pub(crate) const IDS: [&str; 13] = [
     "frames",
     "numbered",
+    "scheduled",
+    "opportunities",
     "deadlines",
     "submissions",
     "presentations",
@@ -200,6 +203,15 @@ pub(crate) fn check(trace: &Trace, read: Read) -> Vec<Item> {
         None
     });
     let any: fn(&FramePacing) -> bool = |_| true;
+    items.push(point_item(
+        "scheduled",
+        no_numbers,
+        coverage(&pacing, any, |frame| frame.scheduled().is_some()),
+        "say when they were to begin",
+        "whether each frame began late, and the began-late and skipped-opportunity causes",
+        "record FramePointKind::Scheduled with frame_point when planning each frame, saying whether it BeginsAt a time or an opportunity, as frameclock does",
+    ));
+    items.push(opportunities(&pacing, no_numbers));
     items.push(point_item(
         "deadlines",
         no_numbers,
@@ -352,6 +364,55 @@ fn point_item(
     }
 }
 
+/// Whether the frames that wait for an opportunity to begin have their
+/// stream's opportunities recorded around them, so the analyses can tell
+/// the platform's skipped opportunities from the program's late begins.
+fn opportunities(pacing: &Pacing, unavailable: Option<&'static str>) -> Item {
+    // A frame dropped before it began has no begin to judge.
+    let waits: fn(&FramePacing) -> bool =
+        |frame| frame.begins_at() == Some(BeginsAt::Opportunity) && frame.work().is_some();
+    let recorded = pacing.opportunities();
+    let counted = coverage(pacing, waits, FramePacing::begin_judged);
+    let offered = many(recorded.recorded, "opportunity", "opportunities");
+    let (status, found, have, of) = if counted.of == 0 {
+        // No frame waits for one, or none says what it waits for: the
+        // opportunities still show what the platform offered.
+        let status = if recorded.recorded > 0 {
+            Status::Present
+        } else {
+            Status::Missing
+        };
+        (status, format!("{offered} recorded"), None, None)
+    } else {
+        let mut found = format!(
+            "{} that wait for an opportunity have their stream's, with {offered} recorded",
+            ratio(counted.have, counted.of, "frame", "frames")
+        );
+        if counted.in_flight > 0 {
+            found.push_str(&format!(
+                ", leaving out {} still in flight when the capture ended",
+                counted.in_flight
+            ));
+        }
+        (
+            Status::of(counted.have, counted.of),
+            found,
+            Some(counted.have),
+            Some(counted.of),
+        )
+    };
+    Item {
+        id: "opportunities",
+        status: unavailable.map_or(status, Status::NotApplicable),
+        found,
+        have,
+        of,
+        needed_for: "telling the platform's skipped opportunities from the program's late begins, and counting the opportunities skipped",
+        fix: "record every display-link callback, vblank, or frame callback with frame_opportunity, with the interval to the next",
+        section: "frame-pacing",
+    }
+}
+
 /// How many submission and presentation times state how they were known:
 /// what "how sure" rests on.
 fn bases(points: &[FramePacing], unavailable: Option<&'static str>) -> Item {
@@ -395,8 +456,9 @@ fn bases(points: &[FramePacing], unavailable: Option<&'static str>) -> Item {
 /// because their clock was never synced to the runtime's.
 fn clocks(trace: &Trace, pacing: &Pacing) -> Item {
     let points = pacing.unplaced_points();
+    let opportunities = pacing.opportunities().unplaced;
     let spans = trace.unplaced_spans() as u64;
-    let unplaced = points + spans;
+    let unplaced = points + opportunities + spans;
     Item {
         id: "clocks",
         status: if unplaced == 0 {
@@ -408,8 +470,9 @@ fn clocks(trace: &Trace, pacing: &Pacing) -> Item {
             String::from("every time on another clock was placed")
         } else {
             format!(
-                "{} and {} on clocks never synced",
+                "{}, {}, and {} on clocks never synced",
                 many(points, "frame point", "frame points"),
+                many(opportunities, "frame opportunity", "frame opportunities"),
                 many(spans, "timeline span", "timeline spans")
             )
         },
@@ -940,7 +1003,7 @@ mod tests {
         assert_eq!(status(&items, "clocks"), Status::Partial);
         assert_eq!(
             item(&items, "clocks").found,
-            "10 frame points and 0 timeline spans on clocks never synced"
+            "10 frame points, 0 frame opportunities, and 0 timeline spans on clocks never synced"
         );
     }
 
@@ -991,6 +1054,50 @@ mod tests {
             matches!(status(&items, "counter_samples"), Status::NotRecorded(_)),
             "{:?}",
             status(&items, "counter_samples")
+        );
+    }
+
+    #[test]
+    fn frames_that_wait_for_an_opportunity_need_their_streams_opportunities() {
+        use footfall::{BeginsAt, FrameOpportunity, FrameStream};
+        let waiting = |runtime: &Runtime, number: u64| {
+            scheduled(runtime, number);
+            runtime.frame_point(&point(
+                number,
+                FramePointKind::Scheduled(BeginsAt::Opportunity),
+                TimingBasis::Unknown,
+            ));
+        };
+        let without = runtime();
+        frames(&without, 40, waiting);
+        let items = checked(&without);
+        assert_eq!(status(&items, "scheduled"), Status::Present);
+        assert_eq!(status(&items, "opportunities"), Status::Missing);
+        assert_eq!(
+            item(&items, "opportunities").found,
+            "0 of 40 frames that wait for an opportunity have their stream's, with 0 opportunities recorded"
+        );
+
+        // A display link that called back every millisecond, from the
+        // first frame's scheduled time to past the last's.
+        let runtime = runtime();
+        for ms in 0..=40 {
+            runtime.frame_opportunity(
+                &FrameOpportunity::at(
+                    FrameStream::DEFAULT,
+                    &HOST,
+                    TickPeriod::NANOSECOND,
+                    ms * 1_000_000,
+                )
+                .with_interval(1_000_000),
+            );
+        }
+        frames(&runtime, 40, waiting);
+        let items = checked(&runtime);
+        assert_eq!(status(&items, "opportunities"), Status::Present);
+        assert_eq!(
+            item(&items, "opportunities").found,
+            "40 of 40 frames that wait for an opportunity have their stream's, with 41 opportunities recorded"
         );
     }
 }

@@ -15,13 +15,14 @@ use footfall::analysis::{
     SupportCounts, Trace, Why,
 };
 use footfall::session::OwnedLabelValue;
-use footfall::{FramePointKind, TimingBasis};
+use footfall::{BeginsAt, FramePointKind, TimingBasis};
 
 use crate::json::Json;
 
 /// The kinds of frame point a frame can have a time for, in the order a
 /// frame meets them.
-const TIMED: [FramePointKind; 7] = [
+const TIMED: [FramePointKind; 8] = [
+    FramePointKind::Scheduled(BeginsAt::Opportunity),
     FramePointKind::Predicted,
     FramePointKind::Deadline,
     FramePointKind::Target,
@@ -98,6 +99,11 @@ pub(crate) fn document(path: &Path, trace: &Trace, pacing: &Pacing) -> Json {
                                     ("stats", stats(&one.intervals())),
                                     ("breaks", Json::from(one.interval_breaks())),
                                     ("stutters", Json::from(one.stutters() as u64)),
+                                    ("opportunities", Json::from(one.opportunities().recorded)),
+                                    (
+                                        "skipped_opportunities",
+                                        Json::from(one.opportunities().skipped),
+                                    ),
                                 ])
                             })
                             .collect(),
@@ -105,6 +111,16 @@ pub(crate) fn document(path: &Path, trace: &Trace, pacing: &Pacing) -> Json {
                 ),
             ]),
         ),
+        ("opportunities", {
+            let opportunities = pacing.opportunities();
+            Json::object([
+                ("recorded", Json::from(opportunities.recorded)),
+                ("skipped", Json::from(opportunities.skipped)),
+                ("unplaced", Json::from(opportunities.unplaced)),
+                ("intervals", stats(&pacing.opportunity_intervals())),
+            ])
+        }),
+        ("begin_lateness", stats(&pacing.begin_lateness())),
         ("lateness", stats(&pacing.lateness())),
         ("latency", stats(&pacing.latency())),
         (
@@ -189,6 +205,18 @@ fn frame(frame: &FramePacing) -> Json {
             Json::nanos_or_null(frame.submitted_late()),
         ),
         (
+            "begins_at",
+            frame
+                .begins_at()
+                .map_or(Json::Null, |begins_at| Json::from(snake(begins_at))),
+        ),
+        ("begin_judged", Json::from(frame.begin_judged())),
+        ("began_late_ns", Json::nanos_or_null(frame.began_late())),
+        (
+            "opportunity_late_ns",
+            Json::nanos_or_null(frame.opportunity_late()),
+        ),
+        (
             "work",
             range(frame.work().map(|work| (work.start(), work.end()))),
         ),
@@ -232,6 +260,12 @@ fn why(why: &Why) -> Json {
         ("cause", Json::from(snake(why.cause))),
         ("support", Json::from(snake(why.support))),
         ("submitted_late_ns", Json::nanos_or_null(why.submitted_late)),
+        (
+            "opportunity_late_ns",
+            Json::nanos_or_null(why.opportunity_late),
+        ),
+        ("began_late_ns", Json::nanos_or_null(why.began_late)),
+        ("begin_judged", Json::from(why.begin_judged)),
         ("submit_reported", Json::from(why.submit_reported)),
         ("submitted_basis", Json::from(basis(why.submitted))),
         ("gpu_late_ns", Json::nanos_or_null(why.gpu_late)),
@@ -244,6 +278,11 @@ fn why(why: &Why) -> Json {
 fn late_causes(causes: LateCauseCounts) -> Json {
     Json::object([
         ("missed_deadline", Json::from(causes.missed_deadline)),
+        (
+            "skipped_opportunity",
+            Json::from(causes.skipped_opportunity),
+        ),
+        ("began_late", Json::from(causes.began_late)),
         ("backlog", Json::from(causes.backlog)),
         ("gpu", Json::from(causes.gpu)),
         ("display", Json::from(causes.display)),
@@ -346,8 +385,8 @@ mod tests {
     use footfall::runtime::Runtime;
     use footfall::session::OwnedSnapshot;
     use footfall::{
-        Backend as _, ClockDesc, ClockReading, DropReason, FramePoint, FramePointKind, TickPeriod,
-        TimingBasis,
+        Backend as _, BeginsAt, ClockDesc, ClockReading, DropReason, FrameOpportunity, FramePoint,
+        FramePointKind, FrameStream, TickPeriod, TimingBasis,
     };
 
     use super::{document, snake};
@@ -371,6 +410,18 @@ mod tests {
         runtime.frame_point(&at(2, Target, 33));
         runtime.frame_point(&at(2, Presented, 41).with_basis(TimingBasis::Estimated));
         runtime.frame_point(&FramePoint::dropped(3, DropReason::Superseded));
+        runtime.frame_point(&at(1, FramePointKind::Scheduled(BeginsAt::Opportunity), 0));
+        for ms in [0, 16, 33] {
+            runtime.frame_opportunity(
+                &FrameOpportunity::at(
+                    FrameStream::DEFAULT,
+                    &HOST,
+                    TickPeriod::NANOSECOND,
+                    ms * 1_000_000,
+                )
+                .with_interval(16_666_667),
+            );
+        }
         let trace = Trace::from_snapshot(&OwnedSnapshot::from(runtime.snapshot()));
         let pacing = trace.pacing(Duration::from_millis(1));
 
@@ -390,6 +441,10 @@ mod tests {
             r#""basis":"estimated""#,
             r#""outcome":"dropped","by_ns":null,"missed":false"#,
             r#""dropped":{"reason":"superseded","basis":"unknown","args":{}}"#,
+            r#""opportunities":{"recorded":3,"skipped":0,"unplaced":0,"intervals":{"count":2"#,
+            r#""stutters":0,"opportunities":3,"skipped_opportunities":0"#,
+            r#""begins_at":"opportunity","begin_judged":false"#,
+            r#""scheduled":{"at_ns":"#,
         ] {
             assert!(text.contains(expected), "{expected} missing from {text}");
         }

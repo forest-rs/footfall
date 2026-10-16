@@ -47,6 +47,14 @@ crates share one version.
 
 ### Tools
 
+- `footfall analyze pacing` reports each stream's frame opportunities and
+  how many the platform skipped, how many frames began later than they
+  could have, and the two new late causes; `--json` carries them, with
+  each frame's `begins_at`, `began_late_ns`, and `opportunity_late_ns`.
+  `footfall check` has two more checks: `scheduled`, whether frames say
+  when they were to begin, and `opportunities`, whether the frames that
+  wait for one have their stream's recorded. The release captures predate
+  both.
 - `footfall check` says what a capture gives the analyses: frame markers
   and numbers, deadlines, submissions, presentations, stated timing bases,
   clock syncs, GPU work, counter samples, losses, and whether the output
