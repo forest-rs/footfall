@@ -2601,6 +2601,63 @@ fn latency_steps_do_not_join_samples_across_unknown_frames() {
 }
 
 #[test]
+fn severity_keeps_each_streams_fallback_refresh_separate() {
+    use footfall_analysis::Severity;
+    use footfall_core::FramePointKind::{Presented, Target};
+    let mut recording = Recording::new(92);
+    recording.clock_sync(0, &HOST, 0);
+    for (stream, refresh) in [(FrameStream::new(1), 10_000), (FrameStream::new(2), 20_000)] {
+        for number in 1..=5 {
+            let target = number * refresh;
+            let late = if number == 5 { 12_000 } else { 0 };
+            for (kind, time) in [(Target, target), (Presented, target + late)] {
+                recording.record(
+                    target,
+                    MAIN,
+                    Observation::FramePoint {
+                        number: FrameNumber::new(stream, number),
+                        kind,
+                        time: Some(ClockTicks::from(ClockReading::new(
+                            &HOST,
+                            time * 1000,
+                            TickPeriod::NANOSECOND,
+                        ))),
+                        basis: footfall_core::TimingBasis::Observed,
+                        args: Args::none(),
+                    },
+                );
+            }
+        }
+    }
+    let trace = Trace::from_snapshot(&recording.snapshot(150_000));
+    let pacing = trace.pacing(us(500));
+    for (stream, expected) in [(1, Severity::Full), (2, Severity::Partial)] {
+        let number = FrameNumber::new(FrameStream::new(stream), 5);
+        assert_eq!(pacing.frame(number).unwrap().severity(), Some(expected));
+    }
+}
+
+#[test]
+fn severity_uses_the_stated_refresh_when_it_changes() {
+    use footfall_analysis::Severity;
+    use footfall_core::FramePointKind::{Presented, Target};
+    let mut recording = Recording::new(93);
+    recording.clock_sync(0, &HOST, 0);
+    recording.opportunity(0, FrameStream::DEFAULT, 0, Some(10_000));
+    recording.opportunity(40_000, FrameStream::DEFAULT, 40_000, Some(20_000));
+    for (number, late) in [(1, 0), (2, 6_000), (3, 0), (4, 12_000)] {
+        let target = number * 10_000;
+        recording.numbered_frame(number, target - 10_000, target - 8_000);
+        recording.frame_point(target, number, Target, &HOST, Some(target));
+        recording.frame_point(target, number, Presented, &HOST, Some(target + late));
+    }
+    let trace = Trace::from_snapshot(&recording.snapshot(60_000));
+    let pacing = trace.pacing(us(500));
+    assert_eq!(pacing.frame(2).unwrap().severity(), Some(Severity::Partial));
+    assert_eq!(pacing.frame(4).unwrap().severity(), Some(Severity::Partial));
+}
+
+#[test]
 fn latency_steps_start_again_after_event_loss() {
     use footfall_core::FramePointKind::Presented;
     let mut recording = Recording::new(91);

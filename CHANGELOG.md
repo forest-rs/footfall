@@ -32,7 +32,9 @@ crates share one version.
   Android's frame timeline judges it. Only frames shown late or early, or
   dropped for a miss, have one: frames late as steadily as the one before
   have none, and neither do frames shown on time, though they caught up.
-  `Pacing::severity` counts them.
+  `Pacing::severity` counts them. The refresh interval fallback is computed
+  once per stream when needed, keeping severity analysis from rescanning
+  every presentation interval for each frame.
 - The Perfetto export draws a frame's wait for a buffer inside its build,
   and its frame timeline records take their severity from
   `footfall_analysis` and call a frame that waited for a buffer `Buffer
@@ -136,6 +138,10 @@ crates share one version.
 
 ### Tools
 
+- `footfall analyze pacing` reports how many misses and hitches were full
+  and partial, how long frames waited for a buffer, and frames late for
+  want of one; `--json` carries each frame's `severity` and
+  `buffer_wait_ns`. `footfall check` has a `buffers` check.
 - `footfall analyze pacing` reports how often latency stepped up and down,
   with the first steps; `--json` lists every step in `latency_steps`.
 - `footfall export` writes a Perfetto trace, `.pftrace`, by default;
