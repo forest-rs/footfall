@@ -110,6 +110,12 @@ fn the_demo_capture_reads_as_it_was_recorded() {
     assert_eq!((deadlines.met, deadlines.missed), (239, 1));
     assert_eq!(about(pacing.intervals().median()), 16_667);
     assert_eq!(pacing.stutters(), 3);
+    let cadence = pacing.cadence();
+    assert_eq!(
+        (cadence.steady, cadence.hitches()),
+        (236, 0),
+        "every shown frame kept its targets' spacing"
+    );
     assert_eq!(pacing.unplaced_points(), 0);
 }
 
@@ -177,5 +183,18 @@ fn the_lightweald_metal_capture_reads_as_it_was_recorded() {
     assert_eq!(basis.estimated + basis.unknown, 0, "the display said");
     assert_eq!(about(pacing.intervals().median()), 8_333);
     assert_eq!(pacing.stutters(), 6);
+    // Most late frames were late by as much as the frame before: latency
+    // held steady, not hitches.
+    let cadence = pacing.cadence();
+    assert_eq!(
+        (
+            cadence.steady,
+            cadence.late_but_steady,
+            cadence.stalled,
+            cadence.hurried
+        ),
+        (305, 19, 9, 11)
+    );
+    assert_eq!(causes.mispredicted, 0);
     assert_eq!(pacing.unplaced_points(), 0);
 }
