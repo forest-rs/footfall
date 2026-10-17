@@ -2633,3 +2633,160 @@ fn latency_steps_start_again_after_event_loss() {
     assert_eq!(steps.len(), 1, "{steps:?}");
     assert_eq!(steps[0].at.number(), 21, "{steps:?}");
 }
+
+#[test]
+fn a_frame_late_for_want_of_a_buffer_blames_the_queue() {
+    use footfall_analysis::{LateCause, Party, Support};
+    use footfall_core::FramePointKind::{
+        BufferAcquired, BufferRequested, Deadline, Presented, Target,
+    };
+    let mut recording = Recording::new(16);
+    recording.clock_sync(0, &HOST, 0);
+    // Frame 1 waits 3 ms for a buffer and is submitted 2 ms late; frame 2
+    // waits 1 ms and is submitted 4 ms late. Both are shown a refresh late.
+    for (number, wait, late) in [(1_u64, 3_000, 2_000), (2, 1_000, 4_000)] {
+        let start = number * 20_000;
+        let deadline = start + 8_000;
+        recording.numbered_frame(number, start, deadline + late);
+        let at = deadline + late;
+        recording.frame_point(at, number, BufferRequested, &HOST, Some(start + 1_000));
+        recording.frame_point(
+            at,
+            number,
+            BufferAcquired,
+            &HOST,
+            Some(start + 1_000 + wait),
+        );
+        recording.frame_point(at, number, Deadline, &HOST, Some(deadline));
+        recording.frame_point(at, number, Target, &HOST, Some(start + 10_000));
+        recording.frame_point(at, number, Presented, &HOST, Some(start + 20_000));
+    }
+    let trace = Trace::from_snapshot(&recording.snapshot(100_000));
+    let pacing = trace.pacing(us(500));
+
+    let waited = pacing.frame(1).unwrap();
+    assert_eq!(waited.buffer_wait(), Some(us(3_000)));
+    let why = waited.why().unwrap();
+    assert_eq!(
+        (why.cause, why.support, why.cause.party()),
+        (LateCause::WaitedForBuffer, Support::Observed, Party::Queue)
+    );
+    assert_eq!(
+        why.to_string(),
+        "waited for a buffer, observed; submitted 2.00 ms after its deadline; waited 3.00 ms for a buffer; when it began was not judged"
+    );
+
+    let slow = pacing.frame(2).unwrap().why().unwrap();
+    assert_eq!(
+        slow.cause,
+        LateCause::MissedDeadline,
+        "it was late by more than it waited"
+    );
+    assert_eq!(slow.buffer_wait, Some(us(1_000)));
+
+    let counts = pacing.counts().late_causes;
+    assert_eq!((counts.waited_for_buffer, counts.missed_deadline), (1, 1));
+    let waits = pacing.buffer_waits();
+    assert_eq!((waits.count(), waits.max()), (2, us(3_000)));
+}
+
+#[test]
+fn a_wait_for_a_buffer_judged_by_estimated_times_is_inferred() {
+    use footfall_analysis::{LateCause, Support};
+    use footfall_core::FramePointKind::{
+        BufferAcquired, BufferRequested, Deadline, Presented, Submitted, Target,
+    };
+    use footfall_core::TimingBasis::{Estimated, Observed};
+    let mut recording = Recording::new(16);
+    recording.clock_sync(0, &HOST, 0);
+    // Each frame waits 3 ms for a buffer and is submitted 2 ms late: frame
+    // 1's submission is estimated, frame 2's buffer times are, and frame
+    // 3's are all observed.
+    for (number, submitted, buffer) in [
+        (1_u64, Estimated, Observed),
+        (2, Observed, Estimated),
+        (3, Observed, Observed),
+    ] {
+        let start = number * 20_000;
+        let deadline = start + 8_000;
+        let at = deadline + 2_000;
+        recording.numbered_frame(number, start, at);
+        for (kind, time) in [
+            (BufferRequested, start + 1_000),
+            (BufferAcquired, start + 4_000),
+        ] {
+            recording.frame_point_with(at, number, kind, &HOST, Some(time), buffer, Args::none());
+        }
+        recording.frame_point_with(
+            at,
+            number,
+            Submitted,
+            &HOST,
+            Some(at),
+            submitted,
+            Args::none(),
+        );
+        recording.frame_point(at, number, Deadline, &HOST, Some(deadline));
+        recording.frame_point(at, number, Target, &HOST, Some(start + 10_000));
+        recording.frame_point(at, number, Presented, &HOST, Some(start + 20_000));
+    }
+    let trace = Trace::from_snapshot(&recording.snapshot(100_000));
+    let pacing = trace.pacing(us(500));
+    let why = |number: u64| {
+        let why = pacing.frame(number).unwrap().why().unwrap();
+        (why.cause, why.support)
+    };
+    assert_eq!(why(1), (LateCause::WaitedForBuffer, Support::Inferred));
+    assert_eq!(why(2), (LateCause::WaitedForBuffer, Support::Inferred));
+    assert_eq!(why(3), (LateCause::WaitedForBuffer, Support::Observed));
+}
+
+#[test]
+fn misses_and_hitches_are_partial_or_full_against_the_refresh() {
+    use footfall_analysis::Severity;
+    use footfall_core::DropReason;
+    use footfall_core::FramePointKind::{Deadline, Dropped, Presented, Target};
+    let mut recording = Recording::new(17);
+    recording.clock_sync(0, &HOST, 0);
+    let refresh = 10_000;
+    for time in (0..14).map(|n| n * refresh) {
+        recording.opportunity(time, FrameStream::DEFAULT, time, Some(refresh));
+    }
+    // How late each frame is shown, in µs: 2 stalls by a refresh, 3 stays as
+    // late, 4 catches up, 5 stalls by 4 ms, 6 catches up, 7 is dropped for a
+    // miss, 8 follows on time, 9 stalls by a refresh measured 60 µs short,
+    // and 10 catches up.
+    let shown_late = [0, refresh, refresh, 0, 4_000, 0, 0, 0, refresh - 60, 0];
+    for (number, late) in (1_u64..).zip(shown_late) {
+        let target = number * refresh;
+        recording.numbered_frame(number, target - refresh, target - refresh + 2_000);
+        let at = target - refresh + 2_000;
+        recording.frame_point(at, number, Deadline, &HOST, Some(target - 4_000));
+        recording.frame_point(at, number, Target, &HOST, Some(target));
+        if number == 7 {
+            recording.frame_point(at, number, Dropped(DropReason::MissedDeadline), &HOST, None);
+        } else {
+            recording.frame_point(at, number, Presented, &HOST, Some(target + late));
+        }
+    }
+    let trace = Trace::from_snapshot(&recording.snapshot(200_000));
+    let pacing = trace.pacing(us(500));
+    let severity = |number: u64| pacing.frame(number).unwrap().severity();
+    assert_eq!(severity(1), None);
+    assert_eq!(severity(2), Some(Severity::Full), "stalled a refresh");
+    assert_eq!(severity(3), None, "late as steadily as frame 2: latency");
+    assert_eq!(severity(4), None, "caught up, on time");
+    assert_eq!(severity(5), Some(Severity::Partial), "stalled 4 ms");
+    assert_eq!(severity(6), None, "caught up, on time");
+    assert_eq!(severity(7), Some(Severity::Full), "dropped for a miss");
+    assert_eq!(severity(8), None);
+    assert_eq!(
+        severity(9),
+        Some(Severity::Full),
+        "a refresh, within the tolerance"
+    );
+    assert_eq!(severity(10), None, "caught up, on time");
+    let counts = pacing.severity();
+    assert_eq!((counts.partial, counts.full), (1, 3));
+    assert_eq!(Severity::Partial.to_string(), "partial");
+}
