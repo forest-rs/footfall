@@ -32,7 +32,9 @@ crates share one version.
   refresh and stayed for `LATENCY_STEP_FRAMES` frames or more. A frame
   queued in the presentation pipeline shows here, though a scheduler that
   learns the extra latency keeps its frames on time and their cadence
-  steady. `LatencyStep` says where, from what, and to what.
+  steady. `LatencyStep` says where, from what, and to what. Missing frame
+  numbers, missing latency measurements, and event loss restart the run
+  and its baseline, so isolated samples cannot establish a lasting change.
 - `footfall_export::to_perfetto_trace` writes Perfetto's own protobuf
   trace format, which keeps every time to the nanosecond, and
   `write_perfetto_trace_file` writes it to a file. Threads, timelines, and
@@ -115,6 +117,8 @@ crates share one version.
 
 ### Tools
 
+- `footfall analyze pacing` reports how often latency stepped up and down,
+  with the first steps; `--json` lists every step in `latency_steps`.
 - `footfall export` writes a Perfetto trace, `.pftrace`, by default;
   `--format json` writes Chrome Trace JSON as before.
 - `footfall analyze pacing` reports how many frames kept their cadence,

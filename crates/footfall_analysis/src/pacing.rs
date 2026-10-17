@@ -972,6 +972,8 @@ impl Pacing {
     /// opportunities stated when it was to be shown, or else the stream's
     /// median: of the intervals its opportunities stated, or of how often
     /// its frames were shown. A stream with none of them has no steps.
+    /// Missing frame numbers, missing latency measurements, and lost events
+    /// start a new run, which must establish its own initial latency.
     #[must_use]
     pub fn latency_steps(&self) -> Vec<LatencyStep> {
         let mut steps = Vec::new();
@@ -979,15 +981,40 @@ impl Pacing {
             let Some(median) = self.refresh_interval(stream) else {
                 continue;
             };
-            let latencies: Vec<(FrameNumber, Duration, Duration)> = self
+            let mut latencies = Vec::new();
+            let mut previous: Option<(FrameNumber, Duration)> = None;
+            for frame in self
                 .frames
                 .iter()
                 .filter(|frame| frame.number.stream() == stream)
-                .filter_map(|frame| {
-                    let refresh = self.refresh_at(frame).unwrap_or(median);
-                    Some((frame.number, frame.latency()?, refresh / 2))
-                })
-                .collect();
+            {
+                let measured = frame.work.zip(frame.presented).filter(|(work, shown)| {
+                    !self
+                        .gaps
+                        .iter()
+                        .any(|gap| gap.overlaps(work.start(), *shown))
+                });
+                let Some((work, shown)) = measured else {
+                    latency_steps(&latencies, &mut steps);
+                    latencies.clear();
+                    previous = None;
+                    continue;
+                };
+                if previous.is_some_and(|(number, at)| {
+                    frame.number.previous() != Some(number)
+                        || self.gaps.iter().any(|gap| gap.overlaps(at, shown))
+                }) {
+                    latency_steps(&latencies, &mut steps);
+                    latencies.clear();
+                }
+                let refresh = self.refresh_at(frame).unwrap_or(median);
+                latencies.push((
+                    frame.number,
+                    shown.saturating_sub(work.start()),
+                    refresh / 2,
+                ));
+                previous = Some((frame.number, shown));
+            }
             latency_steps(&latencies, &mut steps);
         }
         steps

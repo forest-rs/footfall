@@ -2560,3 +2560,76 @@ fn a_lasting_change_in_latency_is_a_step() {
         "latency rose from 25.00 ms to 33.33 ms at frame 16"
     );
 }
+
+#[test]
+fn latency_steps_do_not_join_samples_across_unknown_frames() {
+    use footfall_core::FramePointKind::Presented;
+    for missing in ["number", "presentation", "begin"] {
+        let mut recording = Recording::new(90);
+        recording.clock_sync(0, &HOST, 0);
+        recording.opportunity(0, FrameStream::DEFAULT, 0, Some(10_000));
+        for number in 1_u64..=25 {
+            let begin = number * 40_000;
+            let unknown = (7..=13).contains(&number) && number % 2 == 1;
+            if unknown && missing == "number" {
+                continue;
+            }
+            if !unknown || missing != "begin" {
+                recording.numbered_frame(number, begin, begin + 1_000);
+            }
+            if !unknown || missing != "presentation" {
+                let latency = if (6..=14).contains(&number) || number >= 21 {
+                    30_000
+                } else {
+                    20_000
+                };
+                recording.frame_point(
+                    begin + 1_000,
+                    number,
+                    Presented,
+                    &HOST,
+                    Some(begin + latency),
+                );
+            }
+        }
+        let trace = Trace::from_snapshot(&recording.snapshot(1_100_000));
+        let steps = trace.pacing(us(500)).latency_steps();
+        assert_eq!(steps.len(), 1, "missing {missing}: {steps:?}");
+        assert_eq!(steps[0].at.number(), 21, "missing {missing}: {steps:?}");
+        assert_eq!((steps[0].from, steps[0].to), (us(20_000), us(30_000)));
+    }
+}
+
+#[test]
+fn latency_steps_start_again_after_event_loss() {
+    use footfall_core::FramePointKind::Presented;
+    let mut recording = Recording::new(91);
+    recording.clock_sync(0, &HOST, 0);
+    recording.opportunity(0, FrameStream::DEFAULT, 0, Some(10_000));
+    let mut missing = Vec::new();
+    for number in 1_u64..=25 {
+        let begin = number * 40_000;
+        recording.numbered_frame(number, begin, begin + 1_000);
+        let latency = if (6..=10).contains(&number) || number >= 21 {
+            30_000
+        } else {
+            20_000
+        };
+        recording.frame_point(
+            begin + 1_000,
+            number,
+            Presented,
+            &HOST,
+            Some(begin + latency),
+        );
+        if number == 8 {
+            missing.push(recording.next());
+            recording.sample(begin + 35_000, 1);
+        }
+    }
+    let trace = Trace::from_snapshot(&recording.window(0, recording.next(), &missing, 1_100_000));
+    assert_eq!(trace.gaps().len(), 1);
+    let steps = trace.pacing(us(500)).latency_steps();
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert_eq!(steps[0].at.number(), 21, "{steps:?}");
+}
