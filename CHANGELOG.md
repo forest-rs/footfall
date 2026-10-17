@@ -31,6 +31,21 @@ crates share one version.
   frame alike wherever it appears. Chrome Trace JSON stays for other tools; Perfetto
   reads its times as doubles, which lose sub-microsecond precision at
   wall-clock times, so nested GPU work in it can be misplaced.
+- `FramePacing::cadence` judges smoothness apart from latency: whether a
+  shown frame came as long after the frame shown before it, in its stream,
+  as their targets were apart. It is `Steady`, `Stalled` (the frame before
+  stayed on screen too long) or `Hurried` (the content jumped ahead), with
+  how far off. `Pacing::cadence` counts them, and
+  `CadenceCounts::late_but_steady` says how many late frames were late by
+  a steady amount: latency, such as frames queued ahead, not hitches.
+  Unlike `Pacing::stutters`, each frame is held to its own target, so a
+  cadence the program chose to change is not a hitch.
+- Late frames have a new cause, `Mispredicted`: shown a fraction of a
+  refresh after their targets rather than whole refreshes, so no refresh
+  came at the target. `Why::whole_refreshes` says which, where the
+  platform states its refresh interval with each frame opportunity.
+  `LateCause::party` says who a cause points at: the program, the
+  platform, frames queued ahead, or not known.
 - The Chrome trace export draws each frame stream's opportunities as
   instants on a track of their own, so Perfetto shows the callbacks the
   platform made, and the ones it skipped, beside the frames. It also draws
