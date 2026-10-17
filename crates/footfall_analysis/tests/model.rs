@@ -2466,3 +2466,62 @@ fn whole_refreshes_are_not_judged_without_a_stated_interval() {
     assert_eq!(why.whole_refreshes, None);
     assert_eq!(why.cause, LateCause::AfterSubmit);
 }
+
+#[test]
+fn a_lasting_change_in_latency_is_a_step() {
+    use footfall_core::FramePointKind::Presented;
+    let mut recording = Recording::new(15);
+    recording.clock_sync(0, &HOST, 0);
+    let refresh = 8_333;
+    for time in (0..60).map(|n| n * refresh) {
+        recording.opportunity(time, FrameStream::DEFAULT, time, Some(refresh));
+    }
+    // Ten frames shown three refreshes after they began, one outlier five
+    // refreshes after, then eight four refreshes after, as if a frame were
+    // queued, then ten back at three.
+    let refreshes: Vec<u64> = core::iter::repeat_n(3, 10)
+        .chain([5])
+        .chain(core::iter::repeat_n(3, 4))
+        .chain(core::iter::repeat_n(4, 8))
+        .chain(core::iter::repeat_n(3, 10))
+        .collect();
+    for (number, late) in (1_u64..).zip(&refreshes) {
+        let begin = number * refresh;
+        recording.numbered_frame(number, begin, begin + 1_000);
+        recording.frame_point(
+            begin + 1_000,
+            number,
+            Presented,
+            &HOST,
+            Some(begin + late * refresh),
+        );
+    }
+    let trace = Trace::from_snapshot(&recording.snapshot(1_000_000));
+    let steps = trace.pacing(us(500)).latency_steps();
+    let three = us(3 * refresh);
+    let four = us(4 * refresh);
+    assert_eq!(steps.len(), 2, "{steps:?}");
+    assert_eq!(
+        (
+            steps[0].at.number(),
+            steps[0].from,
+            steps[0].to,
+            steps[0].rose()
+        ),
+        (16, three, four, true),
+        "the outlier at frame 11 is not a step"
+    );
+    assert_eq!(
+        (
+            steps[1].at.number(),
+            steps[1].from,
+            steps[1].to,
+            steps[1].rose()
+        ),
+        (24, four, three, false)
+    );
+    assert_eq!(
+        steps[0].to_string(),
+        "latency rose from 25.00 ms to 33.33 ms at frame 16"
+    );
+}

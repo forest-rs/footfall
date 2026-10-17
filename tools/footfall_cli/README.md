@@ -125,7 +125,9 @@ The document holds:
   `skipped_opportunities`, for each frame stream in `streams`, since
   windows can run at different rates), `cadence` (how many frames were
   `judged`, `steady`, `late_but_steady`, `stalled`, and `hurried`, and the
-  `hitches`), `lateness`, `latency`,
+  `hitches`), `lateness`, `latency`, `latency_steps` (each lasting change
+  in latency: the `stream`, `generation`, and `number` of its first frame,
+  `from_ns`, `to_ns`, and whether it `rose`),
   `prediction_error` for the `predicted`, `target`, and `expected` times,
   `wasted`, and `unplaced_points`: the figures the text report prints.
 - `frames`, every numbered frame in order: its `label` as the text report
