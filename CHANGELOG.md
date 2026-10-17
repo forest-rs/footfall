@@ -7,6 +7,10 @@ crates share one version.
 
 ### Instrumenting
 
+- `FramePointKind::BufferRequested` and `FramePointKind::BufferAcquired`
+  record when a frame asked for a buffer to render into, such as by
+  calling `nextDrawable`, `dequeueBuffer`, or `vkAcquireNextImageKHR`, and
+  when it got one. They are frame point kinds 9 and 10 of protocol `1.1`.
 - `frame_opportunity` records each chance the platform gives the program
   to begin a frame, such as a display-link callback, against the frame
   stream it was for, with the interval the platform means to leave before
@@ -98,8 +102,8 @@ crates share one version.
   `#[non_exhaustive]`, so later releases can add to them. Their fields
   stay public to read.
 - The session protocol is `1.1`: it adds the frame opportunity observation
-  and the scheduled frame point kind. Captures written at `1.0` still read
-  the same.
+  and the scheduled, buffer requested, and buffer acquired frame point
+  kinds (8, 9, and 10). Captures written at `1.0` still read the same.
 - The Chrome trace export gives timeline tracks small thread ids. They
   were `(1 << 32) + id`, and Perfetto keeps only 32 bits of a thread id,
   so a GPU timeline landed on a thread's track and took its name.
