@@ -126,6 +126,25 @@ pub(crate) fn document(path: &Path, trace: &Trace, pacing: &Pacing) -> Json {
         ("lateness", stats(&pacing.lateness())),
         ("latency", stats(&pacing.latency())),
         (
+            "latency_steps",
+            Json::Array(
+                pacing
+                    .latency_steps()
+                    .iter()
+                    .map(|step| {
+                        Json::object([
+                            ("stream", Json::from(step.at.stream().id())),
+                            ("generation", Json::from(step.at.stream().generation())),
+                            ("number", Json::from(step.at.number())),
+                            ("from_ns", Json::nanos(step.from)),
+                            ("to_ns", Json::nanos(step.to)),
+                            ("rose", Json::from(step.rose())),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        (
             "prediction_error",
             Json::object([
                 (
@@ -479,6 +498,7 @@ mod tests {
             r#""whole_refreshes":false"#,
             r#""cadence":{"judged":1,"steady":0,"late_but_steady":0,"stalled":1,"hurried":0,"hitches":1}"#,
             r#""cadence":{"kind":"stalled","by_ns":8000000}"#,
+            r#""latency_steps":[]"#,
         ] {
             assert!(text.contains(expected), "{expected} missing from {text}");
         }
