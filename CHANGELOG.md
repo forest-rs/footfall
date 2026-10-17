@@ -31,6 +31,10 @@ crates share one version.
   `Severity::Full` for a refresh or more, as Android's frame timeline
   judges it; frames late as steadily as the one before have none.
   `Pacing::severity` counts them.
+- The Perfetto export draws a frame's wait for a buffer inside its build,
+  and its frame timeline records take their severity from
+  `footfall_analysis` and call a frame that waited for a buffer `Buffer
+  Stuffing`.
 - The Perfetto export also writes each judged frame as Android's frame
   timeline writes it, so Perfetto draws the process's `Expected Timeline`
   and `Actual Timeline`, colors each frame by its verdict, and its frame

@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 use core::time::Duration;
 
-use footfall_analysis::{Cadence, FramePacing, LateCause, Outcome, Trace};
+use footfall_analysis::{Cadence, FramePacing, LateCause, Outcome, Severity, Trace};
 use footfall_core::{FlowPhase, FrameNumber, FrameStream, Unit};
 use footfall_session::{
     Clocks, OwnedArgEntry, OwnedContextEntry, OwnedLabelValue, OwnedObservation, OwnedSnapshot,
@@ -966,15 +966,8 @@ fn frame_timeline(writer: &mut Writer<'_>) {
     let pacing = trace.pacing(FRAME_TIMELINE_TOLERANCE);
     let pid = i64::from(trace_pid_i32(snapshot));
     let mut cookie = 0_i64;
-    let mut before: Option<&FramePacing> = None;
     for frame in pacing.frames() {
         let number = frame.number();
-        // The frame before in the same stream, for the spacing it was meant
-        // to keep.
-        let previous_target = before
-            .filter(|before| before.number().stream() == number.stream())
-            .and_then(FramePacing::target);
-        before = Some(frame);
         let token = timeline_token(number);
         let layer = format!("stream {}", number.stream());
         let surface = |cookie: i64| {
@@ -1001,7 +994,7 @@ fn frame_timeline(writer: &mut Writer<'_>) {
             continue;
         };
         let end = frame.submitted().unwrap_or(work.end()).max(work.start());
-        let verdict = timeline_verdict(frame, previous_target);
+        let verdict = timeline_verdict(frame);
         cookie += 1;
         let mut actual = surface(cookie);
         actual
@@ -1055,18 +1048,13 @@ struct TimelineVerdict {
 /// a dropped frame is `Dropped Frame`; and a frame whose cause is not known
 /// is `Unspecified` rather than anyone's jank.
 ///
-/// Severity is partial for a frame late by less than its targets' spacing,
-/// and full otherwise.
-fn timeline_verdict(frame: &FramePacing, previous_target: Option<Duration>) -> TimelineVerdict {
-    let spacing = frame
-        .target()
-        .zip(previous_target)
-        .and_then(|(target, previous)| target.checked_sub(previous))
-        .filter(|spacing| !spacing.is_zero());
-    let severity = |by: Duration| match spacing {
-        Some(spacing) if by < spacing => SEVERITY_PARTIAL,
-        Some(_) => SEVERITY_FULL,
-        None => SEVERITY_UNKNOWN,
+/// Severity is `footfall_analysis`'s: partial for a miss or hitch of less
+/// than a refresh, full for a refresh or more.
+fn timeline_verdict(frame: &FramePacing) -> TimelineVerdict {
+    let severity = match frame.severity() {
+        Some(Severity::Partial) => SEVERITY_PARTIAL,
+        Some(Severity::Full) => SEVERITY_FULL,
+        _ => SEVERITY_UNKNOWN,
     };
     #[expect(
         clippy::cast_possible_truncation,
@@ -1075,12 +1063,7 @@ fn timeline_verdict(frame: &FramePacing, previous_target: Option<Duration>) -> T
     let millis = |by: Duration| (by.as_secs_f64() * 1000.0) as f32;
     let (present, jank, severity, delay_millis) = match frame.outcome() {
         Outcome::OnTime => (PRESENT_ON_TIME, JANK_NONE, SEVERITY_NONE, 0.0),
-        Outcome::Early { by } => (
-            PRESENT_EARLY,
-            JANK_PREDICTION_ERROR,
-            severity(by),
-            -millis(by),
-        ),
+        Outcome::Early { by } => (PRESENT_EARLY, JANK_PREDICTION_ERROR, severity, -millis(by)),
         Outcome::Late { by, .. } if frame.cadence() == Some(Cadence::Steady) => (
             PRESENT_LATE,
             JANK_BUFFER_STUFFING,
@@ -1093,14 +1076,14 @@ fn timeline_verdict(frame: &FramePacing, previous_target: Option<Duration>) -> T
                     JANK_APP_DEADLINE_MISSED
                 }
                 LateCause::SkippedOpportunity => JANK_SF_SCHEDULING,
-                LateCause::Backlog => JANK_BUFFER_STUFFING,
+                LateCause::Backlog | LateCause::WaitedForBuffer => JANK_BUFFER_STUFFING,
                 LateCause::Mispredicted => JANK_PREDICTION_ERROR,
                 LateCause::Display | LateCause::AfterSubmit => JANK_DISPLAY_HAL,
                 _ => JANK_UNSPECIFIED,
             };
-            (PRESENT_LATE, jank, severity(by), millis(by))
+            (PRESENT_LATE, jank, severity, millis(by))
         }
-        Outcome::Dropped { .. } => (PRESENT_DROPPED, JANK_DROPPED, SEVERITY_UNKNOWN, 0.0),
+        Outcome::Dropped { .. } => (PRESENT_DROPPED, JANK_DROPPED, severity, 0.0),
         Outcome::SubmittedLate { .. } => (
             PRESENT_UNKNOWN,
             JANK_APP_DEADLINE_MISSED,
@@ -1256,16 +1239,25 @@ fn frame_tracks(
             life = life.with(string_annotation("dropped", &reason.to_string()));
         }
         writer.event(start, &life);
-        // Its stages, in order, each inside the frame's life.
+        // Its stages, in order, each inside the frame's life, with how deep
+        // each nests: a wait for a buffer falls inside its build.
         let mut stages = Vec::new();
         if let (Some(scheduled), Some(begin)) = (frame.scheduled, frame.begin) {
-            stages.push(("waiting to begin", scheduled, begin));
+            stages.push(("waiting to begin", scheduled, begin, 0));
         }
         if let (Some(begin), Some(end)) = (frame.begin, frame.end) {
-            stages.push(("built", begin, end));
+            stages.push(("built", begin, end, 0));
+            if let (Some(requested), Some(acquired)) =
+                (frame.buffer_requested, frame.buffer_acquired)
+            {
+                let (from, to) = (requested.max(begin), acquired.min(end));
+                if from < to {
+                    stages.push(("waiting for a buffer", from, to, 1));
+                }
+            }
         }
         if let (Some(end), Some(presented)) = (frame.end, frame.presented) {
-            stages.push(("in flight", end, presented));
+            stages.push(("in flight", end, presented, 0));
         }
         let mut instants = Vec::new();
         if let Some(deadline) = frame.deadline {
@@ -1278,28 +1270,32 @@ fn frame_tracks(
             instants.push((format!("dropped: {reason}"), at));
         }
         // Write stages and instants in time order, instants at a stage's
-        // edge after it ends, so each nests where it falls.
-        let mut steps: Vec<(u64, u8, Event)> = Vec::new();
-        for (name, from, to) in stages {
+        // edge after it ends, so each nests where it falls: at the same time,
+        // ends come before begins, inner ends before outer ones, and outer
+        // begins before inner ones.
+        let mut steps: Vec<(u64, u8, u8, Event)> = Vec::new();
+        for (name, from, to, depth) in stages {
             if to < from {
                 continue;
             }
             steps.push((
                 from,
                 1,
+                depth,
                 Event::named(TYPE_SLICE_BEGIN, track, name, "frame").of_frame(frame_number),
             ));
-            steps.push((to, 0, Event::new(TYPE_SLICE_END, track)));
+            steps.push((to, 0, u8::MAX - depth, Event::new(TYPE_SLICE_END, track)));
         }
         for (name, at) in instants {
             steps.push((
                 at,
                 2,
+                0,
                 Event::named(TYPE_INSTANT, track, name, "frame").of_frame(frame_number),
             ));
         }
-        steps.sort_by_key(|(at, order, _)| (*at, *order));
-        for (at, _, event) in &steps {
+        steps.sort_by_key(|(at, order, depth, _)| (*at, *order, *depth));
+        for (at, _, _, event) in &steps {
             writer.event(*at, event);
         }
         writer.event(finish, &Event::new(TYPE_SLICE_END, track));
@@ -1706,6 +1702,64 @@ mod tests {
     }
 
     #[test]
+    fn a_wait_for_a_buffer_nests_in_the_frames_build() {
+        use footfall_core::MarkerPhase::{Begin, End};
+        let point = |kind, at: u64| Observation::FramePoint {
+            number: FrameNumber::from(1),
+            kind,
+            time: Some(ClockTicks::from(ClockReading::new(
+                &HOST,
+                at,
+                TickPeriod::NANOSECOND,
+            ))),
+            basis: TimingBasis::Unknown,
+            args: Args::none(),
+        };
+        let marker = |phase| Observation::FrameMarker {
+            kind: footfall_core::MarkerKind::Frame,
+            phase,
+            number: Some(FrameNumber::from(1)),
+            context_id: ContextId::new(0),
+        };
+        // Built from 10 µs to 18 µs, asking for a buffer as it began and
+        // getting it at 15 µs.
+        let observations = vec![
+            (0, sync()),
+            (10_000, marker(Begin)),
+            (18_000, marker(End)),
+            (20_000, point(FramePointKind::BufferRequested, 10_000)),
+            (20_000, point(FramePointKind::BufferAcquired, 15_000)),
+            (20_000, point(FramePointKind::Target, 30_000)),
+            (20_000, point(FramePointKind::Presented, 30_000)),
+        ];
+        let mut builder = Snapshot::builder(SnapshotMetadata::new("app"));
+        for (sequence, (at, observation)) in (0..).zip(observations) {
+            builder = builder.event(TimedObservation::new(at, sequence, 1, observation));
+        }
+        let (tracks, events) = read(&to_perfetto_trace(&builder.build().into()));
+        let lane = track(&tracks, "frames");
+        let life: Vec<_> = events
+            .iter()
+            .filter(|event| event.track == lane.uuid)
+            .map(|event| (event.at, event.kind, event.name.as_deref()))
+            .collect();
+        assert_eq!(
+            life,
+            [
+                (10_000, 1, Some("frame 1")),
+                (10_000, 1, Some("built")),
+                (10_000, 1, Some("waiting for a buffer")),
+                (15_000, 2, None),
+                (18_000, 2, None),
+                (18_000, 1, Some("in flight")),
+                (30_000, 2, None),
+                (30_000, 3, Some("target")),
+                (30_000, 2, None),
+            ]
+        );
+    }
+
+    #[test]
     fn frames_carry_their_verdicts_on_the_frame_timeline() {
         use footfall_core::DropReason;
         use footfall_core::MarkerPhase::{Begin, End};
@@ -1729,6 +1783,18 @@ mod tests {
             context_id: ContextId::new(0),
         };
         let mut observations = vec![(0, sync())];
+        // The display says it refreshes every 10 ms.
+        for at in (0..7).map(|n| n * 10_000_000) {
+            observations.push((
+                at,
+                Observation::FrameOpportunity {
+                    stream: FrameStream::DEFAULT,
+                    time: ClockTicks::from(ClockReading::new(&HOST, at, TickPeriod::NANOSECOND)),
+                    interval: Some(10_000_000),
+                    args: Args::none(),
+                },
+            ));
+        }
         // A refresh every 10 ms. Frame 1 is on time; frame 2 is shown a
         // refresh late though built in time; frame 3 stays as late as frame
         // 2, steadily; frame 4 misses its deadline and is shown two
