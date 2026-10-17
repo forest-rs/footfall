@@ -40,6 +40,7 @@ scheduler. Each line is one thing an analysis uses:
 | `opportunities` | frame opportunities around the frames that wait for one |
 | `deadlines` | deadline points on numbered frames |
 | `submissions` | submission points |
+| `buffers` | buffer requested and acquired points: how long frames waited for a buffer |
 | `presentations` | presentation or drop points |
 | `bases` | submission and presentation times that state their basis |
 | `clocks` | times and spans on clocks that were never synced |
@@ -116,9 +117,11 @@ The document holds:
 
 - `footfall_version`, and `capture`: the file, process, process id,
   runtime instance (hex), and the producer's Footfall version.
-- `tolerance_ns`, `counts` (with `late_causes` and `late_support`),
+- `tolerance_ns`, `counts` (with `late_causes`, `late_support`, and
+  `severity`: how many misses and hitches were `partial` and `full`),
   `opportunities` (how many were `recorded`, `skipped` by the platform,
-  and `unplaced`, and their `intervals`), `begin_lateness`,
+  and `unplaced`, and their `intervals`), `begin_lateness`, `buffer_waits`
+  (how long frames waited for a buffer, when longer than the tolerance),
   `deadlines` (how many frames were submitted by their deadlines, `met`,
   and after, `missed`), `presentation_basis`, `intervals` (with `breaks`
   and `stutters`, and the same, with `cadence`, `opportunities`, and
@@ -136,10 +139,11 @@ The document holds:
   `early`, `late`, `dropped`, `submitted_late`, or `unknown`) with `by_ns`
   and whether it was `missed` (a dropped frame whose reason is not a miss,
   such as `superseded`, is not); `why`, for a late frame, with its
-  `cause`, the `party` it points at, its `support`, and whether it was
-  shown `whole_refreshes` late; its `cadence` (`kind`, `steady`,
-  `stalled`, or `hurried`, and `by_ns`) against the frame shown before it,
-  when known; whether its
+  `cause`, the `party` it points at, its `support`, whether it was shown
+  `whole_refreshes` late, and its `buffer_wait_ns`; its `cadence` (`kind`,
+  `steady`, `stalled`, or `hurried`, and `by_ns`) against the frame shown
+  before it, when known; its `severity` (`partial` or `full`), and its
+  `buffer_wait_ns`; whether its
   work `met_deadline`, by its `submitted` point or else the end of its
   `work`, and `submitted_late_ns`, how long after; what it `begins_at`
   (`time` or `opportunity`), whether its begin was judged
@@ -148,7 +152,7 @@ The document holds:
   how many of its points had a time that could not be placed; and
   `points`, each
   frame point recorded for it by kind (`scheduled`, `predicted`,
-  `deadline`, `target`,
+  `buffer_requested`, `buffer_acquired`, `deadline`, `target`,
   `sampled`, `submitted`, `expected`, `presented`, and `dropped` with its
   `reason`), with its `at_ns`, `basis` (`observed`, `estimated`, or
   `unknown`), and `args`.

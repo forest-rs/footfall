@@ -132,6 +132,10 @@ crates share one version.
 
 ### Tools
 
+- `footfall analyze pacing` reports how many misses and hitches were full
+  and partial, how long frames waited for a buffer, and frames late for
+  want of one; `--json` carries each frame's `severity` and
+  `buffer_wait_ns`. `footfall check` has a `buffers` check.
 - `footfall analyze pacing` reports how often latency stepped up and down,
   with the first steps; `--json` lists every step in `latency_steps`.
 - `footfall export` writes a Perfetto trace, `.pftrace`, by default;

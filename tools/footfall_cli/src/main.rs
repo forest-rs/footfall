@@ -623,6 +623,10 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> 
     if counts.late > 0 {
         let causes = counts.late_causes;
         let named: Vec<String> = [
+            (
+                causes.waited_for_buffer,
+                "missed their deadline waiting for a buffer",
+            ),
             (causes.missed_deadline, "missed their deadline"),
             (
                 causes.skipped_opportunity,
@@ -696,6 +700,25 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> 
             format::count(cadence.steady),
             format::count(cadence.stalled),
             format::count(cadence.hurried),
+        );
+    }
+    // How bad the misses and hitches were.
+    let severity = pacing.severity();
+    if severity.partial + severity.full > 0 {
+        println!(
+            "  misses and hitches: {BAD}{} full{BAD:#} {DIM}(a refresh or more){DIM:#} · {WARN}{} partial{WARN:#} {DIM}(less){DIM:#}",
+            format::count(severity.full),
+            format::count(severity.partial),
+        );
+    }
+    // Frames held up waiting for a buffer: backpressure, not their work.
+    let waits = pacing.buffer_waits();
+    if waits.count() > 0 {
+        println!(
+            "  {WARN}{} waited for a buffer{WARN:#}: median {}, max {} {DIM}(every buffer held by frames queued ahead){DIM:#}",
+            format::frames(waits.count()),
+            format::duration(waits.median()),
+            format::duration(waits.max()),
         );
     }
     // What the platform offered each stream, and when frames began.
@@ -830,6 +853,7 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> 
             Outcome::Late { by, cause } => (
                 format!("late {}", format::duration(by)),
                 match cause {
+                    LateCause::WaitedForBuffer => "buffer wait",
                     LateCause::MissedDeadline => "deadline",
                     LateCause::SkippedOpportunity => "skipped opp.",
                     LateCause::BeganLate => "began late",
@@ -927,6 +951,11 @@ fn also(why: &Why) -> String {
     }
     if why.cause != LateCause::Backlog && why.behind_previous {
         also.push(String::from("queued"));
+    }
+    if why.cause != LateCause::WaitedForBuffer
+        && let Some(wait) = why.buffer_wait.filter(|wait| !wait.is_zero())
+    {
+        also.push(format!("buffer +{}", format::duration(wait)));
     }
     if why.cause != LateCause::Mispredicted && why.whole_refreshes == Some(false) {
         also.push(String::from("between refreshes"));
