@@ -957,6 +957,84 @@ impl Pacing {
         DurationStats::of(self.frames.iter().filter_map(FramePacing::latency))
     }
 
+    /// Returns each lasting change in latency, in each stream: where the
+    /// time from frames' begin markers to the screen moved by at least half
+    /// a refresh and stayed there for [`LATENCY_STEP_FRAMES`] frames or more,
+    /// in order.
+    ///
+    /// A frame queued in the presentation pipeline behind one that missed
+    /// the compositor's cutoff shows here: every frame after it is a refresh
+    /// later until one is skipped. A scheduler that learns the extra latency
+    /// moves its targets with it, so the frames still look on time, and
+    /// their cadence steady; this says the latency itself changed.
+    ///
+    /// Each frame's refresh interval is the one the stream's frame
+    /// opportunities stated when it was to be shown, or else the stream's
+    /// median: of the intervals its opportunities stated, or of how often
+    /// its frames were shown. A stream with none of them has no steps.
+    #[must_use]
+    pub fn latency_steps(&self) -> Vec<LatencyStep> {
+        let mut steps = Vec::new();
+        for stream in self.streams() {
+            let Some(median) = self.refresh_interval(stream) else {
+                continue;
+            };
+            let latencies: Vec<(FrameNumber, Duration, Duration)> = self
+                .frames
+                .iter()
+                .filter(|frame| frame.number.stream() == stream)
+                .filter_map(|frame| {
+                    let refresh = self.refresh_at(frame).unwrap_or(median);
+                    Some((frame.number, frame.latency()?, refresh / 2))
+                })
+                .collect();
+            latency_steps(&latencies, &mut steps);
+        }
+        steps
+    }
+
+    /// The refresh interval the frame's stream stated with the last
+    /// opportunity at or before the frame was to be shown, if it stated one.
+    fn refresh_at(&self, frame: &FramePacing) -> Option<Duration> {
+        let at = frame.target.or(frame.presented)?;
+        self.opportunities
+            .iter()
+            .find(|opportunities| opportunities.stream == frame.number.stream())?
+            .stated_interval_at(at)
+    }
+
+    /// The refresh interval of a stream: the median its opportunities
+    /// stated, or else the median time its frames stayed on screen.
+    fn refresh_interval(&self, stream: FrameStream) -> Option<Duration> {
+        let stated = self
+            .opportunities
+            .iter()
+            .find(|opportunities| opportunities.stream == stream)
+            .map(|opportunities| {
+                DurationStats::of(
+                    opportunities
+                        .times
+                        .iter()
+                        .filter_map(|(_, interval)| *interval),
+                )
+                .median()
+            })
+            .filter(|interval| !interval.is_zero());
+        stated
+            .or_else(|| {
+                Some(
+                    DurationStats::of(
+                        self.intervals
+                            .iter()
+                            .filter(|(of, _)| *of == stream)
+                            .map(|(_, interval)| *interval),
+                    )
+                    .median(),
+                )
+            })
+            .filter(|interval| !interval.is_zero())
+    }
+
     /// Returns how many of the frames' points could not be converted to the
     /// trace's time, because their clock has no sync or pair leading to the
     /// runtime's, and so were left out; see
@@ -1220,6 +1298,86 @@ pub struct LateCauseCounts {
     pub after_submit: u64,
     /// Not known.
     pub unknown: u64,
+}
+
+/// How many frames in a row must stay at a new latency for
+/// [`Pacing::latency_steps`] to count it.
+pub const LATENCY_STEP_FRAMES: usize = 5;
+
+/// A lasting change in latency, as [`Pacing::latency_steps`] returns it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct LatencyStep {
+    /// The first frame at the new latency.
+    pub at: FrameNumber,
+    /// The typical latency before: the median of the frames that set it.
+    pub from: Duration,
+    /// The typical latency after: the median of the
+    /// [`LATENCY_STEP_FRAMES`] frames that showed the step.
+    pub to: Duration,
+}
+
+impl LatencyStep {
+    /// Returns `true` for a step up: frames took longer to reach the
+    /// screen after it.
+    #[must_use]
+    pub fn rose(&self) -> bool {
+        self.to > self.from
+    }
+}
+
+impl fmt::Display for LatencyStep {
+    /// Says the step in a few words, such as `latency rose from 25.0 ms to
+    /// 33.3 ms at frame 412`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "latency {} from {} to {} at frame {}",
+            if self.rose() { "rose" } else { "fell" },
+            Shown(self.from),
+            Shown(self.to),
+            self.at,
+        )
+    }
+}
+
+/// Finds the lasting changes in one stream's latencies: runs of
+/// [`LATENCY_STEP_FRAMES`] frames each at least its own threshold, half its
+/// refresh, from the level set before, the same way.
+fn latency_steps(latencies: &[(FrameNumber, Duration, Duration)], steps: &mut Vec<LatencyStep>) {
+    let median = |run: &[(FrameNumber, Duration, Duration)]| {
+        DurationStats::of(run.iter().map(|(_, latency, _)| *latency)).median()
+    };
+    let Some(first) = latencies.get(..LATENCY_STEP_FRAMES) else {
+        return;
+    };
+    let mut level = median(first);
+    // Where the run of frames away from the level began, and which way.
+    let mut run: Option<(usize, bool)> = None;
+    for (index, &(_, latency, threshold)) in latencies.iter().enumerate().skip(LATENCY_STEP_FRAMES)
+    {
+        let up = latency >= level + threshold;
+        let down = latency + threshold <= level;
+        if threshold.is_zero() || (!up && !down) {
+            run = None;
+            continue;
+        }
+        let start = match run {
+            Some((start, rising)) if rising == up => start,
+            _ => index,
+        };
+        run = Some((start, up));
+        if index + 1 - start >= LATENCY_STEP_FRAMES {
+            let to = median(&latencies[start..=index]);
+            steps.push(LatencyStep {
+                at: latencies[start].0,
+                from: level,
+                to,
+            });
+            level = to;
+            run = None;
+        }
+    }
 }
 
 /// How many shown frames kept their rhythm, as [`Pacing::cadence`] returns
