@@ -761,6 +761,24 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> 
             format::duration(latency.p99()),
         );
     }
+    // Lasting changes in latency, which a scheduler planning around them
+    // hides from every judgment against targets.
+    let steps = pacing.latency_steps();
+    if !steps.is_empty() {
+        let rose = steps.iter().filter(|step| step.rose()).count();
+        let shown: Vec<String> = steps.iter().take(3).map(ToString::to_string).collect();
+        let more = if steps.len() > 3 {
+            format!(" {DIM}and {} more{DIM:#}", steps.len() - 3)
+        } else {
+            String::new()
+        };
+        println!(
+            "  {WARN}latency stepped up {rose} and down {} times{WARN:#} {DIM}(by half a refresh or more, for {} frames or more){DIM:#}: {}{more}",
+            steps.len() - rose,
+            footfall::analysis::LATENCY_STEP_FRAMES,
+            shown.join("; "),
+        );
+    }
     let wasted = pacing.wasted();
     if wasted.frames > 0 {
         let gpu = if wasted.gpu_frames == 0 {

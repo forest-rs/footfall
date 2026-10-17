@@ -115,6 +115,8 @@ crates share one version.
 
 ### Tools
 
+- `footfall analyze pacing` reports how often latency stepped up and down,
+  with the first steps; `--json` lists every step in `latency_steps`.
 - `footfall export` writes a Perfetto trace, `.pftrace`, by default;
   `--format json` writes Chrome Trace JSON as before.
 - `footfall analyze pacing` reports how many frames kept their cadence,
