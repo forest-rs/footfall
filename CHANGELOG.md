@@ -7,6 +7,10 @@ crates share one version.
 
 ### Instrumenting
 
+- `FramePointKind::BufferRequested` and `FramePointKind::BufferAcquired`
+  record when a frame asked for a buffer to render into, such as by
+  calling `nextDrawable`, `dequeueBuffer`, or `vkAcquireNextImageKHR`, and
+  when it got one. They are frame point kinds 9 and 10 of protocol `1.1`.
 - `frame_opportunity` records each chance the platform gives the program
   to begin a frame, such as a display-link callback, against the frame
   stream it was for, with the interval the platform means to leave before
@@ -18,6 +22,19 @@ crates share one version.
 
 ### Consuming
 
+- `FramePacing::buffer_wait` says how long a frame waited for a buffer,
+  and `Pacing::buffer_waits` how long the frames that waited did. A frame
+  submitted after its deadline by less than it waited has the new cause
+  `WaitedForBuffer`, which points at the queue: without the wait it would
+  have made it. `FramePacing::severity` says how bad a frame's miss or
+  hitch was, `Severity::Partial` for less than a refresh and
+  `Severity::Full` for a refresh or more, as Android's frame timeline
+  judges it; frames late as steadily as the one before have none.
+  `Pacing::severity` counts them.
+- The Perfetto export draws a frame's wait for a buffer inside its build,
+  and its frame timeline records take their severity from
+  `footfall_analysis` and call a frame that waited for a buffer `Buffer
+  Stuffing`.
 - The Perfetto export also writes each judged frame as Android's frame
   timeline writes it, so Perfetto draws the process's `Expected Timeline`
   and `Actual Timeline`, colors each frame by its verdict, and its frame
@@ -115,6 +132,10 @@ crates share one version.
 
 ### Tools
 
+- `footfall analyze pacing` reports how many misses and hitches were full
+  and partial, how long frames waited for a buffer, and frames late for
+  want of one; `--json` carries each frame's `severity` and
+  `buffer_wait_ns`. `footfall check` has a `buffers` check.
 - `footfall analyze pacing` reports how often latency stepped up and down,
   with the first steps; `--json` lists every step in `latency_steps`.
 - `footfall export` writes a Perfetto trace, `.pftrace`, by default;

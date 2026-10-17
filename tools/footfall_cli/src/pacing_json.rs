@@ -21,9 +21,11 @@ use crate::json::Json;
 
 /// The kinds of frame point a frame can have a time for, in the order a
 /// frame meets them.
-const TIMED: [FramePointKind; 8] = [
+const TIMED: [FramePointKind; 10] = [
     FramePointKind::Scheduled(BeginsAt::Opportunity),
     FramePointKind::Predicted,
+    FramePointKind::BufferRequested,
+    FramePointKind::BufferAcquired,
     FramePointKind::Deadline,
     FramePointKind::Target,
     FramePointKind::Sampled,
@@ -66,6 +68,13 @@ pub(crate) fn document(path: &Path, trace: &Trace, pacing: &Pacing) -> Json {
                 ("missed", Json::from(counts.missed())),
                 ("late_causes", late_causes(counts.late_causes)),
                 ("late_support", late_support(counts.late_support)),
+                ("severity", {
+                    let severity = pacing.severity();
+                    Json::object([
+                        ("partial", Json::from(severity.partial)),
+                        ("full", Json::from(severity.full)),
+                    ])
+                }),
             ]),
         ),
         (
@@ -123,6 +132,7 @@ pub(crate) fn document(path: &Path, trace: &Trace, pacing: &Pacing) -> Json {
             ])
         }),
         ("begin_lateness", stats(&pacing.begin_lateness())),
+        ("buffer_waits", stats(&pacing.buffer_waits())),
         ("lateness", stats(&pacing.lateness())),
         ("latency", stats(&pacing.latency())),
         (
@@ -221,6 +231,13 @@ fn frame(frame: &FramePacing) -> Json {
         ("missed", Json::from(outcome.missed())),
         ("why", frame.why().map_or(Json::Null, why)),
         ("cadence", frame.cadence().map_or(Json::Null, cadence)),
+        (
+            "severity",
+            frame
+                .severity()
+                .map_or(Json::Null, |severity| Json::from(snake(severity))),
+        ),
+        ("buffer_wait_ns", Json::nanos_or_null(frame.buffer_wait())),
         ("met_deadline", Json::from(frame.met_deadline())),
         (
             "submitted_late_ns",
@@ -295,12 +312,14 @@ fn why(why: &Why) -> Json {
         ("gpu_recorded", Json::from(why.gpu_recorded)),
         ("behind_previous", Json::from(why.behind_previous)),
         ("whole_refreshes", Json::from(why.whole_refreshes)),
+        ("buffer_wait_ns", Json::nanos_or_null(why.buffer_wait)),
         ("presented_basis", Json::from(basis(why.presented))),
     ])
 }
 
 fn late_causes(causes: LateCauseCounts) -> Json {
     Json::object([
+        ("waited_for_buffer", Json::from(causes.waited_for_buffer)),
         ("missed_deadline", Json::from(causes.missed_deadline)),
         (
             "skipped_opportunity",
