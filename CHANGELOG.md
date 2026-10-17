@@ -18,6 +18,15 @@ crates share one version.
 
 ### Consuming
 
+- The Perfetto export also writes each judged frame as Android's frame
+  timeline writes it, so Perfetto draws the process's `Expected Timeline`
+  and `Actual Timeline`, colors each frame by its verdict, and its frame
+  timeline tables and jank queries work on Footfall traces. A frame late
+  as steadily as the one before is `Buffer Stuffing`, latency and not
+  jank; one late through its own work is `App Deadline Missed`; one the
+  platform made late is `SurfaceFlinger Scheduling`, `Prediction Error`,
+  or `Display HAL`. `footfall_export` now depends on `footfall_analysis`
+  for the verdicts.
 - `footfall_export::to_perfetto_trace` writes Perfetto's own protobuf
   trace format, which keeps every time to the nanosecond, and
   `write_perfetto_trace_file` writes it to a file. Threads, timelines, and

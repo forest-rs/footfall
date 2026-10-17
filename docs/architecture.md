@@ -71,6 +71,8 @@ Each crate owns one thing and says what it does not own.
 
 Dependencies point one way: core at the bottom, the runtime on core, the
 session on the runtime, and transports, analysis, and export on the session.
+Export also takes its frame verdicts from analysis, rather than judging
+frames itself.
 Nothing downstream redefines the core vocabulary.
 
 ## The Emission Seam
