@@ -7,6 +7,10 @@ crates share one version.
 
 ### Instrumenting
 
+- `FramePointKind::BufferRequested` and `FramePointKind::BufferAcquired`
+  record when a frame asked for a buffer to render into, such as by
+  calling `nextDrawable`, `dequeueBuffer`, or `vkAcquireNextImageKHR`, and
+  when it got one. They are frame point kinds 9 and 10 of protocol `1.1`.
 - `frame_opportunity` records each chance the platform gives the program
   to begin a frame, such as a display-link callback, against the frame
   stream it was for, with the interval the platform means to leave before
