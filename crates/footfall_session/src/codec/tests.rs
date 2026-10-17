@@ -687,6 +687,8 @@ fn every_frame_point_kind_round_trips() {
         FramePointKind::Sampled,
         FramePointKind::Scheduled(footfall_core::BeginsAt::Time),
         FramePointKind::Scheduled(footfall_core::BeginsAt::Opportunity),
+        FramePointKind::BufferRequested,
+        FramePointKind::BufferAcquired,
     ]
     .into_iter()
     .chain(reasons.into_iter().map(FramePointKind::Dropped));
