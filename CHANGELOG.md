@@ -22,6 +22,15 @@ crates share one version.
 
 ### Consuming
 
+- `FramePacing::buffer_wait` says how long a frame waited for a buffer,
+  and `Pacing::buffer_waits` how long the frames that waited did. A frame
+  submitted after its deadline by less than it waited has the new cause
+  `WaitedForBuffer`, which points at the queue: without the wait it would
+  have made it. `FramePacing::severity` says how bad a frame's miss or
+  hitch was, `Severity::Partial` for less than a refresh and
+  `Severity::Full` for a refresh or more, as Android's frame timeline
+  judges it; frames late as steadily as the one before have none.
+  `Pacing::severity` counts them.
 - The Perfetto export also writes each judged frame as Android's frame
   timeline writes it, so Perfetto draws the process's `Expected Timeline`
   and `Actual Timeline`, colors each frame by its verdict, and its frame

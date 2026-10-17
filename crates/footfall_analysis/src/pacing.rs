@@ -36,6 +36,8 @@ pub struct FramePacing {
     presented: Option<Duration>,
     submitted: Option<Duration>,
     sampled: Option<Duration>,
+    buffer_requested: Option<Duration>,
+    buffer_acquired: Option<Duration>,
     scheduled: Option<(Duration, BeginsAt)>,
     began: Began,
     dropped: Option<DropReason>,
@@ -45,6 +47,7 @@ pub struct FramePacing {
     outcome: Outcome,
     why: Option<Why>,
     cadence: Option<Cadence>,
+    severity: Option<Severity>,
 }
 
 /// Whether a frame was shown when it was meant to be, as
@@ -119,6 +122,11 @@ struct Began {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
 pub enum LateCause {
+    /// It was submitted after its deadline, but by less than it waited for a
+    /// buffer to render into: without the wait it would have made it. Every
+    /// buffer was held by frames queued ahead, so the presentation pipeline
+    /// held it back, not its work. See [`FramePacing::buffer_wait`].
+    WaitedForBuffer,
     /// Its CPU work was submitted after its deadline.
     MissedDeadline,
     /// It was to begin at a frame opportunity, and the platform skipped
@@ -171,7 +179,7 @@ pub enum Party {
     /// held it after it was submitted in time.
     Platform,
     /// Frames queued ahead of it: the late frame before it, whatever made
-    /// that one late.
+    /// that one late, or frames holding every buffer it could render into.
     Queue,
     /// Not known.
     Unknown,
@@ -188,7 +196,7 @@ impl LateCause {
             Self::SkippedOpportunity | Self::Mispredicted | Self::Display | Self::AfterSubmit => {
                 Party::Platform
             }
-            Self::Backlog => Party::Queue,
+            Self::Backlog | Self::WaitedForBuffer => Party::Queue,
             Self::Unknown => Party::Unknown,
         }
     }
@@ -276,6 +284,7 @@ impl fmt::Display for LateCause {
     /// Says the cause in a few words, such as `queued behind a late frame`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::WaitedForBuffer => "waited for a buffer",
             Self::MissedDeadline => "submitted after its deadline",
             Self::SkippedOpportunity => "the platform skipped its opportunity",
             Self::BeganLate => "began late",
@@ -448,6 +457,8 @@ impl FramePacing {
             FramePointKind::Presented => self.presented,
             FramePointKind::Submitted => self.submitted,
             FramePointKind::Sampled => self.sampled,
+            FramePointKind::BufferRequested => self.buffer_requested,
+            FramePointKind::BufferAcquired => self.buffer_acquired,
             FramePointKind::Scheduled(_) => match self.scheduled {
                 Some((at, _)) => Some(at),
                 None => None,
@@ -462,6 +473,26 @@ impl FramePacing {
     #[must_use]
     pub const fn submitted(&self) -> Option<Duration> {
         self.submitted
+    }
+
+    /// Returns how long the frame waited for a buffer to render into: from
+    /// its [`BufferRequested`](FramePointKind::BufferRequested) point to its
+    /// [`BufferAcquired`](FramePointKind::BufferAcquired) point, when it has
+    /// both.
+    ///
+    /// A long wait means every buffer was held by frames queued ahead:
+    /// backpressure from the presentation pipeline. The frame's work looks
+    /// that much longer for it, but the time was not its own.
+    #[must_use]
+    pub fn buffer_wait(&self) -> Option<Duration> {
+        Some(self.buffer_acquired?.saturating_sub(self.buffer_requested?))
+    }
+
+    /// Returns how bad the frame's miss or hitch was, if it had one; see
+    /// [`Severity`].
+    #[must_use]
+    pub const fn severity(&self) -> Option<Severity> {
+        self.severity
     }
 
     /// Returns the time the frame's content was made for, such as when its
@@ -693,6 +724,7 @@ impl Pacing {
                     }
                     let causes = &mut counts.late_causes;
                     match cause {
+                        LateCause::WaitedForBuffer => causes.waited_for_buffer += 1,
                         LateCause::MissedDeadline => causes.missed_deadline += 1,
                         LateCause::SkippedOpportunity => causes.skipped_opportunity += 1,
                         LateCause::BeganLate => causes.began_late += 1,
@@ -957,6 +989,33 @@ impl Pacing {
         DurationStats::of(self.frames.iter().filter_map(FramePacing::latency))
     }
 
+    /// Returns how many frames' misses and hitches were partial and how many
+    /// full; see [`FramePacing::severity`].
+    #[must_use]
+    pub fn severity(&self) -> SeverityCounts {
+        let mut counts = SeverityCounts::default();
+        for frame in &self.frames {
+            match frame.severity {
+                Some(Severity::Partial) => counts.partial += 1,
+                Some(Severity::Full) => counts.full += 1,
+                None => {}
+            }
+        }
+        counts
+    }
+
+    /// Returns how long the frames that waited for a buffer waited; see
+    /// [`FramePacing::buffer_wait`].
+    #[must_use]
+    pub fn buffer_waits(&self) -> DurationStats {
+        DurationStats::of(
+            self.frames
+                .iter()
+                .filter_map(FramePacing::buffer_wait)
+                .filter(|wait| *wait > self.tolerance),
+        )
+    }
+
     /// Returns each lasting change in latency, in each stream: where the
     /// time from frames' begin markers to the screen moved by at least half
     /// a refresh and stayed there for [`LATENCY_STEP_FRAMES`] frames or more,
@@ -1180,6 +1239,9 @@ pub struct Why {
     /// how often its stream refreshed: the frame opportunities near it
     /// were recorded without the refresh interval the platform meant.
     pub whole_refreshes: Option<bool>,
+    /// How long it waited for a buffer to render into, when its points say;
+    /// see [`FramePacing::buffer_wait`].
+    pub buffer_wait: Option<Duration>,
     /// How the frame's presentation time was known.
     pub presented: TimingBasis,
 }
@@ -1234,6 +1296,9 @@ impl fmt::Display for Why {
         if self.whole_refreshes == Some(false) {
             f.write_str("; shown between refreshes")?;
         }
+        if let Some(wait) = self.buffer_wait.filter(|wait| !wait.is_zero()) {
+            write!(f, "; waited {} for a buffer", Shown(wait))?;
+        }
         if !self.begin_judged {
             f.write_str("; when it began was not judged")?;
         }
@@ -1265,6 +1330,8 @@ pub struct SupportCounts {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct LateCauseCounts {
+    /// Submitted after their deadlines because they waited for a buffer.
+    pub waited_for_buffer: u64,
     /// Submitted after their deadlines.
     pub missed_deadline: u64,
     /// Begun at a later frame opportunity, because the platform skipped
@@ -1367,6 +1434,45 @@ fn latency_steps(
             run = None;
         }
     }
+}
+
+/// How bad a frame's miss or hitch was, as [`FramePacing::severity`] says,
+/// as Android's frame timeline judges it.
+///
+/// A frame whose cadence broke is judged by how far off its spacing from
+/// the frame before was; a late frame whose cadence was not judged, by how
+/// late it was; a frame dropped for a miss is full. A frame late as steadily
+/// as the one before has none: that is latency, not a hitch.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum Severity {
+    /// Off by less than a refresh: motion stuttered, but no refresh was
+    /// lost, as on a variable-refresh display or with a mispredicted target.
+    Partial,
+    /// Off by a refresh or more: a frame stayed on screen at least a
+    /// refresh too long, or never came.
+    Full,
+}
+
+impl fmt::Display for Severity {
+    /// Says the severity in a word: `partial` or `full`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Partial => "partial",
+            Self::Full => "full",
+        })
+    }
+}
+
+/// How many frames had each [`Severity`], as [`Pacing::severity`] returns
+/// them.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct SeverityCounts {
+    /// Off by less than a refresh.
+    pub partial: u64,
+    /// Off by a refresh or more, or dropped for a miss.
+    pub full: u64,
 }
 
 /// How many shown frames kept their rhythm, as [`Pacing::cadence`] returns
@@ -1477,6 +1583,8 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
                 presented: None,
                 submitted: None,
                 sampled: None,
+                buffer_requested: None,
+                buffer_acquired: None,
                 scheduled: None,
                 began: Began::default(),
                 dropped: None,
@@ -1485,6 +1593,7 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
                 outcome: Outcome::Unknown,
                 why: None,
                 cadence: None,
+                severity: None,
             };
             for point in trace.frame_points().get(&number).into_iter().flatten() {
                 let (kind, time) = (&point.kind, &point.time);
@@ -1510,6 +1619,8 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
                     FramePointKind::Presented => &mut raw.presented,
                     FramePointKind::Submitted => &mut raw.submitted,
                     FramePointKind::Sampled => &mut raw.sampled,
+                    FramePointKind::BufferRequested => &mut raw.buffer_requested,
+                    FramePointKind::BufferAcquired => &mut raw.buffer_acquired,
                     FramePointKind::Dropped(reason) => {
                         raw.dropped = Some(*reason);
                         continue;
@@ -1570,14 +1681,44 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
     }
     cadences(&mut frames, &gaps, tolerance);
     let (intervals, interval_breaks) = intervals(&frames, &gaps);
-    Pacing {
+    let mut pacing = Pacing {
         frames,
         tolerance,
         intervals,
         interval_breaks,
         gaps,
         opportunities,
+    };
+    for stream in pacing.streams() {
+        let refresh = pacing.refresh_interval(stream);
+        for frame in pacing
+            .frames
+            .iter_mut()
+            .filter(|frame| frame.number.stream() == stream)
+        {
+            frame.severity = severity(frame, refresh);
+        }
     }
+    pacing
+}
+
+/// Judges how bad a frame's miss or hitch was against its stream's refresh
+/// interval; see [`Severity`].
+fn severity(frame: &FramePacing, refresh: Option<Duration>) -> Option<Severity> {
+    let off = match (frame.cadence, frame.outcome) {
+        (Some(Cadence::Stalled { by } | Cadence::Hurried { by }), _) => by,
+        // Late as steadily as the frame before: latency, not a hitch.
+        (Some(Cadence::Steady), _) => return None,
+        (None, Outcome::Late { by, .. }) => by,
+        (_, Outcome::Dropped { reason }) if reason.is_miss() => return Some(Severity::Full),
+        _ => return None,
+    };
+    let refresh = refresh?;
+    Some(if off < refresh {
+        Severity::Partial
+    } else {
+        Severity::Full
+    })
 }
 
 /// Whether two point kinds are the same kind, whatever a scheduled point
@@ -1844,8 +1985,13 @@ fn outcome(
             let tolerance = tolerance.as_nanos();
             off <= tolerance || interval.as_nanos() - off <= tolerance
         });
-    let (cause, support) = if submitted_late.is_some() {
-        (LateCause::MissedDeadline, Support::Observed)
+    let buffer_wait = raw.buffer_wait();
+    let (cause, support) = if let Some(by) = submitted_late {
+        if buffer_wait.is_some_and(|wait| wait >= by) {
+            (LateCause::WaitedForBuffer, Support::Observed)
+        } else {
+            (LateCause::MissedDeadline, Support::Observed)
+        }
     } else if raw.began.opportunity_late.is_some() {
         (LateCause::SkippedOpportunity, Support::Observed)
     } else if raw.began.late.is_some() {
@@ -1891,6 +2037,7 @@ fn outcome(
         gpu_recorded: raw.gpu.is_some(),
         behind_previous,
         whole_refreshes,
+        buffer_wait,
         presented: presented_basis,
     };
     let late = Outcome::Late {
