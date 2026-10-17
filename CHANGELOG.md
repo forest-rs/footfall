@@ -27,6 +27,12 @@ crates share one version.
   platform made late is `SurfaceFlinger Scheduling`, `Prediction Error`,
   or `Display HAL`. `footfall_export` now depends on `footfall_analysis`
   for the verdicts.
+- `Pacing::latency_steps` finds each lasting change in latency: where the
+  time from frames' begin markers to the screen moved by at least half a
+  refresh and stayed for `LATENCY_STEP_FRAMES` frames or more. A frame
+  queued in the presentation pipeline shows here, though a scheduler that
+  learns the extra latency keeps its frames on time and their cadence
+  steady. `LatencyStep` says where, from what, and to what.
 - `footfall_export::to_perfetto_trace` writes Perfetto's own protobuf
   trace format, which keeps every time to the nanosecond, and
   `write_perfetto_trace_file` writes it to a file. Threads, timelines, and
