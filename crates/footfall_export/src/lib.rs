@@ -686,6 +686,9 @@ struct PacedFrame {
     target: Option<u64>,
     presented: Option<u64>,
     dropped: Option<DropReason>,
+    /// When it asked for a buffer to render into, and when it got one.
+    buffer_requested: Option<u64>,
+    buffer_acquired: Option<u64>,
 }
 
 /// The Chrome trace tracks of one frame stream's frames.
@@ -746,6 +749,12 @@ fn paced_frames(
             FramePointKind::Target => frame.target = at.or(frame.target),
             FramePointKind::Presented => frame.presented = at.or(frame.presented),
             FramePointKind::Dropped(reason) => frame.dropped = Some(*reason),
+            FramePointKind::BufferRequested => {
+                frame.buffer_requested = at.or(frame.buffer_requested);
+            }
+            FramePointKind::BufferAcquired => {
+                frame.buffer_acquired = at.or(frame.buffer_acquired);
+            }
             _ => {}
         }
     }
