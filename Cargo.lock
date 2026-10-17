@@ -805,6 +805,7 @@ dependencies = [
 name = "footfall_export"
 version = "0.1.0"
 dependencies = [
+ "footfall_analysis",
  "footfall_core",
  "footfall_runtime",
  "footfall_session",

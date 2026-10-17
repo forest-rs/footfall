@@ -11,6 +11,7 @@ categories.workspace = true
 description = "Perfetto and Chrome Trace JSON export of Footfall snapshots."
 
 [dependencies]
+footfall_analysis.workspace = true
 footfall_core = { features = ["std"], workspace = true }
 footfall_runtime = { features = ["std"], workspace = true }
 footfall_session = { features = ["std"], workspace = true }
