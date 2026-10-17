@@ -21,9 +21,11 @@ use crate::json::Json;
 
 /// The kinds of frame point a frame can have a time for, in the order a
 /// frame meets them.
-const TIMED: [FramePointKind; 8] = [
+const TIMED: [FramePointKind; 10] = [
     FramePointKind::Scheduled(BeginsAt::Opportunity),
     FramePointKind::Predicted,
+    FramePointKind::BufferRequested,
+    FramePointKind::BufferAcquired,
     FramePointKind::Deadline,
     FramePointKind::Target,
     FramePointKind::Sampled,
@@ -66,6 +68,13 @@ pub(crate) fn document(path: &Path, trace: &Trace, pacing: &Pacing) -> Json {
                 ("missed", Json::from(counts.missed())),
                 ("late_causes", late_causes(counts.late_causes)),
                 ("late_support", late_support(counts.late_support)),
+                ("severity", {
+                    let severity = pacing.severity();
+                    Json::object([
+                        ("partial", Json::from(severity.partial)),
+                        ("full", Json::from(severity.full)),
+                    ])
+                }),
             ]),
         ),
         (
@@ -123,6 +132,7 @@ pub(crate) fn document(path: &Path, trace: &Trace, pacing: &Pacing) -> Json {
             ])
         }),
         ("begin_lateness", stats(&pacing.begin_lateness())),
+        ("buffer_waits", stats(&pacing.buffer_waits())),
         ("lateness", stats(&pacing.lateness())),
         ("latency", stats(&pacing.latency())),
         (
@@ -221,6 +231,13 @@ fn frame(frame: &FramePacing) -> Json {
         ("missed", Json::from(outcome.missed())),
         ("why", frame.why().map_or(Json::Null, why)),
         ("cadence", frame.cadence().map_or(Json::Null, cadence)),
+        (
+            "severity",
+            frame
+                .severity()
+                .map_or(Json::Null, |severity| Json::from(snake(severity))),
+        ),
+        ("buffer_wait_ns", Json::nanos_or_null(frame.buffer_wait())),
         ("met_deadline", Json::from(frame.met_deadline())),
         (
             "submitted_late_ns",
@@ -295,12 +312,14 @@ fn why(why: &Why) -> Json {
         ("gpu_recorded", Json::from(why.gpu_recorded)),
         ("behind_previous", Json::from(why.behind_previous)),
         ("whole_refreshes", Json::from(why.whole_refreshes)),
+        ("buffer_wait_ns", Json::nanos_or_null(why.buffer_wait)),
         ("presented_basis", Json::from(basis(why.presented))),
     ])
 }
 
 fn late_causes(causes: LateCauseCounts) -> Json {
     Json::object([
+        ("waited_for_buffer", Json::from(causes.waited_for_buffer)),
         ("missed_deadline", Json::from(causes.missed_deadline)),
         (
             "skipped_opportunity",
@@ -499,6 +518,54 @@ mod tests {
             r#""cadence":{"judged":1,"steady":0,"late_but_steady":0,"stalled":1,"hurried":0,"hitches":1}"#,
             r#""cadence":{"kind":"stalled","by_ns":8000000}"#,
             r#""latency_steps":[]"#,
+        ] {
+            assert!(text.contains(expected), "{expected} missing from {text}");
+        }
+    }
+
+    #[test]
+    fn documents_say_how_long_frames_waited_for_buffers_and_how_bad_misses_were() {
+        let runtime = Runtime::default();
+        runtime.clock_sync(ClockReading::new(&HOST, 0, TickPeriod::NANOSECOND));
+        let at = |number: u64, kind, ms: u64| {
+            FramePoint::at(number, kind, &HOST, TickPeriod::NANOSECOND, ms * 1_000_000)
+        };
+        use FramePointKind::{
+            BufferAcquired, BufferRequested, Deadline, Presented, Submitted, Target,
+        };
+        // Frame 1 is on time. Frame 2 waits 5 ms for a buffer, is submitted
+        // 2 ms after its deadline, and is shown a refresh late.
+        runtime.frame_point(&at(1, Target, 17));
+        runtime.frame_point(&at(1, Presented, 17));
+        runtime.frame_point(&at(2, BufferRequested, 25));
+        runtime.frame_point(&at(2, BufferAcquired, 30));
+        runtime.frame_point(&at(2, Deadline, 31));
+        runtime.frame_point(&at(2, Submitted, 33));
+        runtime.frame_point(&at(2, Target, 34));
+        runtime.frame_point(&at(2, Presented, 51));
+        for ms in [0, 17, 34, 51] {
+            runtime.frame_opportunity(
+                &FrameOpportunity::at(
+                    FrameStream::DEFAULT,
+                    &HOST,
+                    TickPeriod::NANOSECOND,
+                    ms * 1_000_000,
+                )
+                .with_interval(17_000_000),
+            );
+        }
+        let trace = Trace::from_snapshot(&OwnedSnapshot::from(runtime.snapshot()));
+        let pacing = trace.pacing(Duration::from_millis(1));
+
+        let text = document(Path::new("run.ffcap"), &trace, &pacing).to_string();
+        for expected in [
+            r#""severity":{"partial":0,"full":1}"#,
+            r#""buffer_waits":{"count":1"#,
+            r#""waited_for_buffer":1"#,
+            r#""cause":"waited_for_buffer","party":"queue""#,
+            r#""buffer_wait_ns":5000000"#,
+            r#""severity":"full""#,
+            r#""severity":null"#,
         ] {
             assert!(text.contains(expected), "{expected} missing from {text}");
         }
