@@ -2322,3 +2322,147 @@ fn opportunities_are_counted_per_stream_and_judged_only_where_recorded() {
     assert!(!why.begin_judged);
     assert_eq!(why.cause, LateCause::AfterSubmit);
 }
+
+#[test]
+fn steady_latency_is_told_apart_from_hitches() {
+    use footfall_analysis::{Cadence, Outcome};
+    use footfall_core::DropReason;
+    use footfall_core::FramePointKind::{Deadline, Dropped, Presented, Target};
+    let mut recording = Recording::new(12);
+    recording.clock_sync(0, &HOST, 0);
+    let refresh = 16_667;
+    // Shown this many refreshes after their targets: frame 2 falls one
+    // behind, 3 to 5 stay one behind, and 6 catches up. Frame 7 is dropped
+    // as superseded, 8 is shown on time, 9 says nothing, and 10 follows.
+    let shown_late = [0, 1, 1, 1, 1, 0, 0, 0, 0, 0];
+    for number in 1..=10_u64 {
+        let target = number * refresh;
+        let start = target - refresh;
+        recording.numbered_frame(number, start, start + 3_000);
+        let at = start + 3_000;
+        recording.frame_point(at, number, Deadline, &HOST, Some(target - 4_000));
+        recording.frame_point(at, number, Target, &HOST, Some(target));
+        match number {
+            7 => recording.frame_point(at, number, Dropped(DropReason::Superseded), &HOST, None),
+            9 => {}
+            _ => {
+                let late = shown_late[usize::try_from(number - 1).unwrap()] * refresh;
+                recording.frame_point(at, number, Presented, &HOST, Some(target + late));
+            }
+        }
+    }
+    let trace = Trace::from_snapshot(&recording.snapshot(200_000));
+    let pacing = trace.pacing(us(500));
+    let cadence = |number: u64| pacing.frame(number).and_then(|frame| frame.cadence());
+
+    assert_eq!(cadence(1), None, "the first shown frame has none before it");
+    assert_eq!(cadence(2), Some(Cadence::Stalled { by: us(refresh) }));
+    for number in 3..=5 {
+        assert_eq!(cadence(number), Some(Cadence::Steady), "frame {number}");
+        assert!(matches!(
+            pacing.frame(number).unwrap().outcome(),
+            Outcome::Late { .. }
+        ));
+    }
+    assert_eq!(cadence(6), Some(Cadence::Hurried { by: us(refresh) }));
+    assert_eq!(cadence(7), None, "never shown");
+    assert_eq!(
+        cadence(8),
+        Some(Cadence::Steady),
+        "the superseded frame left frame 6 on screen as long as their targets were apart"
+    );
+    assert_eq!(cadence(9), None);
+    assert_eq!(
+        cadence(10),
+        None,
+        "what was on screen before it is not known"
+    );
+    assert_eq!(
+        Cadence::Stalled { by: us(refresh) }.to_string(),
+        "stalled by 16.67 ms"
+    );
+
+    let counts = pacing.cadence();
+    assert_eq!(
+        (
+            counts.steady,
+            counts.late_but_steady,
+            counts.stalled,
+            counts.hurried
+        ),
+        (4, 3, 1, 1)
+    );
+    assert_eq!((counts.judged(), counts.hitches()), (6, 2));
+}
+
+#[test]
+fn late_frames_say_whether_they_missed_refreshes_or_their_target() {
+    use footfall_analysis::{LateCause, Outcome, Party, Support};
+    use footfall_core::FramePointKind::{Deadline, Presented, Target};
+    let mut recording = Recording::new(13);
+    recording.clock_sync(0, &HOST, 0);
+    // A display refreshing every 10 ms, which says so.
+    for time in (0..=60_000).step_by(10_000) {
+        recording.opportunity(time, FrameStream::DEFAULT, time, Some(10_000));
+    }
+    // Both submitted in time: one shown a refresh late, one 4 ms late.
+    for (number, presented) in [(1_u64, 30_000), (2, 44_000)] {
+        let target = number * 20_000;
+        recording.numbered_frame(number, target - 10_000, target - 8_000);
+        let at = target - 8_000;
+        recording.frame_point(at, number, Deadline, &HOST, Some(target - 2_000));
+        recording.frame_point(at, number, Target, &HOST, Some(target));
+        recording.frame_point(at, number, Presented, &HOST, Some(presented));
+    }
+    let trace = Trace::from_snapshot(&recording.snapshot(70_000));
+    let pacing = trace.pacing(us(500));
+
+    let missed_one = pacing.frame(1).and_then(|frame| frame.why()).unwrap();
+    assert_eq!(missed_one.whole_refreshes, Some(true));
+    assert_eq!(missed_one.cause, LateCause::AfterSubmit);
+
+    let between = pacing.frame(2).unwrap();
+    assert_eq!(
+        between.outcome(),
+        Outcome::Late {
+            by: us(4_000),
+            cause: LateCause::Mispredicted,
+        }
+    );
+    let why = between.why().unwrap();
+    assert_eq!(
+        (why.whole_refreshes, why.support),
+        (Some(false), Support::Inferred)
+    );
+    assert_eq!(why.cause.party(), Party::Platform);
+    assert_eq!(
+        why.to_string(),
+        "its target was mispredicted, inferred; shown between refreshes; when it began was not judged"
+    );
+    assert_eq!(
+        between.outcome().to_string(),
+        "late by 4.00 ms: its target was mispredicted"
+    );
+    assert_eq!(pacing.counts().late_causes.mispredicted, 1);
+    assert_eq!(LateCause::MissedDeadline.party(), Party::Program);
+    assert_eq!(LateCause::Backlog.party(), Party::Queue);
+}
+
+#[test]
+fn whole_refreshes_are_not_judged_without_a_stated_interval() {
+    use footfall_analysis::LateCause;
+    use footfall_core::FramePointKind::{Deadline, Presented, Target};
+    let mut recording = Recording::new(14);
+    recording.clock_sync(0, &HOST, 0);
+    for time in (0..=40_000).step_by(10_000) {
+        recording.opportunity(time, FrameStream::DEFAULT, time, None);
+    }
+    recording.numbered_frame(1, 10_000, 12_000);
+    recording.frame_point(12_000, 1, Deadline, &HOST, Some(18_000));
+    recording.frame_point(12_000, 1, Target, &HOST, Some(20_000));
+    recording.frame_point(12_000, 1, Presented, &HOST, Some(24_000));
+    let trace = Trace::from_snapshot(&recording.snapshot(50_000));
+    let why = *trace.pacing(us(500)).frame(1).unwrap().why().unwrap();
+    assert_eq!(why.whole_refreshes, None);
+    assert_eq!(why.cause, LateCause::AfterSubmit);
+}

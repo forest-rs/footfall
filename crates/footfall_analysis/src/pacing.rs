@@ -44,6 +44,7 @@ pub struct FramePacing {
     details: Vec<(FramePointKind, TimingBasis, Vec<OwnedArgEntry>)>,
     outcome: Outcome,
     why: Option<Why>,
+    cadence: Option<Cadence>,
 }
 
 /// Whether a frame was shown when it was meant to be, as
@@ -137,6 +138,13 @@ pub enum LateCause {
     Backlog,
     /// It was submitted in time, but its GPU work finished after its target.
     Gpu,
+    /// It was shown a fraction of a refresh after its target, not a whole
+    /// number of refreshes: no refresh came at its target, so the target
+    /// itself was mispredicted, such as a refresh interval or phase that
+    /// drifted. Judged only where the platform states its refresh
+    /// interval with each opportunity, so this is [`Support::Inferred`].
+    /// See [`Why::whole_refreshes`].
+    Mispredicted,
     /// It was submitted and its recorded GPU work finished in time, with
     /// nothing queued ahead of it, and it was shown late anyway: the
     /// compositor or display probably held it. Neither is observed, and GPU
@@ -149,6 +157,102 @@ pub enum LateCause {
     AfterSubmit,
     /// Not known: the trace has no deadline or CPU work for the frame.
     Unknown,
+}
+
+/// Who a late frame's cause points at, as [`LateCause::party`] says.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum Party {
+    /// The program's own work: its CPU work missed its deadline, its GPU
+    /// work ran past its target, or it began later than it could have.
+    Program,
+    /// What happened outside the program: the platform skipped the
+    /// opportunity the frame was meant for, mispredicted its target, or
+    /// held it after it was submitted in time.
+    Platform,
+    /// Frames queued ahead of it: the late frame before it, whatever made
+    /// that one late.
+    Queue,
+    /// Not known.
+    Unknown,
+}
+
+impl LateCause {
+    /// Returns who the cause points at: the program, the platform, frames
+    /// queued ahead, or not known. Like the cause, it is the leading
+    /// explanation, not proof; see [`Why::support`].
+    #[must_use]
+    pub const fn party(self) -> Party {
+        match self {
+            Self::MissedDeadline | Self::BeganLate | Self::Gpu => Party::Program,
+            Self::SkippedOpportunity | Self::Mispredicted | Self::Display | Self::AfterSubmit => {
+                Party::Platform
+            }
+            Self::Backlog => Party::Queue,
+            Self::Unknown => Party::Unknown,
+        }
+    }
+}
+
+impl fmt::Display for Party {
+    /// Says who in a word or two: `the program`, `the platform`, `the
+    /// queue`, or `not known`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Program => "the program",
+            Self::Platform => "the platform",
+            Self::Queue => "the queue",
+            Self::Unknown => "not known",
+        })
+    }
+}
+
+/// Whether a shown frame kept the rhythm its target set, as
+/// [`FramePacing::cadence`] says: whether it was shown as long after the
+/// frame shown before it, in its stream, as their targets were apart.
+///
+/// This is smoothness, apart from latency. A frame shown two refreshes
+/// after its target, as the frame before it was, is late but steady: its
+/// content moves as evenly as it was meant to, only later. A frame shown
+/// on time after one shown late is on time, but came too soon after it.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum Cadence {
+    /// Shown within the tolerance of its targets' spacing.
+    Steady,
+    /// Shown later after the frame before than their targets were apart:
+    /// the frame before stayed on screen too long, a hitch.
+    Stalled {
+        /// How much longer than their targets' spacing.
+        by: Duration,
+    },
+    /// Shown sooner after the frame before than their targets were apart:
+    /// the frame before was cut short and the content jumped ahead, a
+    /// hitch too.
+    Hurried {
+        /// How much shorter than their targets' spacing.
+        by: Duration,
+    },
+}
+
+impl Cadence {
+    /// Returns `true` for a frame that broke the rhythm: stalled or
+    /// hurried.
+    #[must_use]
+    pub const fn is_hitch(self) -> bool {
+        !matches!(self, Self::Steady)
+    }
+}
+
+impl fmt::Display for Cadence {
+    /// Says the cadence in a few words, such as `stalled by 8.33 ms`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Steady => f.write_str("steady"),
+            Self::Stalled { by } => write!(f, "stalled by {}", Shown(*by)),
+            Self::Hurried { by } => write!(f, "hurried by {}", Shown(*by)),
+        }
+    }
 }
 
 impl fmt::Display for Outcome {
@@ -177,6 +281,7 @@ impl fmt::Display for LateCause {
             Self::BeganLate => "began late",
             Self::Backlog => "queued behind a late frame",
             Self::Gpu => "GPU finished after the target",
+            Self::Mispredicted => "its target was mispredicted",
             Self::Display => "held by the display",
             Self::AfterSubmit => "late after submit, no GPU work to tell",
             Self::Unknown => "cause not known",
@@ -431,6 +536,20 @@ impl FramePacing {
         self.why.as_ref()
     }
 
+    /// Returns whether the frame was shown as long after the frame shown
+    /// before it, in its stream, as their targets were apart; see
+    /// [`Cadence`].
+    ///
+    /// `None` when that is not known: the frame was not shown, it or the
+    /// frame shown before it had no target, it is its stream's first shown
+    /// frame, or the trace cannot say what was on screen between them,
+    /// such as a frame with neither a presentation nor a drop reported, or
+    /// events lost.
+    #[must_use]
+    pub const fn cadence(&self) -> Option<Cadence> {
+        self.cadence
+    }
+
     /// Returns the time from the frame's begin marker to its presentation.
     ///
     /// This is how long the frame took to reach the screen once the program
@@ -475,6 +594,16 @@ impl StreamOpportunities {
     /// `index`.
     fn interval_after(&self, index: usize) -> Duration {
         self.times[index].1.unwrap_or(self.median)
+    }
+
+    /// The refresh interval the platform stated with the last opportunity
+    /// at or before `at`, if it stated one.
+    fn stated_interval_at(&self, at: Duration) -> Option<Duration> {
+        let after = self.times.partition_point(|(time, _)| *time <= at);
+        self.times[..after]
+            .last()
+            .and_then(|(_, interval)| *interval)
+            .filter(|interval| !interval.is_zero())
     }
 }
 
@@ -569,6 +698,7 @@ impl Pacing {
                         LateCause::BeganLate => causes.began_late += 1,
                         LateCause::Backlog => causes.backlog += 1,
                         LateCause::Gpu => causes.gpu += 1,
+                        LateCause::Mispredicted => causes.mispredicted += 1,
                         LateCause::Display => causes.display += 1,
                         LateCause::AfterSubmit => causes.after_submit += 1,
                         LateCause::Unknown => causes.unknown += 1,
@@ -793,6 +923,33 @@ impl Pacing {
         count
     }
 
+    /// Returns how many shown frames kept the rhythm their targets set,
+    /// and how many broke it; see [`FramePacing::cadence`].
+    ///
+    /// Unlike [`stutters`](Self::stutters), which holds each interval to
+    /// the median, this holds each frame to its own target, so a cadence
+    /// the program chose to change is not a hitch, and latency that holds
+    /// steady is told apart from hitches: see
+    /// [`CadenceCounts::late_but_steady`].
+    #[must_use]
+    pub fn cadence(&self) -> CadenceCounts {
+        let mut counts = CadenceCounts::default();
+        for frame in &self.frames {
+            match frame.cadence {
+                Some(Cadence::Steady) => {
+                    counts.steady += 1;
+                    if matches!(frame.outcome, Outcome::Late { .. }) {
+                        counts.late_but_steady += 1;
+                    }
+                }
+                Some(Cadence::Stalled { .. }) => counts.stalled += 1,
+                Some(Cadence::Hurried { .. }) => counts.hurried += 1,
+                None => {}
+            }
+        }
+        counts
+    }
+
     /// Returns the time from each frame's begin marker to its presentation;
     /// see [`FramePacing::latency`].
     #[must_use]
@@ -953,6 +1110,12 @@ pub struct Why {
     /// Whether the frame before it was still waiting to be shown at this
     /// one's target.
     pub behind_previous: bool,
+    /// Whether it was shown a whole number of refreshes after its target,
+    /// within the tolerance: a frame that missed refreshes, rather than one
+    /// aimed at a time no refresh came. `None` when the trace does not say
+    /// how often its stream refreshed: the frame opportunities near it
+    /// were recorded without the refresh interval the platform meant.
+    pub whole_refreshes: Option<bool>,
     /// How the frame's presentation time was known.
     pub presented: TimingBasis,
 }
@@ -1004,6 +1167,9 @@ impl fmt::Display for Why {
         if self.behind_previous {
             f.write_str("; the frame before was still waiting")?;
         }
+        if self.whole_refreshes == Some(false) {
+            f.write_str("; shown between refreshes")?;
+        }
         if !self.begin_judged {
             f.write_str("; when it began was not judged")?;
         }
@@ -1046,12 +1212,45 @@ pub struct LateCauseCounts {
     pub backlog: u64,
     /// Their GPU work finished after their targets.
     pub gpu: u64,
+    /// Shown between refreshes: their targets were mispredicted.
+    pub mispredicted: u64,
     /// Held by the compositor or display.
     pub display: u64,
     /// Submitted in time, with no GPU work to tell the GPU from the display.
     pub after_submit: u64,
     /// Not known.
     pub unknown: u64,
+}
+
+/// How many shown frames kept their rhythm, as [`Pacing::cadence`] returns
+/// them.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct CadenceCounts {
+    /// Shown as long after the frame before as their targets were apart.
+    pub steady: u64,
+    /// Of the steady, how many were late: shown behind their targets by
+    /// about as much as the frame before them. That is latency holding
+    /// steady, such as frames queued ahead, not a hitch.
+    pub late_but_steady: u64,
+    /// Shown later after the frame before than their targets were apart.
+    pub stalled: u64,
+    /// Shown sooner after the frame before than their targets were apart.
+    pub hurried: u64,
+}
+
+impl CadenceCounts {
+    /// Returns how many frames had their cadence judged.
+    #[must_use]
+    pub const fn judged(&self) -> u64 {
+        self.steady + self.stalled + self.hurried
+    }
+
+    /// Returns how many broke the rhythm: stalled or hurried.
+    #[must_use]
+    pub const fn hitches(&self) -> u64 {
+        self.stalled + self.hurried
+    }
 }
 
 /// How many frame opportunities a trace recorded and the platform skipped,
@@ -1138,6 +1337,7 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
                 details: Vec::new(),
                 outcome: Outcome::Unknown,
                 why: None,
+                cadence: None,
             };
             for point in trace.frame_points().get(&number).into_iter().flatten() {
                 let (kind, time) = (&point.kind, &point.time);
@@ -1214,10 +1414,14 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
             .checked_sub(1)
             .map(|before| &frames[before])
             .filter(|before| frames[index].number.previous() == Some(before.number));
-        let (judged, why) = outcome(&frames[index], before, tolerance);
+        let stream = opportunities
+            .iter()
+            .find(|opportunities| opportunities.stream == frames[index].number.stream());
+        let (judged, why) = outcome(&frames[index], before, stream, tolerance);
         frames[index].outcome = judged;
         frames[index].why = why;
     }
+    cadences(&mut frames, &gaps, tolerance);
     let (intervals, interval_breaks) = intervals(&frames, &gaps);
     Pacing {
         frames,
@@ -1382,6 +1586,50 @@ fn intervals(frames: &[FramePacing], gaps: &[TimeRange]) -> (Vec<(FrameStream, D
     (intervals, breaks)
 }
 
+/// Judges each shown frame's cadence against the frame shown before it in
+/// its stream; see [`FramePacing::cadence`].
+///
+/// Frames known never to have been shown are passed over, as the frame
+/// before them stays on screen; a frame the trace cannot say about, a
+/// missing frame number, or events lost between two presentations break
+/// the run, as for [`Pacing::intervals`].
+fn cadences(frames: &mut [FramePacing], gaps: &[TimeRange], tolerance: Duration) {
+    // The frame shown last in the run: when it was shown and its target.
+    let mut shown: Option<(Duration, Option<Duration>)> = None;
+    let mut before: Option<FrameNumber> = None;
+    for frame in frames.iter_mut() {
+        if before.is_none_or(|number| frame.number.previous() != Some(number)) {
+            shown = None;
+        }
+        before = Some(frame.number);
+        let Some(at) = frame.presented else {
+            if frame.dropped.is_none() {
+                shown = None;
+            }
+            continue;
+        };
+        if let Some((since, Some(since_target))) = shown
+            && let Some(target) = frame.target
+            && !gaps.iter().any(|gap| gap.overlaps(since, at))
+        {
+            let meant = target.saturating_sub(since_target);
+            let spacing = at.saturating_sub(since);
+            frame.cadence = Some(if spacing > meant + tolerance {
+                Cadence::Stalled {
+                    by: spacing - meant,
+                }
+            } else if spacing + tolerance < meant {
+                Cadence::Hurried {
+                    by: meant - spacing,
+                }
+            } else {
+                Cadence::Steady
+            });
+        }
+        shown = Some((at, frame.target));
+    }
+}
+
 /// Returns the time covered by at least one of the ranges on each timeline,
 /// summed over the timelines.
 fn busy(spans: &mut [(TimelineId, TimeRange)]) -> Duration {
@@ -1411,6 +1659,7 @@ fn busy(spans: &mut [(TimelineId, TimeRange)]) -> Duration {
 fn outcome(
     raw: &FramePacing,
     before: Option<&FramePacing>,
+    opportunities: Option<&StreamOpportunities>,
     tolerance: Duration,
 ) -> (Outcome, Option<Why>) {
     if let Some(reason) = raw.dropped {
@@ -1439,6 +1688,15 @@ fn outcome(
         .gpu
         .and_then(|gpu| gpu.end().checked_sub(target))
         .filter(|by| !by.is_zero());
+    // Whole refreshes late, or between them: the refresh interval the
+    // platform stated when the frame was to be shown.
+    let whole_refreshes = opportunities
+        .and_then(|stream| stream.stated_interval_at(target))
+        .map(|interval| {
+            let off = (presented - target).as_nanos() % interval.as_nanos();
+            let tolerance = tolerance.as_nanos();
+            off <= tolerance || interval.as_nanos() - off <= tolerance
+        });
     let (cause, support) = if submitted_late.is_some() {
         (LateCause::MissedDeadline, Support::Observed)
     } else if raw.began.opportunity_late.is_some() {
@@ -1449,6 +1707,8 @@ fn outcome(
         (LateCause::Backlog, Support::Inferred)
     } else if gpu_late.is_some() {
         (LateCause::Gpu, Support::Observed)
+    } else if whole_refreshes == Some(false) {
+        (LateCause::Mispredicted, Support::Inferred)
     } else if !submitted_in_time {
         (LateCause::Unknown, Support::Unresolved)
     } else if raw.gpu.is_some() {
@@ -1483,6 +1743,7 @@ fn outcome(
         gpu_late,
         gpu_recorded: raw.gpu.is_some(),
         behind_previous,
+        whole_refreshes,
         presented: presented_basis,
     };
     let late = Outcome::Late {

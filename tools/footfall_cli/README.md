@@ -121,9 +121,11 @@ The document holds:
   and `unplaced`, and their `intervals`), `begin_lateness`,
   `deadlines` (how many frames were submitted by their deadlines, `met`,
   and after, `missed`), `presentation_basis`, `intervals` (with `breaks`
-  and `stutters`, and the same, with `opportunities` and
+  and `stutters`, and the same, with `cadence`, `opportunities`, and
   `skipped_opportunities`, for each frame stream in `streams`, since
-  windows can run at different rates), `lateness`, `latency`,
+  windows can run at different rates), `cadence` (how many frames were
+  `judged`, `steady`, `late_but_steady`, `stalled`, and `hurried`, and the
+  `hitches`), `lateness`, `latency`,
   `prediction_error` for the `predicted`, `target`, and `expected` times,
   `wasted`, and `unplaced_points`: the figures the text report prints.
 - `frames`, every numbered frame in order: its `label` as the text report
@@ -131,7 +133,11 @@ The document holds:
   sequence of its begin marker, when it has one; `outcome` (`on_time`,
   `early`, `late`, `dropped`, `submitted_late`, or `unknown`) with `by_ns`
   and whether it was `missed` (a dropped frame whose reason is not a miss,
-  such as `superseded`, is not); `why`, for a late frame; whether its
+  such as `superseded`, is not); `why`, for a late frame, with its
+  `cause`, the `party` it points at, its `support`, and whether it was
+  shown `whole_refreshes` late; its `cadence` (`kind`, `steady`,
+  `stalled`, or `hurried`, and `by_ns`) against the frame shown before it,
+  when known; whether its
   work `met_deadline`, by its `submitted` point or else the end of its
   `work`, and `submitted_late_ns`, how long after; what it `begins_at`
   (`time` or `opportunity`), whether its begin was judged

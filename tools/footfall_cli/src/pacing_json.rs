@@ -11,8 +11,8 @@ use core::fmt::Debug;
 use std::path::Path;
 
 use footfall::analysis::{
-    BasisCounts, DurationStats, FramePacing, LateCauseCounts, Outcome, Pacing, PredictionError,
-    SupportCounts, Trace, Why,
+    BasisCounts, Cadence, CadenceCounts, DurationStats, FramePacing, LateCauseCounts, Outcome,
+    Pacing, PredictionError, SupportCounts, Trace, Why,
 };
 use footfall::session::OwnedLabelValue;
 use footfall::{BeginsAt, FramePointKind, TimingBasis};
@@ -104,6 +104,7 @@ pub(crate) fn document(path: &Path, trace: &Trace, pacing: &Pacing) -> Json {
                                         "skipped_opportunities",
                                         Json::from(one.opportunities().skipped),
                                     ),
+                                    ("cadence", cadence_counts(one.cadence())),
                                 ])
                             })
                             .collect(),
@@ -111,6 +112,7 @@ pub(crate) fn document(path: &Path, trace: &Trace, pacing: &Pacing) -> Json {
                 ),
             ]),
         ),
+        ("cadence", cadence_counts(pacing.cadence())),
         ("opportunities", {
             let opportunities = pacing.opportunities();
             Json::object([
@@ -199,6 +201,7 @@ fn frame(frame: &FramePacing) -> Json {
         ("by_ns", Json::nanos_or_null(by)),
         ("missed", Json::from(outcome.missed())),
         ("why", frame.why().map_or(Json::Null, why)),
+        ("cadence", frame.cadence().map_or(Json::Null, cadence)),
         ("met_deadline", Json::from(frame.met_deadline())),
         (
             "submitted_late_ns",
@@ -258,6 +261,7 @@ fn point(frame: &FramePacing, kind: FramePointKind, value: Json) -> Json {
 fn why(why: &Why) -> Json {
     Json::object([
         ("cause", Json::from(snake(why.cause))),
+        ("party", Json::from(snake(why.cause.party()))),
         ("support", Json::from(snake(why.support))),
         ("submitted_late_ns", Json::nanos_or_null(why.submitted_late)),
         (
@@ -271,6 +275,7 @@ fn why(why: &Why) -> Json {
         ("gpu_late_ns", Json::nanos_or_null(why.gpu_late)),
         ("gpu_recorded", Json::from(why.gpu_recorded)),
         ("behind_previous", Json::from(why.behind_previous)),
+        ("whole_refreshes", Json::from(why.whole_refreshes)),
         ("presented_basis", Json::from(basis(why.presented))),
     ])
 }
@@ -285,9 +290,33 @@ fn late_causes(causes: LateCauseCounts) -> Json {
         ("began_late", Json::from(causes.began_late)),
         ("backlog", Json::from(causes.backlog)),
         ("gpu", Json::from(causes.gpu)),
+        ("mispredicted", Json::from(causes.mispredicted)),
         ("display", Json::from(causes.display)),
         ("after_submit", Json::from(causes.after_submit)),
         ("unknown", Json::from(causes.unknown)),
+    ])
+}
+
+fn cadence(cadence: Cadence) -> Json {
+    let (kind, by) = match cadence {
+        Cadence::Stalled { by } => ("stalled", Some(by)),
+        Cadence::Hurried { by } => ("hurried", Some(by)),
+        _ => ("steady", None),
+    };
+    Json::object([
+        ("kind", Json::from(kind)),
+        ("by_ns", Json::nanos_or_null(by)),
+    ])
+}
+
+fn cadence_counts(counts: CadenceCounts) -> Json {
+    Json::object([
+        ("judged", Json::from(counts.judged())),
+        ("steady", Json::from(counts.steady)),
+        ("late_but_steady", Json::from(counts.late_but_steady)),
+        ("stalled", Json::from(counts.stalled)),
+        ("hurried", Json::from(counts.hurried)),
+        ("hitches", Json::from(counts.hitches())),
     ])
 }
 
@@ -445,6 +474,11 @@ mod tests {
             r#""stutters":0,"opportunities":3,"skipped_opportunities":0"#,
             r#""begins_at":"opportunity","begin_judged":false"#,
             r#""scheduled":{"at_ns":"#,
+            r#""mispredicted":1"#,
+            r#""cause":"mispredicted","party":"platform","support":"inferred""#,
+            r#""whole_refreshes":false"#,
+            r#""cadence":{"judged":1,"steady":0,"late_but_steady":0,"stalled":1,"hurried":0,"hitches":1}"#,
+            r#""cadence":{"kind":"stalled","by_ns":8000000}"#,
         ] {
             assert!(text.contains(expected), "{expected} missing from {text}");
         }

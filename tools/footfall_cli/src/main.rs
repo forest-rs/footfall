@@ -631,6 +631,10 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> 
             (causes.began_late, "began later than they could have"),
             (causes.backlog, "queued behind a late frame"),
             (causes.gpu, "GPU finished after the target"),
+            (
+                causes.mispredicted,
+                "shown between refreshes: their targets were mispredicted",
+            ),
             (causes.display, "held by the display"),
             (
                 causes.after_submit,
@@ -673,6 +677,25 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> 
             format::duration(intervals.median()),
             format::duration(intervals.p99()),
             one.stutters(),
+        );
+    }
+    // Smoothness, apart from latency: each frame held to its own target's
+    // spacing from the frame shown before it.
+    let cadence = pacing.cadence();
+    if cadence.judged() > 0 {
+        let style = if cadence.hitches() == 0 { GOOD } else { BAD };
+        let steady_late = match cadence.late_but_steady {
+            0 => String::new(),
+            n => format!(
+                " {DIM}({} of them late by a steady amount: latency, not hitches){DIM:#}",
+                format::count(n)
+            ),
+        };
+        println!(
+            "  cadence: {GOOD}{} steady{GOOD:#}{steady_late} · {style}{} stalled · {} hurried{style:#} {DIM}(each frame against its target's spacing from the one shown before){DIM:#}",
+            format::count(cadence.steady),
+            format::count(cadence.stalled),
+            format::count(cadence.hurried),
         );
     }
     // What the platform offered each stream, and when frames began.
@@ -794,6 +817,7 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> 
                     LateCause::BeganLate => "began late",
                     LateCause::Backlog => "backlog",
                     LateCause::Gpu => "GPU",
+                    LateCause::Mispredicted => "mispredicted",
                     LateCause::Display => "display",
                     LateCause::AfterSubmit => "after submit",
                     _ => "-",
@@ -885,6 +909,9 @@ fn also(why: &Why) -> String {
     }
     if why.cause != LateCause::Backlog && why.behind_previous {
         also.push(String::from("queued"));
+    }
+    if why.cause != LateCause::Mispredicted && why.whole_refreshes == Some(false) {
+        also.push(String::from("between refreshes"));
     }
     if why.submit_reported && why.submitted == TimingBasis::Estimated {
         also.push(String::from("submitted ~est."));
