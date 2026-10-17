@@ -14,6 +14,8 @@
 //! - `fanout`: `footfall_fanout` over the runtime and the core no-op backend
 //! - `capture`: `footfall_runtime` holding only a seeded capture, for
 //!   snapshot and export cost
+//! - `pacing`: analysis of exact frame schedules, without a global backend,
+//!   with and without stated refresh intervals
 //!
 //! Run them with `cargo bench -p footfall_benchmarks`.
 

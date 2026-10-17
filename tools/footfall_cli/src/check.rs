@@ -123,13 +123,14 @@ fn ratio(have: u64, of: u64, one: &str, more: &str) -> String {
 }
 
 /// The ids of every item, in the order `check` reports them.
-pub(crate) const IDS: [&str; 13] = [
+pub(crate) const IDS: [&str; 14] = [
     "frames",
     "numbered",
     "scheduled",
     "opportunities",
     "deadlines",
     "submissions",
+    "buffers",
     "presentations",
     "bases",
     "clocks",
@@ -227,6 +228,14 @@ pub(crate) fn check(trace: &Trace, read: Read) -> Vec<Item> {
         "have submission times",
         "submitted-late frames, and telling a late submit from a late display",
         "record FramePointKind::Submitted when the frame is handed to the compositor or swapchain",
+    ));
+    items.push(point_item(
+        "buffers",
+        no_numbers,
+        coverage(&pacing, could_submit, |frame| frame.buffer_wait().is_some()),
+        "say how long they waited for a buffer",
+        "the waited-for-a-buffer cause, which blames frames queued ahead rather than the frame's work, and how long frames were blocked",
+        "record FramePointKind::BufferRequested before nextDrawable, dequeueBuffer, or vkAcquireNextImageKHR, and FramePointKind::BufferAcquired when it returns",
     ));
     let presentations = coverage(&pacing, any, |frame| {
         frame.presented().is_some() || frame.dropped().is_some()

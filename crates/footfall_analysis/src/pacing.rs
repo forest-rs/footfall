@@ -1732,14 +1732,28 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
         gaps,
         opportunities,
     };
+    // Frames are ordered by stream. Resolve its fallback interval at most
+    // once, and only if a frame's severity actually needs one.
+    let mut fallback_refresh: Option<(FrameStream, Option<Duration>)> = None;
     let severities: Vec<Option<Severity>> = pacing
         .frames
         .iter()
         .map(|frame| {
-            let refresh = pacing
-                .refresh_at(frame)
-                .or_else(|| pacing.refresh_interval(frame.number.stream()));
-            severity(frame, refresh, tolerance)
+            severity(
+                frame,
+                || {
+                    pacing.refresh_at(frame).or_else(|| {
+                        let stream = frame.number.stream();
+                        if fallback_refresh.is_some_and(|(of, _)| of != stream) {
+                            fallback_refresh = None;
+                        }
+                        fallback_refresh
+                            .get_or_insert_with(|| (stream, pacing.refresh_interval(stream)))
+                            .1
+                    })
+                },
+                tolerance,
+            )
         })
         .collect();
     for (frame, severity) in pacing.frames.iter_mut().zip(severities) {
@@ -1752,7 +1766,7 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
 /// it was shown at; see [`Severity`].
 fn severity(
     frame: &FramePacing,
-    refresh: Option<Duration>,
+    refresh: impl FnOnce() -> Option<Duration>,
     tolerance: Duration,
 ) -> Option<Severity> {
     let off = match frame.outcome {
@@ -1765,7 +1779,7 @@ fn severity(
         },
         _ => return None,
     };
-    let refresh = refresh?;
+    let refresh = refresh()?;
     // Times jitter, so a frame a whole refresh off can measure a little
     // short of one.
     Some(if off.saturating_add(tolerance) < refresh {
