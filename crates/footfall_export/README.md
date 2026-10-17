@@ -14,6 +14,10 @@ its deadline and target, stacked on as many lanes as frames in flight at
 once, and how long each shown frame stayed on screen. Every event of a frame,
 including its numbered markers and GPU work, carries the frame as its
 correlation id, so Perfetto colors one frame alike wherever it appears.
+Each judged frame is also written as Android's frame timeline writes it, so
+Perfetto draws an expected and an actual timeline for the process, colors
+each frame by `footfall_analysis`'s verdict, and its frame and jank queries
+work on the trace.
 
 `to_chrome_trace_json` writes Chrome Trace Event JSON, which more tools read.
 Perfetto reads its times as doubles, which at wall-clock times keep about a

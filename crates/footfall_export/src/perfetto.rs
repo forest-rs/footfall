@@ -12,6 +12,9 @@
 
 use std::collections::BTreeMap;
 
+use core::time::Duration;
+
+use footfall_analysis::{Cadence, FramePacing, LateCause, Outcome, Trace};
 use footfall_core::{FlowPhase, FrameNumber, FrameStream, Unit};
 use footfall_session::{
     Clocks, OwnedArgEntry, OwnedContextEntry, OwnedLabelValue, OwnedObservation, OwnedSnapshot,
@@ -75,6 +78,45 @@ const ANNOTATION_DOUBLE: u32 = 5;
 const ANNOTATION_STRING: u32 = 6;
 const ANNOTATION_NAME: u32 = 10;
 const ANNOTATION_DICT_ENTRIES: u32 = 11;
+// Android's FrameTimelineEvent, which Perfetto reads into its expected and
+// actual frame timelines.
+const PACKET_FRAME_TIMELINE_EVENT: u32 = 76;
+const TIMELINE_EXPECTED_SURFACE_FRAME_START: u32 = 3;
+const TIMELINE_ACTUAL_SURFACE_FRAME_START: u32 = 4;
+const TIMELINE_FRAME_END: u32 = 5;
+const SURFACE_COOKIE: u32 = 1;
+const SURFACE_TOKEN: u32 = 2;
+const SURFACE_DISPLAY_FRAME_TOKEN: u32 = 3;
+const SURFACE_PID: u32 = 4;
+const SURFACE_LAYER_NAME: u32 = 5;
+const SURFACE_PRESENT_TYPE: u32 = 6;
+const SURFACE_ON_TIME_FINISH: u32 = 7;
+const SURFACE_GPU_COMPOSITION: u32 = 8;
+const SURFACE_JANK_TYPE: u32 = 9;
+const SURFACE_PREDICTION_TYPE: u32 = 10;
+const SURFACE_IS_BUFFER: u32 = 11;
+const SURFACE_JANK_SEVERITY_TYPE: u32 = 12;
+const SURFACE_PRESENT_DELAY_MILLIS: u32 = 13;
+const FRAME_END_COOKIE: u32 = 1;
+const PRESENT_ON_TIME: u64 = 1;
+const PRESENT_LATE: u64 = 2;
+const PRESENT_EARLY: u64 = 3;
+const PRESENT_DROPPED: u64 = 4;
+const PRESENT_UNKNOWN: u64 = 5;
+const PREDICTION_VALID: u64 = 1;
+const PREDICTION_UNKNOWN: u64 = 3;
+const SEVERITY_UNKNOWN: u64 = 0;
+const SEVERITY_NONE: u64 = 1;
+const SEVERITY_PARTIAL: u64 = 2;
+const SEVERITY_FULL: u64 = 3;
+const JANK_UNSPECIFIED: u64 = 0;
+const JANK_NONE: u64 = 1;
+const JANK_SF_SCHEDULING: u64 = 2;
+const JANK_PREDICTION_ERROR: u64 = 4;
+const JANK_DISPLAY_HAL: u64 = 8;
+const JANK_APP_DEADLINE_MISSED: u64 = 64;
+const JANK_BUFFER_STUFFING: u64 = 128;
+const JANK_DROPPED: u64 = 1024;
 
 /// A protobuf message being written.
 #[derive(Default)]
@@ -123,6 +165,12 @@ impl Message {
 
     fn string(&mut self, field: u32, value: &str) -> &mut Self {
         self.bytes(field, value.as_bytes())
+    }
+
+    fn float(&mut self, field: u32, value: f32) -> &mut Self {
+        self.key(field, 5);
+        self.0.extend_from_slice(&value.to_le_bytes());
+        self
     }
 
     fn message(&mut self, field: u32, message: &Self) -> &mut Self {
@@ -459,6 +507,28 @@ impl<'a> Writer<'a> {
         self.packet(&mut packet);
     }
 
+    /// Writes a frame timeline event of `kind` at `at`, a time since the
+    /// runtime started.
+    fn timeline_event(&mut self, at: Duration, kind: u32, event: &Message) {
+        let mut timeline = Message::default();
+        timeline.message(kind, event);
+        let mut packet = Message::default();
+        packet
+            .varint(
+                PACKET_TIMESTAMP,
+                wall_nanos(self.snapshot, duration_nanos(at)),
+            )
+            .message(PACKET_FRAME_TIMELINE_EVENT, &timeline);
+        self.packet(&mut packet);
+    }
+
+    /// Ends the frame timeline slice that `cookie` began, at `at`.
+    fn timeline_end(&mut self, at: Duration, cookie: i64) {
+        let mut end = Message::default();
+        end.int(FRAME_END_COOKIE, cookie);
+        self.timeline_event(at, TIMELINE_FRAME_END, &end);
+    }
+
     fn counter_value(&mut self, at: u64, track: u64, unit: Unit, value: u64) {
         let mut event = Event::new(TYPE_COUNTER, track);
         event.counter = Some(if unit == Unit::Ratio {
@@ -486,6 +556,10 @@ fn frame_correlation(frame: FrameNumber) -> String {
 }
 
 /// The process id as Perfetto's `int32`.
+fn duration_nanos(at: Duration) -> u64 {
+    u64::try_from(at.as_nanos()).unwrap_or(u64::MAX)
+}
+
 fn trace_pid_i32(snapshot: &OwnedSnapshot) -> i32 {
     i32::try_from(trace_pid(snapshot)).unwrap_or(i32::MAX)
 }
@@ -506,9 +580,25 @@ fn trace_pid_i32(snapshot: &OwnedSnapshot) -> i32 {
 /// screen. Every event of a frame, on those tracks, its numbered markers, and
 /// its GPU work, carries the frame as its correlation id, which Perfetto
 /// colors alike, so one frame is one color wherever it appears; by name it
-/// would color every frame alike, as it ignores numbers. The capture's
-/// metadata and contexts are instants on a `footfall` track. Times keep
-/// their nanoseconds.
+/// would color every frame alike, as it ignores numbers.
+///
+/// Each judged frame is also written as Android's frame timeline writes it,
+/// so Perfetto draws the process's `Expected Timeline` and `Actual
+/// Timeline`, with a track for each frame stream, colors each frame by its
+/// verdict, and fills its frame timeline tables. A frame's expected slice
+/// runs from when it was to begin to its deadline, and its actual slice from
+/// when it began to when it was submitted. The verdicts are
+/// `footfall_analysis`'s, within 1 ms, in Android's terms: a frame late as
+/// steadily as the one before, or queued behind a late one, is `Buffer
+/// Stuffing`, latency and not jank; one late through its own work is `App
+/// Deadline Missed`; one the platform made late is `SurfaceFlinger
+/// Scheduling` (a skipped opportunity), `Prediction Error` (a mispredicted
+/// target, or shown early), or `Display HAL` (held after it was submitted in
+/// time); a dropped frame is `Dropped Frame`; and one whose cause is not
+/// known is `Unspecified`.
+///
+/// The capture's metadata and contexts are instants on a `footfall` track.
+/// Times keep their nanoseconds.
 #[must_use]
 pub fn to_perfetto_trace(snapshot: &OwnedSnapshot) -> Vec<u8> {
     let mut writer = Writer::new(snapshot);
@@ -852,7 +942,190 @@ pub fn to_perfetto_trace(snapshot: &OwnedSnapshot) -> Vec<u8> {
             writer.counter_value(captured, track, Unit::Count, value);
         }
     }
+    frame_timeline(&mut writer);
     writer.trace.0
+}
+
+/// How far from its target a frame can be shown and still be on time, in
+/// the frame timeline: the default of `footfall analyze pacing`.
+const FRAME_TIMELINE_TOLERANCE: Duration = Duration::from_millis(1);
+
+/// Writes each judged frame as Android's frame timeline does, so Perfetto
+/// draws an `Expected Timeline` and an `Actual Timeline` for the process,
+/// with a track for each frame stream, colors each frame by its verdict,
+/// and fills its `expected_frame_timeline_slice` and
+/// `actual_frame_timeline_slice` tables.
+///
+/// A frame's expected slice runs from when it was to begin to its deadline,
+/// and its actual slice from when it began to when it was submitted. The
+/// verdict is `footfall_analysis`'s, in Android's terms: see
+/// [`timeline_verdict`].
+fn frame_timeline(writer: &mut Writer<'_>) {
+    let snapshot = writer.snapshot;
+    let trace = Trace::from_snapshot(snapshot);
+    let pacing = trace.pacing(FRAME_TIMELINE_TOLERANCE);
+    let pid = i64::from(trace_pid_i32(snapshot));
+    let mut cookie = 0_i64;
+    let mut before: Option<&FramePacing> = None;
+    for frame in pacing.frames() {
+        let number = frame.number();
+        // The frame before in the same stream, for the spacing it was meant
+        // to keep.
+        let previous_target = before
+            .filter(|before| before.number().stream() == number.stream())
+            .and_then(FramePacing::target);
+        before = Some(frame);
+        let token = timeline_token(number);
+        let layer = format!("stream {}", number.stream());
+        let surface = |cookie: i64| {
+            let mut surface = Message::default();
+            surface
+                .int(SURFACE_COOKIE, cookie)
+                .int(SURFACE_TOKEN, token)
+                .int(SURFACE_DISPLAY_FRAME_TOKEN, 0)
+                .int(SURFACE_PID, pid)
+                .string(SURFACE_LAYER_NAME, &layer);
+            surface
+        };
+        let begun = frame.work().map(|work| work.start());
+        if let Some(deadline) = frame.deadline()
+            && let Some(start) = frame.scheduled().or(begun)
+            && start <= deadline
+        {
+            cookie += 1;
+            let expected = surface(cookie);
+            writer.timeline_event(start, TIMELINE_EXPECTED_SURFACE_FRAME_START, &expected);
+            writer.timeline_end(deadline, cookie);
+        }
+        let Some(work) = frame.work() else {
+            continue;
+        };
+        let end = frame.submitted().unwrap_or(work.end()).max(work.start());
+        let verdict = timeline_verdict(frame, previous_target);
+        cookie += 1;
+        let mut actual = surface(cookie);
+        actual
+            .varint(SURFACE_PRESENT_TYPE, verdict.present)
+            .varint(
+                SURFACE_ON_TIME_FINISH,
+                u64::from(frame.met_deadline() == Some(true)),
+            )
+            .varint(SURFACE_GPU_COMPOSITION, 0)
+            .varint(SURFACE_JANK_TYPE, verdict.jank)
+            .varint(
+                SURFACE_PREDICTION_TYPE,
+                if frame.target().is_some() {
+                    PREDICTION_VALID
+                } else {
+                    PREDICTION_UNKNOWN
+                },
+            )
+            .varint(SURFACE_IS_BUFFER, 1)
+            .varint(SURFACE_JANK_SEVERITY_TYPE, verdict.severity)
+            .float(SURFACE_PRESENT_DELAY_MILLIS, verdict.delay_millis);
+        writer.timeline_event(work.start(), TIMELINE_ACTUAL_SURFACE_FRAME_START, &actual);
+        writer.timeline_end(end, cookie);
+    }
+}
+
+/// A frame's token in the frame timeline: its number, for the default
+/// stream, so the slices are named by it.
+///
+/// The token is a positive 63-bit integer: the number's low 32 bits, the
+/// stream's generation's low 8 bits above them, and its id in the 23 bits
+/// above those. An id of 2^23 or more, such as a window handle, is
+/// folded into those bits rather than spilling into the sign bit, so its
+/// frames keep tokens of their own, though two such streams can share them.
+fn timeline_token(number: FrameNumber) -> i64 {
+    const ID_BITS: u32 = 23;
+    let stream = number.stream();
+    let id = u64::from(stream.id());
+    let id = (id ^ (id >> ID_BITS)) & ((1 << ID_BITS) - 1);
+    let token = (id << 40)
+        | (u64::from(stream.generation() & 0xff) << 32)
+        | (number.number() & 0xffff_ffff);
+    i64::try_from(token).expect("a token has 63 bits")
+}
+
+/// A frame's verdict in Android's frame timeline terms.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TimelineVerdict {
+    present: u64,
+    jank: u64,
+    severity: u64,
+    delay_millis: f32,
+}
+
+/// Puts a frame's pacing in Android's frame timeline terms, which Perfetto
+/// colors by: a late frame whose cadence held steady is `Buffer Stuffing`,
+/// latency and not jank, as is one queued behind a late frame; a frame late
+/// through its own work is `App Deadline Missed`, the program's jank; one
+/// the platform made late is `SurfaceFlinger Scheduling` (a skipped
+/// opportunity), `Prediction Error` (a mispredicted target, or shown early),
+/// or `Display HAL` (held after it was submitted in time), the platform's;
+/// a dropped frame is `Dropped Frame`; and a frame whose cause is not known
+/// is `Unspecified` rather than anyone's jank.
+///
+/// Severity is partial for a frame late by less than its targets' spacing,
+/// and full otherwise.
+fn timeline_verdict(frame: &FramePacing, previous_target: Option<Duration>) -> TimelineVerdict {
+    let spacing = frame
+        .target()
+        .zip(previous_target)
+        .and_then(|(target, previous)| target.checked_sub(previous))
+        .filter(|spacing| !spacing.is_zero());
+    let severity = |by: Duration| match spacing {
+        Some(spacing) if by < spacing => SEVERITY_PARTIAL,
+        Some(_) => SEVERITY_FULL,
+        None => SEVERITY_UNKNOWN,
+    };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Android's frame timeline holds the delay as a float of milliseconds"
+    )]
+    let millis = |by: Duration| (by.as_secs_f64() * 1000.0) as f32;
+    let (present, jank, severity, delay_millis) = match frame.outcome() {
+        Outcome::OnTime => (PRESENT_ON_TIME, JANK_NONE, SEVERITY_NONE, 0.0),
+        Outcome::Early { by } => (
+            PRESENT_EARLY,
+            JANK_PREDICTION_ERROR,
+            severity(by),
+            -millis(by),
+        ),
+        Outcome::Late { by, .. } if frame.cadence() == Some(Cadence::Steady) => (
+            PRESENT_LATE,
+            JANK_BUFFER_STUFFING,
+            SEVERITY_NONE,
+            millis(by),
+        ),
+        Outcome::Late { by, cause } => {
+            let jank = match cause {
+                LateCause::MissedDeadline | LateCause::BeganLate | LateCause::Gpu => {
+                    JANK_APP_DEADLINE_MISSED
+                }
+                LateCause::SkippedOpportunity => JANK_SF_SCHEDULING,
+                LateCause::Backlog => JANK_BUFFER_STUFFING,
+                LateCause::Mispredicted => JANK_PREDICTION_ERROR,
+                LateCause::Display | LateCause::AfterSubmit => JANK_DISPLAY_HAL,
+                _ => JANK_UNSPECIFIED,
+            };
+            (PRESENT_LATE, jank, severity(by), millis(by))
+        }
+        Outcome::Dropped { .. } => (PRESENT_DROPPED, JANK_DROPPED, SEVERITY_UNKNOWN, 0.0),
+        Outcome::SubmittedLate { .. } => (
+            PRESENT_UNKNOWN,
+            JANK_APP_DEADLINE_MISSED,
+            SEVERITY_UNKNOWN,
+            0.0,
+        ),
+        _ => (PRESENT_UNKNOWN, JANK_UNSPECIFIED, SEVERITY_UNKNOWN, 0.0),
+    };
+    TimelineVerdict {
+        present,
+        jank,
+        severity,
+        delay_millis,
+    }
 }
 
 /// Writes the capture's metadata and its contexts as instants on the
@@ -1087,6 +1360,7 @@ mod tests {
     enum Value<'a> {
         Varint(u64),
         Fixed64(u64),
+        Fixed32(u32),
         Bytes(&'a [u8]),
     }
 
@@ -1122,6 +1396,11 @@ mod tests {
                     bytes = rest;
                     Value::Bytes(value)
                 }
+                5 => {
+                    let (value, rest) = bytes.split_at(4);
+                    bytes = rest;
+                    Value::Fixed32(u32::from_le_bytes(value.try_into().expect("4 bytes")))
+                }
                 wire => panic!("unexpected wire type {wire}"),
             };
             fields.push((field, value));
@@ -1154,6 +1433,15 @@ mod tests {
             .iter()
             .find_map(|(number, value)| match (number, value) {
                 (number, Value::Bytes(value)) if *number == field => Some(self::fields(value)),
+                _ => None,
+            })
+    }
+
+    fn float(fields: &[(u32, Value<'_>)], field: u32) -> Option<f32> {
+        fields
+            .iter()
+            .find_map(|(number, value)| match (number, value) {
+                (number, Value::Fixed32(value)) if *number == field => Some(f32::from_bits(*value)),
                 _ => None,
             })
     }
@@ -1426,6 +1714,138 @@ mod tests {
                 .all(|event| event.track != lanes[0].uuid),
             "only frame 2's events carry its id"
         );
+    }
+
+    #[test]
+    fn frames_carry_their_verdicts_on_the_frame_timeline() {
+        use footfall_core::DropReason;
+        use footfall_core::MarkerPhase::{Begin, End};
+        use footfall_core::{FrameStream, MarkerKind};
+        // Times in µs.
+        let point = |number: u64, kind, at: u64| Observation::FramePoint {
+            number: FrameNumber::from(number),
+            kind,
+            time: Some(ClockTicks::from(ClockReading::new(
+                &HOST,
+                at * 1000,
+                TickPeriod::NANOSECOND,
+            ))),
+            basis: TimingBasis::Unknown,
+            args: Args::none(),
+        };
+        let marker = |number: u64, phase| Observation::FrameMarker {
+            kind: MarkerKind::Frame,
+            phase,
+            number: Some(FrameNumber::from(number)),
+            context_id: ContextId::new(0),
+        };
+        let mut observations = vec![(0, sync())];
+        // A refresh every 10 ms. Frame 1 is on time; frame 2 is shown a
+        // refresh late though built in time; frame 3 stays as late as frame
+        // 2, steadily; frame 4 misses its deadline and is shown two
+        // refreshes late; frame 5 is superseded.
+        for (number, end, deadline, presented) in [
+            (1_u64, 3_000_u64, 6_000_u64, Some(10_000_u64)),
+            (2, 13_000, 16_000, Some(30_000)),
+            (3, 23_000, 26_000, Some(40_000)),
+            (4, 38_000, 36_000, Some(60_000)),
+            (5, 43_000, 46_000, None),
+        ] {
+            let start = (number - 1) * 10_000;
+            observations.extend([
+                ((start + 1_000) * 1000, marker(number, Begin)),
+                (end * 1000, marker(number, End)),
+                (
+                    90_000_000,
+                    point(number, FramePointKind::Scheduled(BeginsAt::Time), start),
+                ),
+                (
+                    90_000_000,
+                    point(number, FramePointKind::Deadline, deadline),
+                ),
+                (
+                    90_000_000,
+                    point(number, FramePointKind::Target, start + 10_000),
+                ),
+            ]);
+            observations.push(match presented {
+                Some(at) => (90_000_000, point(number, FramePointKind::Presented, at)),
+                None => (
+                    90_000_000,
+                    Observation::FramePoint {
+                        number: FrameNumber::from(number),
+                        kind: FramePointKind::Dropped(DropReason::Superseded),
+                        time: None,
+                        basis: TimingBasis::Unknown,
+                        args: Args::none(),
+                    },
+                ),
+            });
+        }
+        let mut builder = Snapshot::builder(SnapshotMetadata::new("app"));
+        for (sequence, (at, observation)) in (0..).zip(observations) {
+            builder = builder.event(TimedObservation::new(at, sequence, 1, observation));
+        }
+        let trace = to_perfetto_trace(&builder.build().into());
+
+        // (token, present type, jank type, severity, finished on time) of
+        // each actual frame, its delay, and how many slices began and ended.
+        let (mut actual, mut delays, mut starts, mut ends) = (Vec::new(), Vec::new(), 0, 0);
+        for (_, packet) in fields(&trace) {
+            let Value::Bytes(packet) = packet else {
+                continue;
+            };
+            let Some(timeline) = nested(&fields(packet), 76) else {
+                continue;
+            };
+            if let Some(expected) = nested(&timeline, 3) {
+                starts += 1;
+                assert_eq!(text(&expected, 5), Some("stream 0"));
+            }
+            if let Some(frame) = nested(&timeline, 4) {
+                starts += 1;
+                actual.push((
+                    uint(&frame, 2).unwrap(),
+                    uint(&frame, 6).unwrap(),
+                    uint(&frame, 9).unwrap(),
+                    uint(&frame, 12).unwrap(),
+                    uint(&frame, 7).unwrap(),
+                ));
+                delays.push(float(&frame, 13).unwrap());
+            }
+            if nested(&timeline, 5).is_some() {
+                ends += 1;
+            }
+        }
+        assert_eq!(starts, 10, "an expected and an actual slice a frame");
+        assert_eq!(ends, starts, "every slice ends");
+        assert_eq!(
+            actual,
+            [
+                // On time.
+                (1, 1, 1, 1, 1),
+                // Late, held after it was submitted in time: Display HAL,
+                // full, as it was late by its targets' spacing.
+                (2, 2, 8, 3, 1),
+                // Late as steadily as frame 2: buffer stuffing, not jank.
+                (3, 2, 128, 1, 1),
+                // Its deadline missed: App Deadline Missed.
+                (4, 2, 64, 3, 0),
+                // Superseded: dropped.
+                (5, 4, 1024, 0, 1),
+            ]
+        );
+        assert_eq!(delays, [0.0, 10.0, 10.0, 20.0, 0.0], "milliseconds late");
+        assert_eq!(super::timeline_token(FrameNumber::from(7)), 7);
+        assert_eq!(
+            super::timeline_token(FrameNumber::new(FrameStream::new(2), 7)),
+            (2 << 40) | 7
+        );
+        // An id too wide for its bits is folded into them, not saturated.
+        let wide = |id| super::timeline_token(FrameNumber::new(FrameStream::new(id), 7));
+        assert!(wide(u32::MAX) > 0);
+        assert_ne!(wide(u32::MAX), wide(u32::MAX - 1));
+        assert_ne!(wide(1 << 23), i64::MAX);
     }
 
     #[test]
