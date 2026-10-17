@@ -1494,6 +1494,8 @@ fn encode_frame_point(
                 },
             );
         }
+        FramePointKind::BufferRequested => encode_u8(bytes, 9),
+        FramePointKind::BufferAcquired => encode_u8(bytes, 10),
         _ => return Err(unsupported("frame point kind")),
     }
     encode_u8(
@@ -1571,6 +1573,8 @@ fn decode_frame_point_kind(cursor: &mut Cursor<'_>) -> Result<FramePointKind> {
                 )));
             }
         })),
+        9 => Ok(FramePointKind::BufferRequested),
+        10 => Ok(FramePointKind::BufferAcquired),
         value => Err(CodecError::malformed(format!(
             "unknown frame point kind: {value}"
         ))),

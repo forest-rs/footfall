@@ -209,6 +209,15 @@ pub enum FramePointKind {
     /// whether the frame began late, and whether the program or the
     /// platform made it late.
     Scheduled(BeginsAt),
+    /// When the frame asked for a buffer to render into, such as by calling
+    /// `nextDrawable`, `dequeueBuffer`, or `vkAcquireNextImageKHR`.
+    BufferRequested,
+    /// When the frame got the buffer it asked for. The time since
+    /// [`BufferRequested`](Self::BufferRequested) is how long it waited
+    /// for one: every buffer was held by frames queued ahead of it, which is
+    /// backpressure from the presentation pipeline, not the frame's own
+    /// work.
+    BufferAcquired,
 }
 
 /// When a frame was to begin, as [`FramePointKind::Scheduled`] carries it.
