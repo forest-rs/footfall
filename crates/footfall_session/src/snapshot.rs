@@ -7,9 +7,10 @@ use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use hashbrown::{HashMap, HashSet};
 
 use footfall_core::{
-    ClockId, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, FrameNumber, FramePointKind,
-    FrameStream, LabelValue, MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId,
-    ScopeToken, SourceLocation, TickPeriod, TimelineId, TimelineKind, TimingBasis, Unit,
+    ClockId, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase, FrameKind, FrameNumber,
+    FramePointKind, FrameStream, HoldReason, LabelValue, MarkerKind, MarkerPhase, ResourceId,
+    ResourceKindId, ScopeDescId, ScopeToken, SourceLocation, TickPeriod, TimelineId, TimelineKind,
+    TimingBasis, Unit,
 };
 use footfall_runtime::{
     ClockTicks, ContextSnapshot, CounterKind, CounterSnapshot, Drops, EventCursor, EventWindow,
@@ -1105,6 +1106,28 @@ pub enum OwnedObservation {
         /// What the recorder knew at the opportunity.
         args: Vec<OwnedArgEntry>,
     },
+    /// What the frame scheduler decided for a frame beyond its times; see
+    /// `footfall_core::frame_plan`.
+    FramePlan {
+        /// The frame.
+        number: FrameNumber,
+        /// The period of the ticks the durations are in.
+        period: TickPeriod,
+        /// The ticks meant between this frame and the one before it, if
+        /// given.
+        interval: Option<u64>,
+        /// How many frames deep the pipeline was planned to be, if given.
+        depth: Option<u8>,
+        /// How many ticks later than the platform's prediction the frame
+        /// was aimed for, if given.
+        latency_allowance: Option<u64>,
+        /// How many ticks the frame was held back by, and why, if it was.
+        hold: Option<(u64, HoldReason)>,
+        /// Whether the frame was paced.
+        kind: FrameKind,
+        /// What else the scheduler knew.
+        args: Vec<OwnedArgEntry>,
+    },
 }
 
 /// Finished work on a timeline that is not a CPU thread, as
@@ -1916,6 +1939,25 @@ fn owned_observation(observation: &Observation) -> Option<OwnedObservation> {
             stream: *stream,
             time: time.into(),
             interval: *interval,
+            args: owned_args(*args),
+        },
+        Observation::FramePlan {
+            number,
+            period,
+            interval,
+            depth,
+            latency_allowance,
+            hold,
+            kind,
+            args,
+        } => OwnedObservation::FramePlan {
+            number: *number,
+            period: *period,
+            interval: *interval,
+            depth: *depth,
+            latency_allowance: *latency_allowance,
+            hold: *hold,
+            kind: *kind,
             args: owned_args(*args),
         },
         _ => return None,

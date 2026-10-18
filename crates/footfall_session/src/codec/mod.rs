@@ -23,9 +23,9 @@ use hashbrown::{HashMap, HashSet};
 
 use footfall_core::{
     BeginsAt, ClockId, ContextId, CounterDescId, DropReason, EventDescId, FlowId, FlowPhase,
-    FrameNumber, FramePointKind, FrameStream, InstrumentationLevel, MarkerKind, MarkerPhase,
-    ResourceId, ResourceKindId, ScopeDescId, ScopeToken, TickPeriod, TimelineId, TimelineKind,
-    TimingBasis, Unit,
+    FrameKind, FrameNumber, FramePointKind, FrameStream, HoldReason, InstrumentationLevel,
+    MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, TickPeriod,
+    TimelineId, TimelineKind, TimingBasis, Unit,
 };
 use footfall_runtime::CounterKind;
 
@@ -980,6 +980,29 @@ pub(crate) fn encode_borrowed_observation(
             )?;
             encode_borrowed_args(bytes, *args)?;
         }
+        footfall_runtime::Observation::FramePlan {
+            number,
+            period,
+            interval,
+            depth,
+            latency_allowance,
+            hold,
+            kind,
+            args,
+        } => {
+            encode_u8(bytes, 14);
+            encode_frame_plan(
+                bytes,
+                *number,
+                *period,
+                *interval,
+                *depth,
+                *latency_allowance,
+                *hold,
+                *kind,
+            )?;
+            encode_borrowed_args(bytes, *args)?;
+        }
         _ => return Err(unsupported("observation")),
     }
     Ok(())
@@ -1224,6 +1247,29 @@ pub(crate) fn encode_observation(
             encode_frame_opportunity(bytes, names, *stream, time, *interval)?;
             encode_args(bytes, args)?;
         }
+        OwnedObservation::FramePlan {
+            number,
+            period,
+            interval,
+            depth,
+            latency_allowance,
+            hold,
+            kind,
+            args,
+        } => {
+            encode_u8(bytes, 14);
+            encode_frame_plan(
+                bytes,
+                *number,
+                *period,
+                *interval,
+                *depth,
+                *latency_allowance,
+                *hold,
+                *kind,
+            )?;
+            encode_args(bytes, args)?;
+        }
         OwnedObservation::TimelineSpan { span } => {
             encode_u8(bytes, 11);
             encode_timeline(bytes, names, span)?;
@@ -1359,6 +1405,66 @@ pub(crate) fn decode_observation(
                 stream: FrameStream::new(id).with_generation(generation),
                 time,
                 interval,
+                args,
+            })
+        }
+        14 => {
+            let number = decode_frame(cursor)?
+                .ok_or_else(|| CodecError::malformed("a frame plan names no frame"))?;
+            let period_nanos = decode_u32(cursor)?;
+            let period_ticks = decode_u32(cursor)?;
+            if period_ticks == 0 {
+                return Err(CodecError::malformed(
+                    "a frame plan's tick period counts zero ticks",
+                ));
+            }
+            let interval = if decode_bool(cursor, "frame plan interval tag")? {
+                Some(decode_u64(cursor)?)
+            } else {
+                None
+            };
+            let depth = if decode_bool(cursor, "frame plan depth tag")? {
+                Some(decode_u8(cursor)?)
+            } else {
+                None
+            };
+            let latency_allowance = if decode_bool(cursor, "frame plan latency allowance tag")? {
+                Some(decode_u64(cursor)?)
+            } else {
+                None
+            };
+            let hold = if decode_bool(cursor, "frame plan hold tag")? {
+                let ticks = decode_u64(cursor)?;
+                let reason = match decode_u8(cursor)? {
+                    0 => HoldReason::DrainQueue,
+                    value => {
+                        return Err(CodecError::malformed(format!(
+                            "unknown frame hold reason: {value}"
+                        )));
+                    }
+                };
+                Some((ticks, reason))
+            } else {
+                None
+            };
+            let kind = match decode_u8(cursor)? {
+                0 => FrameKind::Paced,
+                1 => FrameKind::Synchronous,
+                value => {
+                    return Err(CodecError::malformed(format!(
+                        "unknown frame kind: {value}"
+                    )));
+                }
+            };
+            let args = decode_args(cursor)?;
+            Ok(OwnedObservation::FramePlan {
+                number,
+                period: TickPeriod::new(period_nanos, period_ticks),
+                interval,
+                depth,
+                latency_allowance,
+                hold,
+                kind,
                 args,
             })
         }
@@ -1538,6 +1644,73 @@ fn encode_frame_opportunity(
         }
     }
     Ok(())
+}
+
+/// Writes a frame plan up to its args: the frame, the tick period as
+/// nanoseconds per ticks, a presence tag followed by the value for each of
+/// the interval, depth, latency allowance, and hold (its ticks, then its
+/// reason), then the frame's kind.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one argument for each part of the plan, shared by both encoders"
+)]
+fn encode_frame_plan(
+    bytes: &mut Vec<u8>,
+    number: FrameNumber,
+    period: TickPeriod,
+    interval: Option<u64>,
+    depth: Option<u8>,
+    latency_allowance: Option<u64>,
+    hold: Option<(u64, HoldReason)>,
+    kind: FrameKind,
+) -> Result<()> {
+    encode_frame(bytes, Some(number))?;
+    encode_u32(bytes, period.nanos());
+    encode_u32(bytes, period.ticks());
+    encode_optional_u64(bytes, interval);
+    match depth {
+        None => encode_u8(bytes, 0),
+        Some(depth) => {
+            encode_u8(bytes, 1);
+            encode_u8(bytes, depth);
+        }
+    }
+    encode_optional_u64(bytes, latency_allowance);
+    match hold {
+        None => encode_u8(bytes, 0),
+        Some((ticks, reason)) => {
+            encode_u8(bytes, 1);
+            encode_u64(bytes, ticks);
+            encode_u8(
+                bytes,
+                match reason {
+                    HoldReason::DrainQueue => 0,
+                    _ => return Err(unsupported("frame hold reason")),
+                },
+            );
+        }
+    }
+    encode_u8(
+        bytes,
+        match kind {
+            FrameKind::Paced => 0,
+            FrameKind::Synchronous => 1,
+            _ => return Err(unsupported("frame kind")),
+        },
+    );
+    Ok(())
+}
+
+/// Writes a presence tag, `0` for none or `1`, followed by the value when
+/// there is one.
+fn encode_optional_u64(bytes: &mut Vec<u8>, value: Option<u64>) {
+    match value {
+        None => encode_u8(bytes, 0),
+        Some(value) => {
+            encode_u8(bytes, 1);
+            encode_u64(bytes, value);
+        }
+    }
 }
 
 fn decode_frame_point_kind(cursor: &mut Cursor<'_>) -> Result<FramePointKind> {

@@ -11,9 +11,9 @@ use alloc::{boxed::Box, string::String, vec::Vec};
 use crate::{MESSAGE_TEXT_MAX_BYTES, Runtime, RuntimeBuilder, current_thread_id};
 use footfall_core::{
     Args, ClockId, ClockReading, Context, ContextId, CounterDescId, EventDescId, FlowId, FlowPhase,
-    FrameNumber, FramePointKind, FrameStream, InstrumentationLevel, MarkerKind, MarkerPhase,
-    ResourceId, ResourceKindId, ScopeDescId, ScopeToken, SourceLocation, TickPeriod, TimelineId,
-    TimelineKind, TimelineSpan, TimingBasis, Unit,
+    FrameKind, FrameNumber, FramePointKind, FrameStream, HoldReason, InstrumentationLevel,
+    MarkerKind, MarkerPhase, ResourceId, ResourceKindId, ScopeDescId, ScopeToken, SourceLocation,
+    TickPeriod, TimelineId, TimelineKind, TimelineSpan, TimingBasis, Unit,
 };
 #[cfg(doc)]
 use footfall_core::{Backend, ContextHandle};
@@ -1280,6 +1280,28 @@ pub enum Observation {
         /// What the recorder knew at the opportunity.
         args: Args,
     },
+    /// What the frame scheduler decided for a frame beyond its times; see
+    /// [`footfall_core::frame_plan`].
+    FramePlan {
+        /// The frame.
+        number: FrameNumber,
+        /// The period of the ticks the durations are in.
+        period: TickPeriod,
+        /// The ticks meant between this frame and the one before it, if
+        /// given.
+        interval: Option<u64>,
+        /// How many frames deep the pipeline was planned to be, if given.
+        depth: Option<u8>,
+        /// How many ticks later than the platform's prediction the frame
+        /// was aimed for, if given.
+        latency_allowance: Option<u64>,
+        /// How many ticks the frame was held back by, and why, if it was.
+        hold: Option<(u64, HoldReason)>,
+        /// Whether the frame was paced.
+        kind: FrameKind,
+        /// What else the scheduler knew.
+        args: Args,
+    },
 }
 
 /// Finished work on a timeline that is not a CPU thread, as
@@ -1479,7 +1501,8 @@ impl Observation {
             | Self::ClockSync { .. }
             | Self::ClockPair { .. }
             | Self::FramePoint { .. }
-            | Self::FrameOpportunity { .. } => None,
+            | Self::FrameOpportunity { .. }
+            | Self::FramePlan { .. } => None,
         }
     }
 
@@ -1499,7 +1522,8 @@ impl Observation {
             | Self::ClockSync { .. }
             | Self::ClockPair { .. }
             | Self::FramePoint { .. }
-            | Self::FrameOpportunity { .. } => None,
+            | Self::FrameOpportunity { .. }
+            | Self::FramePlan { .. } => None,
         }
     }
 }

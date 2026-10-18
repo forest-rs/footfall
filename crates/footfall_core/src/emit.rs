@@ -7,7 +7,7 @@ use crate::InstrumentationLevel;
 use crate::max_level;
 use crate::{
     Args, ClockReading, Context, ContextHandle, CounterDesc, EventDesc, FlowId, FrameNumber,
-    FrameOpportunity, FramePoint, ResourceId, ResourceKindDesc, ScopeDesc, TimelineSpan,
+    FrameOpportunity, FramePlan, FramePoint, ResourceId, ResourceKindDesc, ScopeDesc, TimelineSpan,
 };
 #[cfg(feature = "std")]
 use std::sync::OnceLock;
@@ -341,6 +341,12 @@ pub trait Backend: Send + Sync {
         let _ = opportunity;
     }
 
+    /// Observes what the frame scheduler decided for a frame; see
+    /// [`FramePlan`].
+    fn frame_plan(&self, plan: &FramePlan) {
+        let _ = plan;
+    }
+
     /// Observes one phase of a causal flow.
     fn flow(&self, flow_id: FlowId, phase: FlowPhase, context: ContextHandle) {
         let _ = (flow_id, phase, context);
@@ -634,6 +640,15 @@ pub fn frame_point(point: &FramePoint) {
 #[cfg_attr(not(footfall_compile_out), inline)]
 pub fn frame_opportunity(opportunity: &FrameOpportunity) {
     dispatch!(when max_level().captures_markers() => frame_opportunity(opportunity));
+}
+
+/// Records what the frame scheduler decided for a frame beyond its times,
+/// such as the interval it meant and whether it held the frame back; see
+/// [`FramePlan`].
+#[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
+pub fn frame_plan(plan: &FramePlan) {
+    dispatch!(when max_level().captures_markers() => frame_plan(plan));
 }
 
 /// Starts a causal flow under a semantic context.
