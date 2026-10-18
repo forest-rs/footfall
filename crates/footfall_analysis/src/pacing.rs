@@ -693,16 +693,19 @@ impl FramePacing {
     /// before it, in its stream, as their targets were apart; see
     /// [`Cadence`].
     ///
-    /// Without both targets, the frame is held to the interval its
-    /// [plan](Self::plan) meant since the frame before, when it says.
+    /// Without both targets, the frame is held to the sum of the intervals
+    /// its [plan](Self::plan) and the intervening plans meant since the last
+    /// shown frame, when they say.
     ///
     /// `None` when that is not known: the frame was not shown, neither
-    /// both targets nor its plan say the spacing meant, it is its stream's
-    /// first shown frame or the first after a
+    /// both targets nor the intervening plans say the spacing meant, it is
+    /// its stream's first shown frame or the first after a
     /// [synchronous](Self::is_synchronous) one, which is no part of the
     /// rhythm, or the trace cannot say what was on screen between them,
     /// such as a frame with neither a presentation nor a drop reported, or
     /// events lost.
+    /// When either target is missing, all planned intervals since the last
+    /// shown frame must be known, including those of dropped frames.
     #[must_use]
     pub const fn cadence(&self) -> Option<Cadence> {
         self.cadence
@@ -1177,8 +1180,9 @@ impl Pacing {
     /// opportunities stated when it was to be shown, or else the stream's
     /// median: of the intervals its opportunities stated, or of how often
     /// its frames were shown. A stream with none of them has no steps.
-    /// Missing frame numbers, missing latency measurements, and lost events
-    /// start a new run, which must establish its own initial latency.
+    /// Missing frame numbers, missing latency measurements, lost events,
+    /// and synchronous frames start a new run, which must establish its
+    /// own initial latency.
     #[must_use]
     pub fn latency_steps(&self) -> Vec<LatencyStep> {
         let mut steps = Vec::new();
@@ -2190,28 +2194,36 @@ fn cadences(frames: &mut [FramePacing], gaps: &[TimeRange], tolerance: Duration)
     // The frame shown last in the run: when it was shown and its target.
     let mut shown: Option<(Duration, Option<Duration>)> = None;
     let mut before: Option<FrameNumber> = None;
+    // Planned spacing since the last shown frame, including frames known
+    // to have been dropped. Missing any interval leaves the sum unknown.
+    let mut planned_spacing = Some(Duration::ZERO);
     for frame in frames.iter_mut() {
         if before.is_none_or(|number| frame.number.previous() != Some(number)) {
             shown = None;
+            planned_spacing = Some(Duration::ZERO);
         }
         before = Some(frame.number);
         if frame.is_synchronous() {
             // Outside pacing, it is no part of the rhythm, and the frame
             // after it has none to keep.
             shown = None;
+            planned_spacing = Some(Duration::ZERO);
             continue;
         }
+        planned_spacing = planned_spacing
+            .zip(frame.plan.as_ref().and_then(Plan::interval))
+            .and_then(|(spacing, interval)| spacing.checked_add(interval));
         let Some(at) = frame.presented else {
             if frame.dropped.is_none() {
                 shown = None;
             }
             continue;
         };
-        // The spacing their targets meant, or else the interval the
-        // frame's plan meant since the frame before.
+        // The spacing their targets meant, or else all the planned
+        // intervals since the last shown frame.
         let meant = |since_target: Option<Duration>| match (since_target, frame.target) {
             (Some(since_target), Some(target)) => Some(target.saturating_sub(since_target)),
-            _ => frame.plan.as_ref().and_then(Plan::interval),
+            _ => planned_spacing,
         };
         if let Some((since, since_target)) = shown
             && let Some(meant) = meant(since_target)
@@ -2236,6 +2248,7 @@ fn cadences(frames: &mut [FramePacing], gaps: &[TimeRange], tolerance: Duration)
             });
         }
         shown = Some((at, frame.target));
+        planned_spacing = Some(Duration::ZERO);
     }
 }
 

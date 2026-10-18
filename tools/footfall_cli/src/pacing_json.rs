@@ -12,7 +12,7 @@ use std::path::Path;
 
 use footfall::analysis::{
     BasisCounts, Cadence, CadenceCounts, DurationStats, FramePacing, LateCauseCounts, Outcome,
-    Pacing, PredictionError, SupportCounts, Trace, Why,
+    Pacing, Plan, PredictionError, SupportCounts, Trace, Why,
 };
 use footfall::session::OwnedLabelValue;
 use footfall::{BeginsAt, FramePointKind, TimingBasis};
@@ -64,8 +64,11 @@ pub(crate) fn document(path: &Path, trace: &Trace, pacing: &Pacing) -> Json {
                 ("dropped", Json::from(counts.dropped)),
                 ("skipped", Json::from(counts.skipped)),
                 ("submitted_late", Json::from(counts.submitted_late)),
+                ("held", Json::from(counts.held)),
+                ("synchronous", Json::from(counts.synchronous)),
                 ("unknown", Json::from(counts.unknown)),
                 ("missed", Json::from(counts.missed())),
+                ("planned", Json::from(pacing.planned())),
                 ("late_causes", late_causes(counts.late_causes)),
                 ("late_support", late_support(counts.late_support)),
                 ("severity", {
@@ -149,6 +152,24 @@ pub(crate) fn document(path: &Path, trace: &Trace, pacing: &Pacing) -> Json {
                             ("from_ns", Json::nanos(step.from)),
                             ("to_ns", Json::nanos(step.to)),
                             ("rose", Json::from(step.rose())),
+                            (
+                                "depth",
+                                step.depth.map_or(Json::Null, |(from, to)| {
+                                    Json::object([
+                                        ("from", Json::from(u32::from(from))),
+                                        ("to", Json::from(u32::from(to))),
+                                    ])
+                                }),
+                            ),
+                            (
+                                "latency_allowance",
+                                step.latency_allowance.map_or(Json::Null, |(from, to)| {
+                                    Json::object([
+                                        ("from_ns", Json::nanos(from)),
+                                        ("to_ns", Json::nanos(to)),
+                                    ])
+                                }),
+                            ),
                         ])
                     })
                     .collect(),
@@ -198,6 +219,8 @@ fn frame(frame: &FramePacing) -> Json {
         Outcome::Late { by, .. } => ("late", Some(by)),
         Outcome::Dropped { .. } => ("dropped", None),
         Outcome::SubmittedLate { by } => ("submitted_late", Some(by)),
+        Outcome::Held { by, .. } => ("held", Some(by)),
+        Outcome::Synchronous => ("synchronous", None),
         _ => ("unknown", None),
     };
     let mut points: Vec<(String, Json)> = TIMED
@@ -230,6 +253,7 @@ fn frame(frame: &FramePacing) -> Json {
         ("by_ns", Json::nanos_or_null(by)),
         ("missed", Json::from(outcome.missed())),
         ("why", frame.why().map_or(Json::Null, why)),
+        ("plan", frame.plan().map_or(Json::Null, plan)),
         ("cadence", frame.cadence().map_or(Json::Null, cadence)),
         (
             "severity",
@@ -313,7 +337,41 @@ fn why(why: &Why) -> Json {
         ("behind_previous", Json::from(why.behind_previous)),
         ("whole_refreshes", Json::from(why.whole_refreshes)),
         ("buffer_wait_ns", Json::nanos_or_null(why.buffer_wait)),
+        ("held_back_ns", Json::nanos_or_null(why.held_back)),
         ("presented_basis", Json::from(basis(why.presented))),
+    ])
+}
+
+/// What the scheduler decided for a frame: the interval it meant, the
+/// depth and latency allowance it planned with, any hold and why, whether
+/// it was paced, and the plan's args.
+fn plan(plan: &Plan) -> Json {
+    Json::object([
+        ("interval_ns", Json::nanos_or_null(plan.interval())),
+        ("depth", Json::from(plan.depth().map(u32::from))),
+        (
+            "latency_allowance_ns",
+            Json::nanos_or_null(plan.latency_allowance()),
+        ),
+        (
+            "held_back_ns",
+            Json::nanos_or_null(plan.hold().map(|(held, _)| held)),
+        ),
+        (
+            "hold_reason",
+            plan.hold()
+                .map_or(Json::Null, |(_, reason)| Json::from(snake(reason))),
+        ),
+        ("kind", Json::from(snake(plan.kind()))),
+        (
+            "args",
+            Json::Object(
+                plan.args()
+                    .iter()
+                    .map(|arg| (arg.key().to_owned(), label(arg.value())))
+                    .collect(),
+            ),
+        ),
     ])
 }
 
@@ -339,6 +397,7 @@ fn cadence(cadence: Cadence) -> Json {
     let (kind, by) = match cadence {
         Cadence::Stalled { by } => ("stalled", Some(by)),
         Cadence::Hurried { by } => ("hurried", Some(by)),
+        Cadence::Held { by } => ("held", Some(by)),
         _ => ("steady", None),
     };
     Json::object([
@@ -354,6 +413,7 @@ fn cadence_counts(counts: CadenceCounts) -> Json {
         ("late_but_steady", Json::from(counts.late_but_steady)),
         ("stalled", Json::from(counts.stalled)),
         ("hurried", Json::from(counts.hurried)),
+        ("held", Json::from(counts.held)),
         ("hitches", Json::from(counts.hitches())),
     ])
 }
@@ -515,7 +575,7 @@ mod tests {
             r#""mispredicted":1"#,
             r#""cause":"mispredicted","party":"platform","support":"inferred""#,
             r#""whole_refreshes":false"#,
-            r#""cadence":{"judged":1,"steady":0,"late_but_steady":0,"stalled":1,"hurried":0,"hitches":1}"#,
+            r#""cadence":{"judged":1,"steady":0,"late_but_steady":0,"stalled":1,"hurried":0,"held":0,"hitches":1}"#,
             r#""cadence":{"kind":"stalled","by_ns":8000000}"#,
             r#""latency_steps":[]"#,
         ] {
@@ -566,6 +626,51 @@ mod tests {
             r#""buffer_wait_ns":5000000"#,
             r#""severity":"full""#,
             r#""severity":null"#,
+        ] {
+            assert!(text.contains(expected), "{expected} missing from {text}");
+        }
+    }
+
+    #[test]
+    fn documents_carry_each_frames_plan_and_the_schedulers_choices() {
+        use footfall::{FramePlan, HoldReason};
+        let runtime = Runtime::default();
+        runtime.clock_sync(ClockReading::new(&HOST, 0, TickPeriod::NANOSECOND));
+        let at = |number: u64, kind, ms: u64| {
+            FramePoint::at(number, kind, &HOST, TickPeriod::NANOSECOND, ms * 1_000_000)
+        };
+        let ms = TickPeriod::new(1_000_000, 1);
+        use FramePointKind::{Presented, Target};
+        // Frame 1 is on time; frame 2 is held back a refresh to drain the
+        // queue and shown that refresh late; frame 3 is presented for a
+        // resize.
+        runtime.frame_point(&at(1, Target, 17));
+        runtime.frame_point(&at(1, Presented, 17));
+        runtime.frame_plan(&FramePlan::new(1, ms).with_interval(17).with_depth(1));
+        runtime.frame_point(&at(2, Target, 34));
+        runtime.frame_point(&at(2, Presented, 51));
+        runtime.frame_plan(
+            &FramePlan::new(2, ms)
+                .with_interval(17)
+                .with_depth(1)
+                .with_latency_allowance(0)
+                .with_hold(17, HoldReason::DrainQueue)
+                .with_args(footfall::args!("safety_margin_ns" => 1_500_u64)),
+        );
+        runtime.frame_point(&at(3, Presented, 55));
+        runtime.frame_plan(&FramePlan::new(3, ms).synchronous());
+        let trace = Trace::from_snapshot(&OwnedSnapshot::from(runtime.snapshot()));
+        let pacing = trace.pacing(Duration::from_millis(1));
+
+        let text = document(Path::new("run.ffcap"), &trace, &pacing).to_string();
+        for expected in [
+            r#""held":1,"synchronous":1,"unknown":0,"missed":0,"planned":3"#,
+            r#""outcome":"held","by_ns":17000000,"missed":false"#,
+            r#""plan":{"interval_ns":17000000,"depth":1,"latency_allowance_ns":0,"held_back_ns":17000000,"hold_reason":"drain_queue","kind":"paced","args":{"safety_margin_ns":1500}}"#,
+            r#""cadence":{"kind":"held","by_ns":17000000}"#,
+            r#""outcome":"synchronous","by_ns":null,"missed":false"#,
+            r#""kind":"synchronous""#,
+            r#""held":1,"hitches":0"#,
         ] {
             assert!(text.contains(expected), "{expected} missing from {text}");
         }

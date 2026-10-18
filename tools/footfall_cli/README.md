@@ -37,6 +37,7 @@ scheduler. Each line is one thing an analysis uses:
 | `frames` | frame markers |
 | `numbered` | frames marked with their number |
 | `scheduled` | scheduled points: when each frame was to begin |
+| `plans` | frame plans: what the scheduler decided for each frame |
 | `opportunities` | frame opportunities around the frames that wait for one |
 | `deadlines` | deadline points on numbered frames |
 | `submissions` | submission points |
@@ -117,8 +118,11 @@ The document holds:
 
 - `footfall_version`, and `capture`: the file, process, process id,
   runtime instance (hex), and the producer's Footfall version.
-- `tolerance_ns`, `counts` (with `late_causes`, `late_support`, and
-  `severity`: how many misses and hitches were `partial` and `full`),
+- `tolerance_ns`, `counts` (with `held`, frames shown late by no more
+  than the scheduler held them back, `synchronous`, frames presented
+  outside pacing, `planned`, frames with a plan, `late_causes`,
+  `late_support`, and `severity`: how many misses and hitches were
+  `partial` and `full`),
   `opportunities` (how many were `recorded`, `skipped` by the platform,
   and `unplaced`, and their `intervals`), `begin_lateness`, `buffer_waits`
   (how long frames waited for a buffer, when longer than the tolerance),
@@ -127,22 +131,28 @@ The document holds:
   and `stutters`, and the same, with `cadence`, `opportunities`, and
   `skipped_opportunities`, for each frame stream in `streams`, since
   windows can run at different rates), `cadence` (how many frames were
-  `judged`, `steady`, `late_but_steady`, `stalled`, and `hurried`, and the
-  `hitches`), `lateness`, `latency`, `latency_steps` (each lasting change
-  in latency: the `stream`, `generation`, and `number` of its first frame,
-  `from_ns`, `to_ns`, and whether it `rose`),
+  `judged`, `steady`, `late_but_steady`, `stalled`, `hurried`, and `held`,
+  off their spacing by a hold, and the `hitches`), `lateness`, `latency`,
+  `latency_steps` (each lasting change in latency: the `stream`,
+  `generation`, and `number` of its first frame, `from_ns`, `to_ns`,
+  whether it `rose`, and the plans' `depth` and `latency_allowance` before
+  and after it, `from` and `to`, when they changed across it),
   `prediction_error` for the `predicted`, `target`, and `expected` times,
   `wasted`, and `unplaced_points`: the figures the text report prints.
 - `frames`, every numbered frame in order: its `label` as the text report
   writes it, `stream`, `generation`, and `number`; `frame_id`, the
   sequence of its begin marker, when it has one; `outcome` (`on_time`,
-  `early`, `late`, `dropped`, `submitted_late`, or `unknown`) with `by_ns`
-  and whether it was `missed` (a dropped frame whose reason is not a miss,
-  such as `superseded`, is not); `why`, for a late frame, with its
-  `cause`, the `party` it points at, its `support`, whether it was shown
-  `whole_refreshes` late, and its `buffer_wait_ns`; its `cadence` (`kind`,
-  `steady`, `stalled`, or `hurried`, and `by_ns`) against the frame shown
-  before it, when known; its `severity` (`partial` or `full`, or `null`
+  `early`, `late`, `dropped`, `submitted_late`, `held`, `synchronous`, or
+  `unknown`) with `by_ns` and whether it was `missed` (a dropped frame
+  whose reason is not a miss, such as `superseded`, is not, and neither is
+  a held or synchronous frame); `why`, for a late frame, with its `cause`,
+  the `party` it points at, its `support`, whether it was shown
+  `whole_refreshes` late, its `buffer_wait_ns`, and its `held_back_ns`;
+  its `plan`, when the scheduler recorded one, with its `interval_ns`,
+  `depth`, `latency_allowance_ns`, `held_back_ns` and `hold_reason`
+  (`drain_queue`), `kind` (`paced` or `synchronous`), and `args`; its
+  `cadence` (`kind`, `steady`, `stalled`, `hurried`, or `held`, and
+  `by_ns`) against the frame shown before it, when known; its `severity` (`partial` or `full`, or `null`
   for a frame with no miss or hitch, such as one on time or late only as
   steadily as the frame before, and for one whose refresh interval is not
   known), and its `buffer_wait_ns`; whether its work `met_deadline`, by
