@@ -49,7 +49,7 @@ fn requiring<'a>(checks: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
 
 /// The checks for what protocol 1.1 added, which the 1.0 release captures
 /// predate.
-const SINCE_1_1: [&str; 3] = ["scheduled", "opportunities", "buffers"];
+const SINCE_1_1: [&str; 4] = ["scheduled", "plans", "opportunities", "buffers"];
 
 /// Every check a 1.0 capture can satisfy.
 fn checks_before_1_1() -> impl Iterator<Item = &'static str> {
@@ -65,13 +65,13 @@ fn the_demo_capture_has_everything_the_analyses_used_when_it_was_recorded() {
     let output = check("demo.ffcap", &requiring(checks_before_1_1()));
     assert!(output.status.success(), "{}", stderr(&output));
     let text = String::from_utf8(output.stdout).expect("UTF-8");
-    assert!(text.contains("11 of 14 present"), "{text}");
+    assert!(text.contains("11 of 15 present"), "{text}");
     // It was recorded before frames said when they were to begin.
     let output = check("demo.ffcap", &requiring(SINCE_1_1));
     assert_eq!(output.status.code(), Some(1));
     assert!(
         stderr(&output)
-            .contains("required checks not met: scheduled (missing), opportunities (missing), buffers (missing)"),
+            .contains("required checks not met: scheduled (missing), plans (missing), opportunities (missing), buffers (missing)"),
         "{}",
         stderr(&output)
     );

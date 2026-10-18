@@ -123,10 +123,11 @@ fn ratio(have: u64, of: u64, one: &str, more: &str) -> String {
 }
 
 /// The ids of every item, in the order `check` reports them.
-pub(crate) const IDS: [&str; 14] = [
+pub(crate) const IDS: [&str; 15] = [
     "frames",
     "numbered",
     "scheduled",
+    "plans",
     "opportunities",
     "deadlines",
     "submissions",
@@ -211,6 +212,14 @@ pub(crate) fn check(trace: &Trace, read: Read) -> Vec<Item> {
         "say when they were to begin",
         "whether each frame began late, and the began-late and skipped-opportunity causes",
         "record FramePointKind::Scheduled with frame_point when planning each frame, saying whether it BeginsAt a time or an opportunity, as frameclock does",
+    ));
+    items.push(point_item(
+        "plans",
+        no_numbers,
+        coverage(&pacing, any, |frame| frame.plan().is_some()),
+        "say what the scheduler decided",
+        "telling a frame held back to drain a queue from a hitch, a frame presented outside pacing from a miss, and a cadence the scheduler chose from stutter",
+        "record a FramePlan with frame_plan when planning each frame: its interval, depth, latency allowance, any hold, and whether it is synchronous",
     ));
     items.push(opportunities(&pacing, no_numbers));
     items.push(point_item(

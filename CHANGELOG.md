@@ -162,6 +162,14 @@ crates share one version.
 
 ### Tools
 
+- `footfall analyze pacing` says how many frames were the scheduler's
+  choices rather than misses or hitches: shown late by their hold, off
+  their spacing by it, or presented outside pacing. Latency steps say when
+  the plans' depth or latency allowance changed with them. `--json`
+  carries each frame's `plan`, the `held` and `synchronous` outcomes, the
+  `held` cadence, a late frame's `held_back_ns`, the `held`,
+  `synchronous`, and `planned` counts, and each step's `depth` and
+  `latency_allowance`. `footfall check` has a `plans` check.
 - `footfall analyze pacing` reports how many misses and hitches were full
   and partial, how long frames waited for a buffer, and frames late for
   want of one; `--json` carries each frame's `severity` and

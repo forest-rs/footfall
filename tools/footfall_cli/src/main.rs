@@ -620,6 +620,32 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> 
         format::count(counts.skipped),
         format::count(counts.unknown),
     );
+    // What the scheduler chose, which is neither a miss nor a hitch.
+    let held_cadence = pacing.cadence().held;
+    if counts.held + held_cadence + counts.synchronous > 0 {
+        let chose: Vec<String> = [
+            (
+                counts.held,
+                "shown late by no more than the scheduler held them back",
+            ),
+            (
+                held_cadence,
+                "off their spacing by a hold, to drain the queue ahead",
+            ),
+            (
+                counts.synchronous,
+                "presented outside pacing, such as for a resize",
+            ),
+        ]
+        .into_iter()
+        .filter(|(count, _)| *count > 0)
+        .map(|(count, what)| format!("{} {what}", format::count(count)))
+        .collect();
+        println!(
+            "  {DIM}the scheduler's choices, not misses or hitches:{DIM:#} {}",
+            chose.join(" · ")
+        );
+    }
     if counts.late > 0 {
         let causes = counts.late_causes;
         let named: Vec<String> = [
