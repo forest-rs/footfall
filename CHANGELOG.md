@@ -55,6 +55,11 @@ crates share one version.
   dropped for a miss, have one: frames late as steadily as the one before
   have none, and neither do frames shown on time, though they caught up.
   `Pacing::severity` counts them.
+- The Perfetto export carries each frame's plan on its life: the interval
+  the scheduler meant, its pipeline depth and latency allowance, any hold
+  and why, and whether it was synchronous. On the frame timeline, a frame
+  shown late by its hold is late with no jank, and a synchronous frame has
+  no expected slice, no present type, and no jank.
 - The Perfetto export draws a frame's wait for a buffer inside its build,
   and its frame timeline records take their severity from
   `footfall_analysis` and call a frame that waited for a buffer `Buffer

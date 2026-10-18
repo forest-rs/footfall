@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use core::time::Duration;
 
 use footfall_analysis::{Cadence, FramePacing, LateCause, Outcome, Severity, Trace};
-use footfall_core::{FlowPhase, FrameNumber, FrameStream, Unit};
+use footfall_core::{FlowPhase, FrameNumber, FrameStream, HoldReason, Unit};
 use footfall_session::{
     Clocks, OwnedArgEntry, OwnedContextEntry, OwnedLabelValue, OwnedObservation, OwnedSnapshot,
 };
@@ -225,6 +225,37 @@ fn dict_annotation<'a>(
         dict.message(ANNOTATION_DICT_ENTRIES, &annotation(key, value));
     }
     dict
+}
+
+/// Adds what the scheduler decided for a frame to its life: the interval
+/// it meant, the depth and latency allowance it planned with, any hold and
+/// why, whether it was synchronous, and the plan's args.
+fn plan_annotations(mut life: Event, plan: &crate::PlanFacts) -> Event {
+    if let Some(interval) = plan.interval {
+        life = life.with(micros_annotation("planned_interval_us", interval, 0));
+    }
+    if let Some(depth) = plan.depth {
+        life = life.with(uint_annotation("pipeline_depth", u64::from(depth)));
+    }
+    if let Some(allowance) = plan.latency_allowance {
+        life = life.with(micros_annotation("latency_allowance_us", allowance, 0));
+    }
+    if let Some((held, reason)) = plan.hold {
+        life = life.with(micros_annotation("held_back_us", held, 0));
+        if reason == HoldReason::DrainQueue {
+            life = life.with(string_annotation("held_back_to", "drain the queue"));
+        }
+    }
+    if plan.synchronous {
+        life = life.with(string_annotation("pacing", "synchronous"));
+    }
+    if !plan.args.is_empty() {
+        life = life.with(dict_annotation(
+            "plan",
+            plan.args.iter().map(|arg| (arg.key(), arg.value())),
+        ));
+    }
+    life
 }
 
 fn args_annotation(args: &[OwnedArgEntry]) -> Message {
@@ -578,7 +609,9 @@ fn trace_pid_i32(snapshot: &OwnedSnapshot) -> i32 {
 /// in flight, with any wait for a buffer to render into nested in its
 /// building, and its deadline and target, on as many stacked lanes as
 /// frames in flight at once, and how long each shown frame stayed on
-/// screen. Every event of a frame, on those tracks, its numbered markers, and
+/// screen. A frame's life carries its plan, when the scheduler recorded one:
+/// the interval it meant, its pipeline depth and latency allowance, any hold
+/// and why, and whether it was synchronous. Every event of a frame, on those tracks, its numbered markers, and
 /// its GPU work, carries the frame as its correlation id, which Perfetto
 /// colors alike, so one frame is one color wherever it appears; by name it
 /// would color every frame alike, as it ignores numbers.
@@ -595,7 +628,10 @@ fn trace_pid_i32(snapshot: &OwnedSnapshot) -> i32 {
 /// platform made late is `SurfaceFlinger Scheduling` (a skipped opportunity),
 /// `Prediction Error` (a mispredicted target, or shown early), or `Display HAL`
 /// (held after it was submitted in time); a dropped frame is `Dropped Frame`;
-/// and one whose cause is not known is `Unspecified`.
+/// and one whose cause is not known is `Unspecified`. A frame the scheduler
+/// held back on purpose, shown late by no more than its hold, is late with no
+/// jank, and a synchronous one, presented outside pacing, has no expected
+/// slice, no present type, and no jank.
 ///
 /// The capture's metadata and contexts are instants on a `footfall` track.
 /// Times keep their nanoseconds.
@@ -981,9 +1017,11 @@ fn frame_timeline(writer: &mut Writer<'_>) {
             surface
         };
         let begun = frame.work().map(|work| work.start());
+        // A synchronous frame was never expected at a time.
         if let Some(deadline) = frame.deadline()
             && let Some(start) = frame.scheduled().or(begun)
             && start <= deadline
+            && !frame.is_synchronous()
         {
             cookie += 1;
             let expected = surface(cookie);
@@ -1057,7 +1095,10 @@ struct TimelineVerdict {
 /// skipped opportunity), `Prediction Error` (a mispredicted target, or shown
 /// early), or `Display HAL` (held after it was submitted in time), the
 /// platform's; a dropped frame is `Dropped Frame`; and a frame whose cause is
-/// not known is `Unspecified` rather than anyone's jank.
+/// not known is `Unspecified` rather than anyone's jank. A frame the scheduler
+/// held back on purpose and showed late by its hold is late with no jank, and
+/// a synchronous frame, presented outside pacing, has no present type and no
+/// jank.
 ///
 /// Severity is `footfall_analysis`'s: partial for a miss or hitch of less than
 /// a refresh, full for a refresh or more. A frame shown on time has none there
@@ -1075,6 +1116,10 @@ fn timeline_verdict(frame: &FramePacing) -> TimelineVerdict {
     let millis = |by: Duration| (by.as_secs_f64() * 1000.0) as f32;
     let (present, jank, severity, delay_millis) = match frame.outcome() {
         Outcome::OnTime => (PRESENT_ON_TIME, JANK_NONE, SEVERITY_NONE, 0.0),
+        // Held back on purpose: late, but not jank.
+        Outcome::Held { by, .. } => (PRESENT_LATE, JANK_NONE, SEVERITY_NONE, millis(by)),
+        // Presented outside pacing, with no target to be on time for.
+        Outcome::Synchronous => (PRESENT_UNKNOWN, JANK_NONE, SEVERITY_NONE, 0.0),
         Outcome::Early { by } => (PRESENT_EARLY, JANK_PREDICTION_ERROR, severity, -millis(by)),
         Outcome::Late { by, .. } if frame.cadence() == Some(Cadence::Steady) => (
             PRESENT_LATE,
@@ -1249,6 +1294,9 @@ fn frame_tracks(
         }
         if let Some(reason) = frame.dropped {
             life = life.with(string_annotation("dropped", &reason.to_string()));
+        }
+        if let Some(plan) = &frame.plan {
+            life = plan_annotations(life, plan);
         }
         writer.event(start, &life);
         // Its stages, in order, each inside the frame's life, with how deep
@@ -1913,6 +1961,122 @@ mod tests {
         assert!(wide(u32::MAX) > 0);
         assert_ne!(wide(u32::MAX), wide(u32::MAX - 1));
         assert_ne!(wide(1 << 23), i64::MAX);
+    }
+
+    #[test]
+    fn held_and_synchronous_frames_are_not_jank_on_the_frame_timeline() {
+        use footfall_core::MarkerKind;
+        use footfall_core::MarkerPhase::{Begin, End};
+        use footfall_core::{FrameKind, HoldReason};
+        // Times in µs.
+        let point = |number: u64, kind, at: u64| Observation::FramePoint {
+            number: FrameNumber::from(number),
+            kind,
+            time: Some(ClockTicks::from(ClockReading::new(
+                &HOST,
+                at * 1000,
+                TickPeriod::NANOSECOND,
+            ))),
+            basis: TimingBasis::Unknown,
+            args: Args::none(),
+        };
+        let marker = |number: u64, phase| Observation::FrameMarker {
+            kind: MarkerKind::Frame,
+            phase,
+            number: Some(FrameNumber::from(number)),
+            context_id: ContextId::new(0),
+        };
+        let plan = |number: u64, hold: Option<u64>, kind| Observation::FramePlan {
+            number: FrameNumber::from(number),
+            period: TickPeriod::new(1_000, 1),
+            interval: Some(10_000),
+            depth: Some(1),
+            latency_allowance: None,
+            hold: hold.map(|held| (held, HoldReason::DrainQueue)),
+            kind,
+            args: Args::none(),
+        };
+        let mut observations = vec![(0, sync())];
+        // Frame 1 is on time. Frame 2 is held back a refresh to drain the
+        // queue, its target kept, and shown that refresh late. Frame 3 is
+        // drawn for a resize and presented at once.
+        for (number, presented, hold, kind) in [
+            (1_u64, 10_000_u64, None, FrameKind::Paced),
+            (2, 30_000, Some(10_000), FrameKind::Paced),
+            (3, 34_000, None, FrameKind::Synchronous),
+        ] {
+            let start = (number - 1) * 10_000;
+            observations.extend([
+                ((start + 1_000) * 1000, marker(number, Begin)),
+                ((start + 3_000) * 1000, marker(number, End)),
+                (
+                    90_000_000,
+                    point(number, FramePointKind::Deadline, start + 6_000),
+                ),
+                (
+                    90_000_000,
+                    point(number, FramePointKind::Target, start + 10_000),
+                ),
+                (
+                    90_000_000,
+                    point(number, FramePointKind::Presented, presented),
+                ),
+                (90_000_000, plan(number, hold, kind)),
+            ]);
+        }
+        let mut builder = Snapshot::builder(SnapshotMetadata::new("app"));
+        for (sequence, (at, observation)) in (0..).zip(observations) {
+            builder = builder.event(TimedObservation::new(at, sequence, 1, observation));
+        }
+        let trace = to_perfetto_trace(&builder.build().into());
+
+        // (token, present type, jank type, severity) of each actual frame,
+        // and the tokens with an expected slice.
+        let (mut actual, mut expected) = (Vec::new(), Vec::new());
+        for (_, packet) in fields(&trace) {
+            let Value::Bytes(packet) = packet else {
+                continue;
+            };
+            let Some(timeline) = nested(&fields(packet), 76) else {
+                continue;
+            };
+            if let Some(slice) = nested(&timeline, 3) {
+                expected.push(uint(&slice, 2).unwrap());
+            }
+            if let Some(frame) = nested(&timeline, 4) {
+                actual.push((
+                    uint(&frame, 2).unwrap(),
+                    uint(&frame, 6).unwrap(),
+                    uint(&frame, 9).unwrap(),
+                    uint(&frame, 12).unwrap(),
+                ));
+            }
+        }
+        assert_eq!(
+            actual,
+            [
+                (1, 1, 1, 1),
+                // Late by its hold: late, but no jank and no severity.
+                (2, 2, 1, 1),
+                // Synchronous: no target to be on time for, and no jank.
+                (3, 5, 1, 1),
+            ]
+        );
+        assert_eq!(expected, [1, 2], "a synchronous frame was never expected");
+        let says = |name: &str| {
+            trace
+                .windows(name.len())
+                .any(|bytes| bytes == name.as_bytes())
+        };
+        for name in [
+            "planned_interval_us",
+            "pipeline_depth",
+            "held_back_us",
+            "drain the queue",
+            "synchronous",
+        ] {
+            assert!(says(name), "the frame's life carries {name}");
+        }
     }
 
     #[test]
