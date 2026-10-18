@@ -19,6 +19,16 @@ crates share one version.
   at the first opportunity from then on. `Backend::frame_opportunity`
   receives opportunities, and `footfall_fanout` passes them to both of
   its backends.
+- `frame_plan` records what the frame scheduler decided for a frame beyond
+  its times, as a `FramePlan`: the interval it meant between the frame and
+  the one before it, the pipeline depth it planned for, how much later
+  than the platform's prediction it aimed the frame for latency it
+  learned, whether it held the frame back on purpose and why
+  (`HoldReason::DrainQueue`), and whether the frame was paced or
+  `FrameKind::Synchronous`, presented as soon as it was built, outside
+  pacing. A scheduler had only args for these, four to a point and opaque
+  to analysis. `Backend::frame_plan` receives plans, and `footfall_fanout`
+  passes them to both of its backends.
 
 ### Consuming
 
@@ -118,9 +128,10 @@ crates share one version.
   `PredictionError`, `WastedWork`, and the new `OpportunityCounts`) are
   `#[non_exhaustive]`, so later releases can add to them. Their fields
   stay public to read.
-- The session protocol is `1.1`: it adds the frame opportunity observation
-  and the scheduled, buffer requested, and buffer acquired frame point
-  kinds (8, 9, and 10). Captures written at `1.0` still read the same.
+- The session protocol is `1.1`: it adds the frame opportunity and frame
+  plan observations (13 and 14) and the scheduled, buffer requested, and
+  buffer acquired frame point kinds (8, 9, and 10). Captures written at
+  `1.0` still read the same.
 - The Chrome trace export gives timeline tracks small thread ids. They
   were `(1 << 32) + id`, and Perfetto keeps only 32 bits of a thread id,
   so a GPU timeline landed on a thread's track and took its name.

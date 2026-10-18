@@ -442,6 +442,38 @@ footfall::frame_point(&FramePoint::at(
 ));
 ```
 
+Say what the scheduler decided, too. A `FramePlan`, recorded with
+`frame_plan` when the frame is planned, carries the interval the scheduler
+meant between this frame and the one before it, the pipeline depth it
+planned for, how much later than the platform's prediction it aimed the
+frame for latency it learned, and any hold: a frame held back on purpose,
+such as a refresh to let a frame queued in the presentation pipeline
+drain. Analysis then holds the frame to the cadence the scheduler meant,
+so a deliberate slower one is not a hitch, explains a held frame as the
+scheduler's choice rather than jank, and says when a change of latency
+came with a change of depth or allowance. A frame presented as soon as it
+was built, outside pacing, such as one a window resize waits for, is
+`synchronous()`: it has no deadline or target to miss and is no part of
+its stream's cadence.
+
+```rust
+use footfall::{FramePlan, HoldReason, TickPeriod};
+
+let period = TickPeriod::new(125, 3); // Mach absolute time
+let refresh = 200_000_u64; // 120 Hz
+
+// When planning frame 1234, two deep, held back a refresh to drain a
+// frame queued ahead:
+footfall::frame_plan(
+    &FramePlan::new(1234, period)
+        .with_interval(refresh)
+        .with_depth(2)
+        .with_hold(refresh, HoldReason::DrainQueue),
+);
+// A frame drawn for a live resize, presented at once:
+footfall::frame_plan(&FramePlan::new(1235, period).synchronous());
+```
+
 Numbers the scheduler worked from, such as its pipeline depth or safety
 margin, belong with the frame they describe: attach them to that frame's
 point with `FramePoint::with_args` rather than setting a gauge when the

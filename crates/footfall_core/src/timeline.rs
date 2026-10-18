@@ -534,3 +534,190 @@ impl FrameOpportunity {
         &self.args
     }
 }
+
+/// What the frame scheduler decided for one frame beyond its times, recorded
+/// with [`frame_plan`](crate::frame_plan).
+///
+/// Frame points say when a frame was meant to begin, be submitted, and be
+/// shown. A plan says why those times are what they are: the interval the
+/// scheduler meant between this frame and the one before it, the depth of
+/// the pipeline it planned for, how much later than the platform's
+/// prediction it aimed for latency it learned, whether it held the frame
+/// back on purpose, and whether the frame was paced at all. Analysis then
+/// tells a deliberate change of cadence from a hitch, a frame held back to
+/// drain a queue from a late one, and a frame presented outside pacing,
+/// such as one a window resize waits for, from a missed one.
+///
+/// Its durations are ticks of the period it was made with, typically the
+/// frame scheduler's host clock.
+///
+/// ```
+/// use footfall_core::{FramePlan, HoldReason, TickPeriod};
+///
+/// let period = TickPeriod::new(125, 3);
+/// // Frame 412, at 120 Hz with a two-deep pipeline, held back a refresh to
+/// // drain a frame queued ahead.
+/// footfall_core::frame_plan(
+///     &FramePlan::new(412, period)
+///         .with_interval(200_000)
+///         .with_depth(2)
+///         .with_hold(200_000, HoldReason::DrainQueue),
+/// );
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FramePlan {
+    number: FrameNumber,
+    period: TickPeriod,
+    interval: Option<u64>,
+    depth: Option<u8>,
+    latency_allowance: Option<u64>,
+    hold: Option<(u64, HoldReason)>,
+    kind: FrameKind,
+    args: Args,
+}
+
+/// Why a frame scheduler held a frame back on purpose, as
+/// [`FramePlan::with_hold`] records it.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum HoldReason {
+    /// Held back so a frame queued in the presentation pipeline could
+    /// drain: every frame was being shown a refresh later than it could be,
+    /// and holding one back a refresh wins that refresh back for those
+    /// after it.
+    DrainQueue,
+}
+
+/// Whether a frame was paced, as [`FramePlan::kind`] says.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum FrameKind {
+    /// Planned by the frame scheduler for a deadline and target.
+    #[default]
+    Paced,
+    /// Presented as soon as it was built, outside the scheduler's pacing,
+    /// such as a frame a window resize waits for. It has no deadline or
+    /// target to miss, and is no part of its stream's cadence.
+    Synchronous,
+}
+
+impl FramePlan {
+    /// Starts the plan of the frame numbered `number`, a plain `u64` or a
+    /// [`FrameNumber`] in one of several frame streams, with durations in
+    /// ticks of `period`.
+    #[must_use]
+    pub fn new(number: impl Into<FrameNumber>, period: TickPeriod) -> Self {
+        Self {
+            number: number.into(),
+            period,
+            interval: None,
+            depth: None,
+            latency_allowance: None,
+            hold: None,
+            kind: FrameKind::Paced,
+            args: Args::none(),
+        }
+    }
+
+    /// Says how many ticks the scheduler meant between this frame and the
+    /// one before it: the frame's cadence, such as the refresh interval, or
+    /// two of them for a frame shown every other refresh.
+    #[must_use]
+    pub const fn with_interval(mut self, ticks: u64) -> Self {
+        self.interval = Some(ticks);
+        self
+    }
+
+    /// Says how many frames deep the presentation pipeline was planned to
+    /// be for this frame.
+    #[must_use]
+    pub const fn with_depth(mut self, depth: u8) -> Self {
+        self.depth = Some(depth);
+        self
+    }
+
+    /// Says how many ticks later than the platform's predicted presentation
+    /// the frame was aimed for, for latency the scheduler learned frames
+    /// were being shown with.
+    #[must_use]
+    pub const fn with_latency_allowance(mut self, ticks: u64) -> Self {
+        self.latency_allowance = Some(ticks);
+        self
+    }
+
+    /// Says the scheduler held the frame back on purpose, by `ticks`, and
+    /// why.
+    #[must_use]
+    pub const fn with_hold(mut self, ticks: u64, reason: HoldReason) -> Self {
+        self.hold = Some((ticks, reason));
+        self
+    }
+
+    /// Says the frame was presented as soon as it was built, outside the
+    /// scheduler's pacing; see [`FrameKind::Synchronous`].
+    #[must_use]
+    pub const fn synchronous(mut self) -> Self {
+        self.kind = FrameKind::Synchronous;
+        self
+    }
+
+    /// Attaches what else the scheduler knew when it planned the frame,
+    /// such as its safety margin.
+    #[must_use]
+    pub const fn with_args(mut self, args: Args) -> Self {
+        self.args = args;
+        self
+    }
+
+    /// Returns the number of the frame planned.
+    #[must_use]
+    pub const fn number(&self) -> FrameNumber {
+        self.number
+    }
+
+    /// Returns the period of the ticks its durations are in.
+    #[must_use]
+    pub const fn period(&self) -> TickPeriod {
+        self.period
+    }
+
+    /// Returns how many ticks the scheduler meant between this frame and
+    /// the one before it, if given.
+    #[must_use]
+    pub const fn interval(&self) -> Option<u64> {
+        self.interval
+    }
+
+    /// Returns how many frames deep the pipeline was planned to be, if
+    /// given.
+    #[must_use]
+    pub const fn depth(&self) -> Option<u8> {
+        self.depth
+    }
+
+    /// Returns how many ticks later than the platform's prediction the
+    /// frame was aimed for, if given.
+    #[must_use]
+    pub const fn latency_allowance(&self) -> Option<u64> {
+        self.latency_allowance
+    }
+
+    /// Returns how many ticks the scheduler held the frame back by, and
+    /// why, if it did.
+    #[must_use]
+    pub const fn hold(&self) -> Option<(u64, HoldReason)> {
+        self.hold
+    }
+
+    /// Returns whether the frame was paced.
+    #[must_use]
+    pub const fn kind(&self) -> FrameKind {
+        self.kind
+    }
+
+    /// Returns what else the scheduler knew when it planned the frame.
+    #[must_use]
+    pub const fn args(&self) -> &Args {
+        &self.args
+    }
+}
