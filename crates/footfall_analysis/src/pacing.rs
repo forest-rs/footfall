@@ -1194,10 +1194,11 @@ impl Pacing {
                 .filter(|frame| frame.number.stream() == stream)
             {
                 let measured = frame.work.zip(frame.presented).filter(|(work, shown)| {
-                    !frame.is_synchronous() && !self
-                        .gaps
-                        .iter()
-                        .any(|gap| gap.overlaps(work.start(), *shown))
+                    !frame.is_synchronous()
+                        && !self
+                            .gaps
+                            .iter()
+                            .any(|gap| gap.overlaps(work.start(), *shown))
                 });
                 let Some((work, shown)) = measured else {
                     latency_steps(&latencies, &mut steps);
