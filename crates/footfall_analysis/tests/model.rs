@@ -2847,3 +2847,212 @@ fn misses_and_hitches_are_partial_or_full_against_the_refresh() {
     assert_eq!((counts.partial, counts.full), (1, 3));
     assert_eq!(Severity::Partial.to_string(), "partial");
 }
+
+impl Recording {
+    /// Records, at `at` µs, what the scheduler decided for a frame, with
+    /// durations in µs.
+    fn plan(&mut self, at: u64, plan: &footfall_core::FramePlan) {
+        self.record(
+            at,
+            MAIN,
+            Observation::FramePlan {
+                number: plan.number(),
+                period: plan.period(),
+                interval: plan.interval(),
+                depth: plan.depth(),
+                latency_allowance: plan.latency_allowance(),
+                hold: plan.hold(),
+                kind: plan.kind(),
+                args: *plan.args(),
+            },
+        );
+    }
+
+    /// Records a numbered frame begun at `begin` µs for 2 ms, with its
+    /// target and when it was shown, and its plan.
+    fn planned_frame(
+        &mut self,
+        number: u64,
+        begin: u64,
+        target: Option<u64>,
+        shown: u64,
+        plan: &footfall_core::FramePlan,
+    ) {
+        use footfall_core::FramePointKind::{Deadline, Presented, Target};
+        self.numbered_frame(number, begin, begin + 2_000);
+        let at = begin + 2_000;
+        if let Some(target) = target {
+            self.frame_point(at, number, Deadline, &HOST, Some(target - 4_000));
+            self.frame_point(at, number, Target, &HOST, Some(target));
+        }
+        self.frame_point(at, number, Presented, &HOST, Some(shown));
+        self.plan(at, plan);
+    }
+}
+
+/// A plan in µs.
+fn planned(number: u64) -> footfall_core::FramePlan {
+    footfall_core::FramePlan::new(number, TickPeriod::new(1_000, 1))
+}
+
+#[test]
+fn a_frame_held_back_to_drain_the_queue_is_the_schedulers_choice_not_a_hitch() {
+    use footfall_analysis::{Cadence, Outcome};
+    use footfall_core::HoldReason;
+    let refresh = 16_667;
+    let mut recording = Recording::new(16);
+    recording.clock_sync(0, &HOST, 0);
+    // Frames 1 to 4 are shown a refresh after their targets, queued behind
+    // one that missed. The scheduler holds frame 5 back a refresh, moving
+    // its target with it, and the queue drains: it is shown at its target,
+    // and the frames after it at theirs.
+    for number in 1..=8_u64 {
+        let held = number >= 5;
+        let target = (number + u64::from(held)) * refresh;
+        let shown = if number < 5 { target + refresh } else { target };
+        let mut plan = planned(number).with_interval(refresh);
+        if number == 5 {
+            plan = plan.with_hold(refresh, HoldReason::DrainQueue);
+        }
+        recording.planned_frame(number, target - refresh, Some(target), shown, &plan);
+    }
+    let trace = Trace::from_snapshot(&recording.snapshot(300_000));
+    let pacing = trace.pacing(us(500));
+    let frame = pacing.frame(5).unwrap();
+    assert_eq!(frame.outcome(), Outcome::OnTime);
+    assert_eq!(frame.cadence(), Some(Cadence::Held { by: us(refresh) }));
+    assert_eq!(frame.severity(), None);
+    assert_eq!(
+        frame.plan().and_then(footfall_analysis::Plan::hold),
+        Some((us(refresh), HoldReason::DrainQueue))
+    );
+    let cadence = pacing.cadence();
+    assert_eq!((cadence.held, cadence.hitches()), (1, 0));
+    assert_eq!(
+        Cadence::Held { by: us(refresh) }.to_string(),
+        "held back 16.67 ms by the scheduler"
+    );
+
+    // A scheduler that keeps the target shows the hold as lateness, and
+    // with nothing queued, as the frame before staying on screen longer.
+    let mut recording = Recording::new(17);
+    recording.clock_sync(0, &HOST, 0);
+    for number in 1..=4_u64 {
+        let target = number * refresh;
+        let shown = if number == 3 { target + refresh } else { target };
+        let mut plan = planned(number);
+        if number == 3 {
+            plan = plan.with_hold(refresh, HoldReason::DrainQueue);
+        }
+        recording.planned_frame(number, target - refresh, Some(target), shown, &plan);
+    }
+    let trace = Trace::from_snapshot(&recording.snapshot(300_000));
+    let pacing = trace.pacing(us(500));
+    let frame = pacing.frame(3).unwrap();
+    let held = Outcome::Held {
+        by: us(refresh),
+        reason: HoldReason::DrainQueue,
+    };
+    assert_eq!(frame.outcome(), held);
+    assert!(!held.missed());
+    assert_eq!(
+        held.to_string(),
+        "held back 16.67 ms by the scheduler to drain the queue"
+    );
+    assert_eq!(frame.cadence(), Some(Cadence::Held { by: us(refresh) }));
+    assert_eq!(frame.severity(), None);
+    let counts = pacing.counts();
+    assert_eq!((counts.held, counts.missed()), (1, 0));
+}
+
+#[test]
+fn a_synchronous_frame_is_not_judged_and_is_no_part_of_the_rhythm() {
+    use footfall_analysis::Outcome;
+    let refresh = 16_667;
+    let mut recording = Recording::new(18);
+    recording.clock_sync(0, &HOST, 0);
+    for number in 1..=5_u64 {
+        let target = number * refresh;
+        let (plan, shown) = if number == 3 {
+            // Drawn for a live resize and shown as soon as it was built,
+            // well past where a target would have been.
+            (planned(number).synchronous(), target + 2 * refresh)
+        } else {
+            (planned(number), target)
+        };
+        recording.planned_frame(number, target - refresh, Some(target), shown, &plan);
+    }
+    let trace = Trace::from_snapshot(&recording.snapshot(300_000));
+    let pacing = trace.pacing(us(500));
+    let frame = pacing.frame(3).unwrap();
+    assert!(frame.is_synchronous());
+    assert_eq!(frame.outcome(), Outcome::Synchronous);
+    assert!(!frame.outcome().missed());
+    assert_eq!(frame.met_deadline(), None);
+    assert_eq!((frame.cadence(), frame.severity()), (None, None));
+    assert_eq!(
+        pacing.frame(4).unwrap().cadence(),
+        None,
+        "the rhythm starts again after it"
+    );
+    assert_eq!(pacing.counts().synchronous, 1);
+    assert_eq!(pacing.cadence().hitches(), 0);
+    assert_eq!(pacing.deadlines().judged(), 4);
+    assert_eq!(pacing.stutters(), 0);
+    assert_eq!(pacing.planned(), 5);
+    assert_eq!(Outcome::Synchronous.to_string(), "presented outside pacing");
+}
+
+#[test]
+fn without_targets_a_plans_interval_is_the_cadence_meant() {
+    use footfall_analysis::Cadence;
+    let refresh = 16_667;
+    let mut recording = Recording::new(19);
+    recording.clock_sync(0, &HOST, 0);
+    // No targets. Frames meant a refresh apart, then the scheduler slows
+    // to every other refresh, then frame 6 comes a refresh later than its
+    // plan meant.
+    let intervals = [refresh, refresh, 2 * refresh, 2 * refresh, 2 * refresh, 2 * refresh];
+    let gaps = [refresh, refresh, 2 * refresh, 2 * refresh, 2 * refresh, 3 * refresh];
+    let mut shown = 0;
+    for (number, (meant, gap)) in (1_u64..).zip(intervals.iter().zip(gaps)) {
+        shown += gap;
+        let plan = planned(number).with_interval(*meant);
+        recording.planned_frame(number, shown - refresh, None, shown, &plan);
+    }
+    let trace = Trace::from_snapshot(&recording.snapshot(300_000));
+    let pacing = trace.pacing(us(500));
+    let cadence = |number: u64| pacing.frame(number).and_then(|frame| frame.cadence());
+    assert_eq!(cadence(1), None);
+    for number in 2..=5 {
+        assert_eq!(cadence(number), Some(Cadence::Steady), "frame {number}");
+    }
+    assert_eq!(cadence(6), Some(Cadence::Stalled { by: us(refresh) }));
+}
+
+#[test]
+fn a_latency_step_says_when_the_plans_depth_changed_with_it() {
+    let refresh = 8_333;
+    let mut recording = Recording::new(20);
+    recording.clock_sync(0, &HOST, 0);
+    for time in (0..40).map(|n| n * refresh) {
+        recording.opportunity(time, FrameStream::DEFAULT, time, Some(refresh));
+    }
+    // Ten frames planned one deep and shown three refreshes after they
+    // began, then ten planned two deep and shown four after.
+    for number in 1_u64..=20 {
+        let begin = number * refresh;
+        let (depth, late) = if number <= 10 { (1, 3) } else { (2, 4) };
+        let plan = planned(number).with_depth(depth);
+        recording.planned_frame(number, begin, None, begin + late * refresh, &plan);
+    }
+    let trace = Trace::from_snapshot(&recording.snapshot(1_000_000));
+    let steps = trace.pacing(us(500)).latency_steps();
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert_eq!((steps[0].at.number(), steps[0].depth), (11, Some((1, 2))));
+    assert_eq!(steps[0].latency_allowance, None);
+    assert_eq!(
+        steps[0].to_string(),
+        "latency rose from 25.00 ms to 33.33 ms at frame 11, while pipeline depth went from 1 to 2"
+    );
+}
