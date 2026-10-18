@@ -65,6 +65,8 @@ pub struct Trace {
     /// Frame opportunities, by the frame stream they were for, in the
     /// order they were recorded.
     frame_opportunities: BTreeMap<FrameStream, Vec<HeldOpportunity>>,
+    /// Frame plans, by the frame's number: the latest recorded, and when.
+    frame_plans: BTreeMap<FrameNumber, (crate::pacing::Plan, Duration)>,
     /// Placed timeline spans reported with a frame number, by that number.
     frame_spans: HashMap<FrameNumber, Vec<SpanId>>,
     /// Timeline spans whose clock has no path to the runtime's yet, with
@@ -856,6 +858,27 @@ impl Trace {
                         at,
                     });
             }
+            OwnedObservation::FramePlan {
+                number,
+                period,
+                interval,
+                depth,
+                latency_allowance,
+                hold,
+                kind,
+                args,
+            } => {
+                let ticks = |ticks: u64| Duration::from_nanos(period.ticks_to_nanos(ticks));
+                let plan = crate::pacing::Plan::new(
+                    interval.map(ticks),
+                    *depth,
+                    latency_allowance.map(ticks),
+                    hold.map(|(held, reason)| (ticks(held), reason)),
+                    *kind,
+                    args.clone(),
+                );
+                self.frame_plans.insert(*number, (plan, at));
+            }
             OwnedObservation::FrameOpportunity {
                 stream,
                 time,
@@ -1224,6 +1247,13 @@ impl Trace {
                 || numbered.contains_key(&(0, *number))
                 || frame_spans.contains_key(number)
         });
+        let frame_points = &self.frame_points;
+        self.frame_plans.retain(|number, (_, at)| {
+            *at >= before
+                || frame_points.contains_key(number)
+                || numbered.contains_key(&(0, *number))
+                || frame_spans.contains_key(number)
+        });
         for opportunities in self.frame_opportunities.values_mut() {
             opportunities.retain(|opportunity| opportunity.at >= before);
         }
@@ -1370,6 +1400,12 @@ impl Trace {
 
     pub(crate) const fn frame_opportunities(&self) -> &BTreeMap<FrameStream, Vec<HeldOpportunity>> {
         &self.frame_opportunities
+    }
+
+    pub(crate) const fn frame_plans(
+        &self,
+    ) -> &BTreeMap<FrameNumber, (crate::pacing::Plan, Duration)> {
+        &self.frame_plans
     }
 
     pub(crate) fn numbered_frames(&self) -> impl Iterator<Item = FrameNumber> + '_ {
