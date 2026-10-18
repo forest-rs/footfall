@@ -2939,7 +2939,11 @@ fn a_frame_held_back_to_drain_the_queue_is_the_schedulers_choice_not_a_hitch() {
     recording.clock_sync(0, &HOST, 0);
     for number in 1..=4_u64 {
         let target = number * refresh;
-        let shown = if number == 3 { target + refresh } else { target };
+        let shown = if number == 3 {
+            target + refresh
+        } else {
+            target
+        };
         let mut plan = planned(number);
         if number == 3 {
             plan = plan.with_hold(refresh, HoldReason::DrainQueue);
@@ -3012,8 +3016,22 @@ fn without_targets_a_plans_interval_is_the_cadence_meant() {
     // No targets. Frames meant a refresh apart, then the scheduler slows
     // to every other refresh, then frame 6 comes a refresh later than its
     // plan meant.
-    let intervals = [refresh, refresh, 2 * refresh, 2 * refresh, 2 * refresh, 2 * refresh];
-    let gaps = [refresh, refresh, 2 * refresh, 2 * refresh, 2 * refresh, 3 * refresh];
+    let intervals = [
+        refresh,
+        refresh,
+        2 * refresh,
+        2 * refresh,
+        2 * refresh,
+        2 * refresh,
+    ];
+    let gaps = [
+        refresh,
+        refresh,
+        2 * refresh,
+        2 * refresh,
+        2 * refresh,
+        3 * refresh,
+    ];
     let mut shown = 0;
     for (number, (meant, gap)) in (1_u64..).zip(intervals.iter().zip(gaps)) {
         shown += gap;

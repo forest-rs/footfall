@@ -57,6 +57,11 @@ crates share one version.
   `Pacing::severity` counts them. The refresh interval fallback is computed
   once per stream when needed, keeping severity analysis from rescanning
   every presentation interval for each frame.
+- The Perfetto export carries each frame's plan on its life: the interval
+  the scheduler meant, its pipeline depth and latency allowance, any hold
+  and why, and whether it was synchronous. On the frame timeline, a frame
+  shown late by its hold is late with no jank, and a synchronous frame has
+  no expected slice, no present type, and no jank.
 - The Perfetto export draws a frame's wait for a buffer inside its build,
   and its frame timeline records take their severity from
   `footfall_analysis` and call a frame that waited for a buffer `Buffer

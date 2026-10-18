@@ -16,8 +16,8 @@
 //! ```
 
 use footfall_core::{
-    ContextId, DropReason, FlowPhase, FrameNumber, FramePointKind, FrameStream, MarkerKind,
-    MarkerPhase, ResourceId, ScopeToken, TimelineId, TimelineKind, Unit,
+    ContextId, DropReason, FlowPhase, FrameKind, FrameNumber, FramePointKind, FrameStream,
+    HoldReason, MarkerKind, MarkerPhase, ResourceId, ScopeToken, TimelineId, TimelineKind, Unit,
 };
 use footfall_runtime::CounterKind;
 use footfall_session::{
@@ -676,7 +676,7 @@ enum Exported {
 
 /// What a stream's frame points say about one frame, placed in the
 /// snapshot's time; the latest point of each kind wins.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct PacedFrame {
     /// When its CPU work began and ended, from its numbered markers.
     begin: Option<u64>,
@@ -689,6 +689,19 @@ struct PacedFrame {
     /// When it asked for a buffer to render into, and when it got one.
     buffer_requested: Option<u64>,
     buffer_acquired: Option<u64>,
+    /// What the scheduler decided for it, in nanoseconds.
+    plan: Option<PlanFacts>,
+}
+
+/// A frame's plan, as the exports draw it, with durations in nanoseconds.
+#[derive(Clone, Debug, Default)]
+struct PlanFacts {
+    interval: Option<u64>,
+    depth: Option<u8>,
+    latency_allowance: Option<u64>,
+    hold: Option<(u64, HoldReason)>,
+    synchronous: bool,
+    args: Vec<OwnedArgEntry>,
 }
 
 /// The Chrome trace tracks of one frame stream's frames.
@@ -726,6 +739,33 @@ fn paced_frames(
                 MarkerPhase::Begin => frame.begin = Some(event.at_nanos()),
                 MarkerPhase::End => frame.end = Some(event.at_nanos()),
             }
+            continue;
+        }
+        if let OwnedObservation::FramePlan {
+            number,
+            period,
+            interval,
+            depth,
+            latency_allowance,
+            hold,
+            kind,
+            args,
+        } = event.observation()
+        {
+            let nanos = |ticks: u64| period.ticks_to_nanos(ticks);
+            frames
+                .entry(number.stream())
+                .or_default()
+                .entry(number.number())
+                .or_default()
+                .plan = Some(PlanFacts {
+                interval: interval.map(nanos),
+                depth: *depth,
+                latency_allowance: latency_allowance.map(nanos),
+                hold: hold.map(|(ticks, reason)| (nanos(ticks), reason)),
+                synchronous: *kind == FrameKind::Synchronous,
+                args: args.clone(),
+            });
             continue;
         }
         let OwnedObservation::FramePoint {
