@@ -3049,6 +3049,136 @@ fn without_targets_a_plans_interval_is_the_cadence_meant() {
 }
 
 #[test]
+fn planned_cadence_sums_intervals_across_superseded_frames() {
+    use footfall_analysis::Cadence;
+    use footfall_core::{DropReason, FramePointKind};
+    for targets in [[false, false], [true, true], [false, true], [true, false]] {
+        for delay in [0, 7_000] {
+            let mut recording = Recording::new(94);
+            recording.clock_sync(0, &HOST, 0);
+            let mut target = 0;
+            for (number, interval) in (1_u64..).zip([10_000, 20_000, 5_000, 15_000, 10_000]) {
+                target += interval;
+                let plan = planned(number).with_interval(interval);
+                let begin = target - 3_000;
+                if number == 2 || number == 3 {
+                    recording.numbered_frame(number, begin, begin + 1_000);
+                    recording.plan(begin + 1_000, &plan);
+                    recording.frame_point(
+                        begin + 1_000,
+                        number,
+                        FramePointKind::Dropped(DropReason::Superseded),
+                        &HOST,
+                        None,
+                    );
+                } else {
+                    let has_target = if number == 1 { targets[0] } else { targets[1] };
+                    let shown = target + if number == 4 { delay } else { 0 };
+                    recording.planned_frame(
+                        number,
+                        begin,
+                        has_target.then_some(target),
+                        shown,
+                        &plan,
+                    );
+                }
+            }
+            let trace = Trace::from_snapshot(&recording.snapshot(100_000));
+            let pacing = trace.pacing(us(500));
+            let expected = if delay == 0 {
+                Cadence::Steady
+            } else {
+                Cadence::Stalled { by: us(delay) }
+            };
+            assert_eq!(
+                pacing.frame(4).unwrap().cadence(),
+                Some(expected),
+                "targets {targets:?}"
+            );
+            let expected = if delay == 0 {
+                Cadence::Steady
+            } else {
+                Cadence::Hurried { by: us(delay) }
+            };
+            assert_eq!(
+                pacing.frame(5).unwrap().cadence(),
+                Some(expected),
+                "targets {targets:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn planned_cadence_needs_every_intervening_interval_unless_both_targets_are_known() {
+    use footfall_analysis::Cadence;
+    use footfall_core::{DropReason, FramePointKind};
+    for targets in [false, true] {
+        let mut recording = Recording::new(95);
+        recording.clock_sync(0, &HOST, 0);
+        for number in 1_u64..=4 {
+            let target = number * 10_000;
+            let begin = target - 3_000;
+            if number == 2 {
+                recording.numbered_frame(number, begin, begin + 1_000);
+                recording.plan(begin + 1_000, &planned(number));
+                recording.frame_point(
+                    begin + 1_000,
+                    number,
+                    FramePointKind::Dropped(DropReason::Superseded),
+                    &HOST,
+                    None,
+                );
+            } else {
+                recording.planned_frame(
+                    number,
+                    begin,
+                    targets.then_some(target),
+                    target,
+                    &planned(number).with_interval(10_000),
+                );
+            }
+        }
+        let trace = Trace::from_snapshot(&recording.snapshot(50_000));
+        let pacing = trace.pacing(us(500));
+        assert_eq!(
+            pacing.frame(3).unwrap().cadence(),
+            targets.then_some(Cadence::Steady)
+        );
+        assert_eq!(
+            pacing.frame(4).unwrap().cadence(),
+            Some(Cadence::Steady),
+            "the next interval is known"
+        );
+    }
+}
+
+#[test]
+fn latency_steps_start_again_after_synchronous_frames() {
+    let mut recording = Recording::new(96);
+    recording.clock_sync(0, &HOST, 0);
+    recording.opportunity(0, FrameStream::DEFAULT, 0, Some(10_000));
+    for number in 1_u64..=25 {
+        let begin = number * 40_000;
+        let plan = if (7..=13).contains(&number) && number % 2 == 1 {
+            planned(number).synchronous()
+        } else {
+            planned(number)
+        };
+        let latency = if (6..=14).contains(&number) || number >= 21 {
+            30_000
+        } else {
+            20_000
+        };
+        recording.planned_frame(number, begin, None, begin + latency, &plan);
+    }
+    let trace = Trace::from_snapshot(&recording.snapshot(1_100_000));
+    let steps = trace.pacing(us(500)).latency_steps();
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert_eq!(steps[0].at.number(), 21, "{steps:?}");
+}
+
+#[test]
 fn a_latency_step_says_when_the_plans_depth_changed_with_it() {
     let refresh = 8_333;
     let mut recording = Recording::new(20);

@@ -40,7 +40,9 @@ crates share one version.
   `Outcome::Held`, not a miss, and a frame off its spacing by about its
   hold is `Cadence::Held`, not a hitch; neither has a severity, and a late
   frame's `Why::held_back` says when it was held. Without targets, a
-  frame's cadence is judged against the interval its plan meant. A
+  frame's cadence is judged against the sum of planned intervals since the
+  last shown frame, including dropped frames. If any intervening interval
+  is unknown, cadence is left unjudged. A
   `LatencyStep` says when the plans' pipeline depth or latency allowance
   changed across it. `OutcomeCounts` and `CadenceCounts` count held and
   synchronous frames, and `Pacing::planned` the frames with plans.
@@ -166,6 +168,14 @@ crates share one version.
 
 ### Tools
 
+- `footfall analyze pacing` says how many frames were the scheduler's
+  choices rather than misses or hitches: shown late by their hold, off
+  their spacing by it, or presented outside pacing. Latency steps say when
+  the plans' depth or latency allowance changed with them. `--json`
+  carries each frame's `plan`, the `held` and `synchronous` outcomes, the
+  `held` cadence, a late frame's `held_back_ns`, the `held`,
+  `synchronous`, and `planned` counts, and each step's `depth` and
+  `latency_allowance`. `footfall check` has a `plans` check.
 - `footfall analyze pacing` reports how many misses and hitches were full
   and partial, how long frames waited for a buffer, and frames late for
   want of one; `--json` carries each frame's `severity` and
