@@ -12,8 +12,8 @@ use crate::trace::Trace;
 use core::fmt;
 use core::time::Duration;
 use footfall_core::{
-    BeginsAt, DropReason, FrameNumber, FramePointKind, FrameStream, TimelineId, TimelineKind,
-    TimingBasis,
+    BeginsAt, DropReason, FrameKind, FrameNumber, FramePointKind, FrameStream, HoldReason,
+    TimelineId, TimelineKind, TimingBasis,
 };
 use footfall_session::OwnedArgEntry;
 use std::collections::BTreeSet;
@@ -48,6 +48,87 @@ pub struct FramePacing {
     why: Option<Why>,
     cadence: Option<Cadence>,
     severity: Option<Severity>,
+    plan: Option<Plan>,
+}
+
+/// What the frame scheduler decided for a frame beyond its times, as
+/// [`FramePacing::plan`] returns it from the frame's
+/// [`FramePlan`](footfall_core::FramePlan), with its durations in time.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Plan {
+    interval: Option<Duration>,
+    depth: Option<u8>,
+    latency_allowance: Option<Duration>,
+    hold: Option<(Duration, HoldReason)>,
+    kind: FrameKind,
+    args: Vec<OwnedArgEntry>,
+}
+
+impl Plan {
+    pub(crate) const fn new(
+        interval: Option<Duration>,
+        depth: Option<u8>,
+        latency_allowance: Option<Duration>,
+        hold: Option<(Duration, HoldReason)>,
+        kind: FrameKind,
+        args: Vec<OwnedArgEntry>,
+    ) -> Self {
+        Self {
+            interval,
+            depth,
+            latency_allowance,
+            hold,
+            kind,
+            args,
+        }
+    }
+
+    /// Returns the interval the scheduler meant between this frame and the
+    /// one before it, if it said: the frame's cadence.
+    #[must_use]
+    pub const fn interval(&self) -> Option<Duration> {
+        self.interval
+    }
+
+    /// Returns how many frames deep the presentation pipeline was planned
+    /// to be, if it said.
+    #[must_use]
+    pub const fn depth(&self) -> Option<u8> {
+        self.depth
+    }
+
+    /// Returns how much later than the platform's prediction the frame was
+    /// aimed for, for latency the scheduler learned, if it said.
+    #[must_use]
+    pub const fn latency_allowance(&self) -> Option<Duration> {
+        self.latency_allowance
+    }
+
+    /// Returns how long the scheduler held the frame back on purpose, and
+    /// why, if it did.
+    #[must_use]
+    pub const fn hold(&self) -> Option<(Duration, HoldReason)> {
+        self.hold
+    }
+
+    /// Returns whether the frame was paced.
+    #[must_use]
+    pub const fn kind(&self) -> FrameKind {
+        self.kind
+    }
+
+    /// Returns whether the frame was presented as soon as it was built,
+    /// outside the scheduler's pacing.
+    #[must_use]
+    pub fn is_synchronous(&self) -> bool {
+        self.kind == FrameKind::Synchronous
+    }
+
+    /// Returns what else the scheduler knew when it planned the frame.
+    #[must_use]
+    pub fn args(&self) -> &[OwnedArgEntry] {
+        &self.args
+    }
 }
 
 /// Whether a frame was shown when it was meant to be, as
@@ -83,6 +164,19 @@ pub enum Outcome {
         /// How long after the deadline.
         by: Duration,
     },
+    /// Shown after its target by no more than the frame scheduler held it
+    /// back on purpose, as its [plan](FramePacing::plan) says: the
+    /// scheduler's choice, not a miss.
+    Held {
+        /// How much later than its target.
+        by: Duration,
+        /// Why the scheduler held it back.
+        reason: HoldReason,
+    },
+    /// Presented as soon as it was built, outside the scheduler's pacing,
+    /// such as a frame a window resize waits for: it had no deadline or
+    /// target to miss.
+    Synchronous,
     /// Not known: there is no presentation time and target to compare,
     /// and the work did not miss its deadline.
     Unknown,
@@ -92,7 +186,8 @@ impl Outcome {
     /// Returns `true` for a frame shown late, submitted late, or dropped for
     /// a reason that is a miss, such as missing its deadline. A frame the
     /// program discarded or superseded, or that a later frame replaced, is
-    /// not a miss, and neither is one shown early.
+    /// not a miss, and neither is one shown early, one the scheduler held
+    /// back on purpose, or one presented outside pacing.
     #[must_use]
     pub const fn missed(self) -> bool {
         match self {
@@ -241,14 +336,24 @@ pub enum Cadence {
         /// How much shorter than their targets' spacing.
         by: Duration,
     },
+    /// Off the spacing by about as much as the frame scheduler held the
+    /// frame back on purpose, as its [plan](FramePacing::plan) says: a
+    /// frame held a refresh to drain a queue shows its content that much
+    /// sooner than the frame before's spacing meant, once, so the frames
+    /// after it are shown a refresh sooner. The scheduler's choice, not a
+    /// hitch.
+    Held {
+        /// How long the scheduler held the frame back.
+        by: Duration,
+    },
 }
 
 impl Cadence {
     /// Returns `true` for a frame that broke the rhythm: stalled or
-    /// hurried.
+    /// hurried. A frame the scheduler held back on purpose did not.
     #[must_use]
     pub const fn is_hitch(self) -> bool {
-        !matches!(self, Self::Steady)
+        matches!(self, Self::Stalled { .. } | Self::Hurried { .. })
     }
 }
 
@@ -259,6 +364,7 @@ impl fmt::Display for Cadence {
             Self::Steady => f.write_str("steady"),
             Self::Stalled { by } => write!(f, "stalled by {}", Shown(*by)),
             Self::Hurried { by } => write!(f, "hurried by {}", Shown(*by)),
+            Self::Held { by } => write!(f, "held back {} by the scheduler", Shown(*by)),
         }
     }
 }
@@ -275,6 +381,14 @@ impl fmt::Display for Outcome {
             Self::SubmittedLate { by } => {
                 write!(f, "submitted {} after its deadline", Shown(*by))
             }
+            Self::Held { by, reason } => {
+                write!(f, "held back {} by the scheduler", Shown(*by))?;
+                match reason {
+                    HoldReason::DrainQueue => f.write_str(" to drain the queue"),
+                    _ => Ok(()),
+                }
+            }
+            Self::Synchronous => f.write_str("presented outside pacing"),
             Self::Unknown => f.write_str("not known"),
         }
     }
@@ -509,8 +623,13 @@ impl FramePacing {
     ///
     /// The deadline is the frame's own, from the frame scheduler, so this
     /// holds whatever the refresh rate, and when it varies.
+    ///
+    /// A [synchronous](Plan::is_synchronous) frame is not judged.
     #[must_use]
     pub fn met_deadline(&self) -> Option<bool> {
+        if self.is_synchronous() {
+            return None;
+        }
         let (deadline, submitted) = self.deadline.zip(self.submission())?;
         Some(submitted <= deadline)
     }
@@ -519,6 +638,9 @@ impl FramePacing {
     /// when it was; see [`met_deadline`](Self::met_deadline).
     #[must_use]
     pub fn submitted_late(&self) -> Option<Duration> {
+        if self.is_synchronous() {
+            return None;
+        }
         let (deadline, submitted) = self.deadline.zip(self.submission())?;
         submitted.checked_sub(deadline).filter(|by| !by.is_zero())
     }
@@ -571,14 +693,35 @@ impl FramePacing {
     /// before it, in its stream, as their targets were apart; see
     /// [`Cadence`].
     ///
-    /// `None` when that is not known: the frame was not shown, it or the
-    /// frame shown before it had no target, it is its stream's first shown
-    /// frame, or the trace cannot say what was on screen between them,
+    /// Without both targets, the frame is held to the interval its
+    /// [plan](Self::plan) meant since the frame before, when it says.
+    ///
+    /// `None` when that is not known: the frame was not shown, neither
+    /// both targets nor its plan say the spacing meant, it is its stream's
+    /// first shown frame or the first after a
+    /// [synchronous](Self::is_synchronous) one, which is no part of the
+    /// rhythm, or the trace cannot say what was on screen between them,
     /// such as a frame with neither a presentation nor a drop reported, or
     /// events lost.
     #[must_use]
     pub const fn cadence(&self) -> Option<Cadence> {
         self.cadence
+    }
+
+    /// Returns what the frame scheduler decided for the frame beyond its
+    /// times, when it recorded a [`FramePlan`](footfall_core::FramePlan):
+    /// the interval it meant, the depth it planned for, the latency it
+    /// allowed for, any hold, and whether the frame was paced.
+    #[must_use]
+    pub const fn plan(&self) -> Option<&Plan> {
+        self.plan.as_ref()
+    }
+
+    /// Returns whether the frame was presented as soon as it was built,
+    /// outside the scheduler's pacing, as its plan says.
+    #[must_use]
+    pub fn is_synchronous(&self) -> bool {
+        self.plan.as_ref().is_some_and(Plan::is_synchronous)
     }
 
     /// Returns the time from the frame's begin marker to its presentation.
@@ -739,6 +882,8 @@ impl Pacing {
                 Outcome::Dropped { reason } if reason.is_miss() => counts.dropped += 1,
                 Outcome::Dropped { .. } => counts.skipped += 1,
                 Outcome::SubmittedLate { .. } => counts.submitted_late += 1,
+                Outcome::Held { .. } => counts.held += 1,
+                Outcome::Synchronous => counts.synchronous += 1,
                 Outcome::Unknown => counts.unknown += 1,
             }
         }
@@ -976,6 +1121,7 @@ impl Pacing {
                 }
                 Some(Cadence::Stalled { .. }) => counts.stalled += 1,
                 Some(Cadence::Hurried { .. }) => counts.hurried += 1,
+                Some(Cadence::Held { .. }) => counts.held += 1,
                 None => {}
             }
         }
@@ -1048,7 +1194,7 @@ impl Pacing {
                 .filter(|frame| frame.number.stream() == stream)
             {
                 let measured = frame.work.zip(frame.presented).filter(|(work, shown)| {
-                    !self
+                    !frame.is_synchronous() && !self
                         .gaps
                         .iter()
                         .any(|gap| gap.overlaps(work.start(), *shown))
@@ -1067,11 +1213,13 @@ impl Pacing {
                     latencies.clear();
                 }
                 let refresh = self.refresh_at(frame).unwrap_or(median);
-                latencies.push((
-                    frame.number,
-                    shown.saturating_sub(work.start()),
-                    refresh / 2,
-                ));
+                latencies.push(StepFrame {
+                    number: frame.number,
+                    latency: shown.saturating_sub(work.start()),
+                    threshold: refresh / 2,
+                    depth: frame.plan.as_ref().and_then(Plan::depth),
+                    latency_allowance: frame.plan.as_ref().and_then(Plan::latency_allowance),
+                });
                 previous = Some((frame.number, shown));
             }
             latency_steps(&latencies, &mut steps);
@@ -1121,6 +1269,15 @@ impl Pacing {
             .filter(|interval| !interval.is_zero())
     }
 
+    /// Returns how many frames came with a [plan](FramePacing::plan).
+    #[must_use]
+    pub fn planned(&self) -> u64 {
+        self.frames
+            .iter()
+            .filter(|frame| frame.plan.is_some())
+            .count() as u64
+    }
+
     /// Returns how many of the frames' points could not be converted to the
     /// trace's time, because their clock has no sync or pair leading to the
     /// runtime's, and so were left out; see
@@ -1152,6 +1309,12 @@ pub struct OutcomeCounts {
     pub skipped: u64,
     /// Frames submitted after their deadlines, with no presentation time.
     pub submitted_late: u64,
+    /// Frames shown late by no more than the scheduler held them back on
+    /// purpose; see [`Outcome::Held`]. They are not misses.
+    pub held: u64,
+    /// Frames presented as soon as they were built, outside pacing; see
+    /// [`Outcome::Synchronous`]. They are not judged.
+    pub synchronous: u64,
     /// Frames with too little to judge.
     pub unknown: u64,
 }
@@ -1166,6 +1329,8 @@ impl OutcomeCounts {
             + self.dropped
             + self.skipped
             + self.submitted_late
+            + self.held
+            + self.synchronous
             + self.unknown
     }
 
@@ -1283,6 +1448,9 @@ pub struct Why {
     /// How long it waited for a buffer to render into, when its points say;
     /// see [`FramePacing::buffer_wait`].
     pub buffer_wait: Option<Duration>,
+    /// How long the scheduler held it back on purpose, when its plan says:
+    /// it was later than that, so the hold alone does not explain it.
+    pub held_back: Option<Duration>,
     /// How the frame's presentation time was known.
     pub presented: TimingBasis,
 }
@@ -1339,6 +1507,9 @@ impl fmt::Display for Why {
         }
         if let Some(wait) = self.buffer_wait.filter(|wait| !wait.is_zero()) {
             write!(f, "; waited {} for a buffer", Shown(wait))?;
+        }
+        if let Some(held) = self.held_back {
+            write!(f, "; held back {} by the scheduler", Shown(held))?;
         }
         if !self.begin_judged {
             f.write_str("; when it began was not judged")?;
@@ -1409,6 +1580,13 @@ pub struct LatencyStep {
     /// The typical latency after: the median of the
     /// [`LATENCY_STEP_FRAMES`] frames that showed the step.
     pub to: Duration,
+    /// The pipeline depth the frames' plans gave before the step and at
+    /// its end, when it changed: the step came with it.
+    pub depth: Option<(u8, u8)>,
+    /// The latency allowance the frames' plans gave before the step and at
+    /// its end, when it changed by at least half a refresh: the step came
+    /// with it.
+    pub latency_allowance: Option<(Duration, Duration)>,
 }
 
 impl LatencyStep {
@@ -1431,25 +1609,55 @@ impl fmt::Display for LatencyStep {
             Shown(self.from),
             Shown(self.to),
             self.at,
-        )
+        )?;
+        match (self.depth, self.latency_allowance) {
+            (Some((from, to)), Some((allowed, allows))) => write!(
+                f,
+                ", while pipeline depth went from {from} to {to} and the latency allowance \
+                 from {} to {}",
+                Shown(allowed),
+                Shown(allows),
+            ),
+            (Some((from, to)), None) => {
+                write!(f, ", while pipeline depth went from {from} to {to}")
+            }
+            (None, Some((from, to))) => write!(
+                f,
+                ", while the latency allowance went from {} to {}",
+                Shown(from),
+                Shown(to),
+            ),
+            (None, None) => Ok(()),
+        }
     }
+}
+
+/// One frame as [`latency_steps`] judges it.
+struct StepFrame {
+    number: FrameNumber,
+    latency: Duration,
+    /// Half its refresh.
+    threshold: Duration,
+    depth: Option<u8>,
+    latency_allowance: Option<Duration>,
 }
 
 /// Finds the lasting changes in one stream's latencies: runs of
 /// [`LATENCY_STEP_FRAMES`] frames each at least its own threshold, half its
-/// refresh, from the level set before, the same way.
-fn latency_steps(latencies: &[(FrameNumber, Duration, Duration)], steps: &mut Vec<LatencyStep>) {
-    let median = |run: &[(FrameNumber, Duration, Duration)]| {
-        DurationStats::of(run.iter().map(|(_, latency, _)| *latency)).median()
-    };
+/// refresh, from the level set before, the same way. A step says when the
+/// frames' plans changed depth or latency allowance across it, from
+/// [`LATENCY_STEP_FRAMES`] frames before its first to its last.
+fn latency_steps(latencies: &[StepFrame], steps: &mut Vec<LatencyStep>) {
+    let median =
+        |run: &[StepFrame]| DurationStats::of(run.iter().map(|frame| frame.latency)).median();
     let Some(first) = latencies.get(..LATENCY_STEP_FRAMES) else {
         return;
     };
     let mut level = median(first);
     // Where the run of frames away from the level began, and which way.
     let mut run: Option<(usize, bool)> = None;
-    for (index, &(_, latency, threshold)) in latencies.iter().enumerate().skip(LATENCY_STEP_FRAMES)
-    {
+    for (index, frame) in latencies.iter().enumerate().skip(LATENCY_STEP_FRAMES) {
+        let (latency, threshold) = (frame.latency, frame.threshold);
         let up = latency >= level + threshold;
         let down = latency + threshold <= level;
         if threshold.is_zero() || (!up && !down) {
@@ -1463,10 +1671,21 @@ fn latency_steps(latencies: &[(FrameNumber, Duration, Duration)], steps: &mut Ve
         run = Some((start, up));
         if index + 1 - start >= LATENCY_STEP_FRAMES {
             let to = median(&latencies[start..=index]);
+            let before = &latencies[start.saturating_sub(LATENCY_STEP_FRAMES)];
+            let depth = before
+                .depth
+                .zip(frame.depth)
+                .filter(|(from, to)| from != to);
+            let latency_allowance = before
+                .latency_allowance
+                .zip(frame.latency_allowance)
+                .filter(|(from, to)| from.abs_diff(*to) >= threshold);
             steps.push(LatencyStep {
-                at: latencies[start].0,
+                at: latencies[start].number,
                 from: level,
                 to,
+                depth,
+                latency_allowance,
             });
             level = to;
             run = None;
@@ -1480,7 +1699,8 @@ fn latency_steps(latencies: &[(FrameNumber, Duration, Duration)], steps: &mut Ve
 /// Only a frame that missed has one: one shown late, early, or dropped for
 /// a miss. A frame late as steadily as the one before has none, as that is
 /// latency, not a hitch, and neither has a frame shown on time, though it
-/// caught up after a late one. A late or early frame whose cadence broke is
+/// caught up after a late one, a frame off its spacing by as much as the
+/// scheduler held it back, or one presented outside pacing. A late or early frame whose cadence broke is
 /// judged by how far off its spacing from the frame before was, any other
 /// by how late or early it was, against the refresh interval its stream's
 /// frame opportunities stated when it was to be shown, or else the
@@ -1533,13 +1753,16 @@ pub struct CadenceCounts {
     pub stalled: u64,
     /// Shown sooner after the frame before than their targets were apart.
     pub hurried: u64,
+    /// Off the spacing by about as much as the scheduler held them back on
+    /// purpose; see [`Cadence::Held`]. They are not hitches.
+    pub held: u64,
 }
 
 impl CadenceCounts {
     /// Returns how many frames had their cadence judged.
     #[must_use]
     pub const fn judged(&self) -> u64 {
-        self.steady + self.stalled + self.hurried
+        self.steady + self.stalled + self.hurried + self.held
     }
 
     /// Returns how many broke the rhythm: stalled or hurried.
@@ -1609,6 +1832,7 @@ pub struct WastedWork {
 pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
     let mut numbers: BTreeSet<FrameNumber> = trace.numbered_frames().collect();
     numbers.extend(trace.frame_points().keys().copied());
+    numbers.extend(trace.frame_plans().keys().copied());
     let mut frames: Vec<FramePacing> = numbers
         .into_iter()
         .map(|number| {
@@ -1637,6 +1861,10 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
                 why: None,
                 cadence: None,
                 severity: None,
+                plan: trace
+                    .frame_plans()
+                    .get(&number)
+                    .map(|(plan, _)| plan.clone()),
             };
             for point in trace.frame_points().get(&number).into_iter().flatten() {
                 let (kind, time) = (&point.kind, &point.time);
@@ -1775,6 +2003,8 @@ fn severity(
         Outcome::Late { .. } if frame.cadence == Some(Cadence::Steady) => return None,
         Outcome::Late { by, .. } | Outcome::Early { by } => match frame.cadence {
             Some(Cadence::Stalled { by: off } | Cadence::Hurried { by: off }) => off,
+            // Off by what the scheduler held it back: its choice.
+            Some(Cadence::Held { .. }) => return None,
             _ => by,
         },
         _ => return None,
@@ -1916,6 +2146,12 @@ fn intervals(frames: &[FramePacing], gaps: &[TimeRange]) -> (Vec<(FrameStream, D
             broken = true;
         }
         before = Some(frame.number);
+        if frame.is_synchronous() {
+            // Outside pacing: what was on screen around it is no stutter.
+            shown = None;
+            broken = false;
+            continue;
+        }
         match (frame.presented, frame.dropped) {
             (Some(at), _) => {
                 if let Some(since) = shown {
@@ -1958,26 +2194,42 @@ fn cadences(frames: &mut [FramePacing], gaps: &[TimeRange], tolerance: Duration)
             shown = None;
         }
         before = Some(frame.number);
+        if frame.is_synchronous() {
+            // Outside pacing, it is no part of the rhythm, and the frame
+            // after it has none to keep.
+            shown = None;
+            continue;
+        }
         let Some(at) = frame.presented else {
             if frame.dropped.is_none() {
                 shown = None;
             }
             continue;
         };
-        if let Some((since, Some(since_target))) = shown
-            && let Some(target) = frame.target
+        // The spacing their targets meant, or else the interval the
+        // frame's plan meant since the frame before.
+        let meant = |since_target: Option<Duration>| match (since_target, frame.target) {
+            (Some(since_target), Some(target)) => Some(target.saturating_sub(since_target)),
+            _ => frame.plan.as_ref().and_then(Plan::interval),
+        };
+        if let Some((since, since_target)) = shown
+            && let Some(meant) = meant(since_target)
             && !gaps.iter().any(|gap| gap.overlaps(since, at))
         {
-            let meant = target.saturating_sub(since_target);
             let spacing = at.saturating_sub(since);
-            frame.cadence = Some(if spacing > meant + tolerance {
-                Cadence::Stalled {
-                    by: spacing - meant,
-                }
+            let off = spacing.abs_diff(meant);
+            let held = frame
+                .plan
+                .as_ref()
+                .and_then(Plan::hold)
+                .map(|(held, _)| held)
+                .filter(|held| off > tolerance && off.abs_diff(*held) <= tolerance);
+            frame.cadence = Some(if let Some(by) = held {
+                Cadence::Held { by }
+            } else if spacing > meant + tolerance {
+                Cadence::Stalled { by: off }
             } else if spacing + tolerance < meant {
-                Cadence::Hurried {
-                    by: meant - spacing,
-                }
+                Cadence::Hurried { by: off }
             } else {
                 Cadence::Steady
             });
@@ -2021,6 +2273,9 @@ fn outcome(
     if let Some(reason) = raw.dropped {
         return (Outcome::Dropped { reason }, None);
     }
+    if raw.is_synchronous() {
+        return (Outcome::Synchronous, None);
+    }
     let submitted_late = raw.submitted_late();
     let Some((presented, target)) = raw.presented.zip(raw.target) else {
         let outcome = match submitted_late {
@@ -2035,6 +2290,20 @@ fn outcome(
     }
     if presented <= target.saturating_add(tolerance) {
         return (Outcome::OnTime, None);
+    }
+    // A scheduler that held the frame back and kept its target: as late as
+    // it was held, on purpose.
+    let late_by = presented - target;
+    if let Some((held, reason)) = raw.plan.as_ref().and_then(Plan::hold)
+        && late_by <= held.saturating_add(tolerance)
+    {
+        return (
+            Outcome::Held {
+                by: late_by,
+                reason,
+            },
+            None,
+        );
     }
     let submitted_in_time = raw.met_deadline() == Some(true);
     let behind_previous = before
@@ -2116,11 +2385,9 @@ fn outcome(
         behind_previous,
         whole_refreshes,
         buffer_wait,
+        held_back: raw.plan.as_ref().and_then(Plan::hold).map(|(held, _)| held),
         presented: presented_basis,
     };
-    let late = Outcome::Late {
-        by: presented - target,
-        cause,
-    };
+    let late = Outcome::Late { by: late_by, cause };
     (late, Some(why))
 }

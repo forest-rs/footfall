@@ -32,6 +32,18 @@ crates share one version.
 
 ### Consuming
 
+- `FramePacing::plan` returns what the scheduler decided for a frame, as a
+  `Plan`, and analysis acts on it. A frame presented outside pacing is
+  `Outcome::Synchronous`: it is not judged against a deadline or target,
+  and is left out of cadence, severity, stutters, and latency steps. A
+  frame shown late by no more than the scheduler held it back is
+  `Outcome::Held`, not a miss, and a frame off its spacing by about its
+  hold is `Cadence::Held`, not a hitch; neither has a severity, and a late
+  frame's `Why::held_back` says when it was held. Without targets, a
+  frame's cadence is judged against the interval its plan meant. A
+  `LatencyStep` says when the plans' pipeline depth or latency allowance
+  changed across it. `OutcomeCounts` and `CadenceCounts` count held and
+  synchronous frames, and `Pacing::planned` the frames with plans.
 - `FramePacing::buffer_wait` says how long a frame waited for a buffer,
   and `Pacing::buffer_waits` how long the frames that waited did. A frame
   submitted after its deadline by less than it waited has the new cause
