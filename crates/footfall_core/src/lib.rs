@@ -132,8 +132,8 @@ pub use descriptor::{
 pub use emit::{
     Backend, FlowPhase, MarkerKind, MarkerPhase, NoopBackend, ScopeGuard, ScopeToken, clock_pair,
     clock_sync, counter_add, flow_begin, flow_end, flow_step, frame_begin, frame_begin_numbered,
-    frame_end, frame_end_numbered, frame_marker, frame_opportunity, frame_point, gauge_set,
-    histogram_record, message, message_with, numbered_marker, pass_begin, pass_end,
+    frame_end, frame_end_numbered, frame_marker, frame_opportunity, frame_plan, frame_point,
+    gauge_set, histogram_record, message, message_with, numbered_marker, pass_begin, pass_end,
     resource_create, resource_drop, resource_update, scope, scope_begin, scope_begin_with,
     scope_end, scope_with, timeline_span, transaction_begin, transaction_end,
 };
@@ -150,7 +150,8 @@ pub use id::{
 pub use label::{LabelKey, LabelValue};
 pub use level::{InstrumentationLevel, max_level, set_max_level};
 pub use timeline::{
-    BeginsAt, DropReason, FrameOpportunity, FramePoint, FramePointKind, TimelineSpan, TimingBasis,
+    BeginsAt, DropReason, FrameKind, FrameOpportunity, FramePlan, FramePoint, FramePointKind,
+    HoldReason, TimelineSpan, TimingBasis,
 };
 pub use unit::Unit;
 

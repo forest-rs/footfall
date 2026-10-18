@@ -12,9 +12,9 @@ use crate::{
 use footfall_core::{
     Args, Backend, ClockId, ClockReading, Context, ContextHandle, ContextId, CounterDesc,
     CounterDescId, EventDesc, EventDescId, FlowId, FlowPhase, FrameNumber, FrameOpportunity,
-    FramePoint, InstallBackendError, InstrumentationLevel, MarkerKind, MarkerPhase, ResourceId,
-    ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, ScopeToken, TimelineId, TimelineSpan,
-    install_backend, set_max_level,
+    FramePlan, FramePoint, InstallBackendError, InstrumentationLevel, MarkerKind, MarkerPhase,
+    ResourceId, ResourceKindDesc, ResourceKindId, ScopeDesc, ScopeDescId, ScopeToken, TimelineId,
+    TimelineSpan, install_backend, set_max_level,
 };
 use hashbrown::{HashMap, HashSet};
 use std::{
@@ -1082,6 +1082,7 @@ impl DescriptorIds {
                 Observation::ScopeEnd { .. }
                 | Observation::FrameMarker { .. }
                 | Observation::FramePoint { time: None, .. }
+                | Observation::FramePlan { .. }
                 | Observation::Flow { .. } => {}
             }
         }
@@ -1556,6 +1557,26 @@ impl Backend for Runtime {
                 time: ClockTicks::from(opportunity.time()),
                 interval: opportunity.interval(),
                 args: *opportunity.args(),
+            },
+            at_nanos,
+        );
+    }
+
+    fn frame_plan(&self, plan: &FramePlan) {
+        if !self.level().captures_markers() {
+            return;
+        }
+        let at_nanos = self.now_nanos();
+        self.push_event_at(
+            Observation::FramePlan {
+                number: plan.number(),
+                period: plan.period(),
+                interval: plan.interval(),
+                depth: plan.depth(),
+                latency_allowance: plan.latency_allowance(),
+                hold: plan.hold(),
+                kind: plan.kind(),
+                args: *plan.args(),
             },
             at_nanos,
         );

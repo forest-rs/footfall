@@ -290,6 +290,7 @@ thread id, then a `u8` observation tag and its fields:
 | `11` | timeline span | timeline id `u64`, timeline name `name` and kind `u8` (`0` GPU, `1` display, `2` other; written with the name), scope id `u64`, name `name`, location `location`, context id `u64`, begin `clock`, length in ticks `u64`, frame `frame`, flow `u64` (the id plus one, or `0` for none), args |
 | `12` | frame point | frame `frame` (never none), kind `u8` (`0` deadline, `1` target, `2` presented, `3` dropped, `4` predicted, `5` expected, `6` submitted, `7` sampled, `8` scheduled, `9` buffer requested, `10` buffer acquired), for a scheduled frame what it begins at `u8` (`0` the time, `1` an opportunity), for a dropped frame its reason `u8` (`0` unknown, `1` discarded, `2` superseded, `3` missed deadline, `4` surface unavailable, `5` output unavailable, `6` replaced, `7` not presented), timing basis `u8` (`0` unknown, `1` observed, `2` estimated), time tag `u8` (`0` none, `1` present) and, when present, `clock`, args |
 | `13` | frame opportunity | frame stream id `u64` and generation `u64`, time `clock`, interval tag `u8` (`0` none, `1` present) and, when present, the interval in the clock's ticks `u64`, args |
+| `14` | frame plan | frame `frame` (never none), tick period as nanoseconds `u32` per ticks `u32`, then a presence tag `u8` (`0` none, `1` present) and, when present, the value for each of: the interval in ticks `u64`, the pipeline depth `u8`, the latency allowance in ticks `u64`, and the hold, as its ticks `u64` and reason `u8` (`0` to drain the queue); then the kind `u8` (`0` paced, `1` synchronous), args |
 
 A counter sample is a counter's or gauge's value at a frame end, recorded
 for each one the frame updated; a counter's change over a frame is the
@@ -333,9 +334,17 @@ arrives. Its interval, when given, is how many ticks of its clock the
 platform meant to leave before the next one. Its row's time is when it was
 recorded.
 
+A frame plan is what the frame scheduler decided for one numbered frame
+beyond its times: the interval it meant between this frame and the one
+before it, the pipeline depth it planned for, how much later than the
+platform's prediction it aimed the frame for latency it learned, how long
+it held the frame back on purpose and why, and whether the frame was paced
+or presented as soon as it was built, outside pacing. Its durations are
+ticks of its own period. Its row's time is when it was recorded.
+
 Version `1.1` added the scheduled, buffer requested, and buffer acquired
-frame point kinds and the frame opportunity observation. A `1.0` envelope
-has none of them, and decodes the same as before.
+frame point kinds and the frame opportunity and frame plan observations. A
+`1.0` envelope has none of them, and decodes the same as before.
 
 `args` is a `u8` entry count, at most `footfall_core::ARGS_INLINE_CAPACITY`,
 followed by that many entries of key `string` and label value. Message text is

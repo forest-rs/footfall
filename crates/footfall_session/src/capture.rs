@@ -593,6 +593,33 @@ mod tests {
     }
 
     #[test]
+    fn runtime_snapshots_write_frame_plans() {
+        use footfall_core::{Args, FramePlan, FrameStream, HoldReason, TickPeriod};
+        let runtime = Runtime::default();
+        let stream = FrameStream::new(2).with_generation(1);
+        runtime.frame_plan(
+            &FramePlan::new(stream.frame(4), TickPeriod::new(125, 3))
+                .with_interval(200_000)
+                .with_depth(2)
+                .with_latency_allowance(200_000)
+                .with_hold(200_000, HoldReason::DrainQueue)
+                .with_args(Args::none().with("safety_margin_ns", 1_500_u64)),
+        );
+        runtime.frame_plan(&FramePlan::new(stream.frame(5), TickPeriod::NANOSECOND).synchronous());
+        let snapshot = runtime.snapshot();
+
+        let mut writer = CaptureWriter::new(Vec::new()).expect("header writes");
+        writer.write_snapshot(&snapshot).expect("snapshot writes");
+        let bytes = writer.finish().expect("capture finishes");
+        let read: Vec<_> = CaptureReader::new(bytes.as_slice())
+            .expect("header reads")
+            .collect::<Result<_, _>>()
+            .expect("snapshots read");
+        assert_eq!(read, [OwnedSnapshot::from(&snapshot)]);
+        assert_eq!(read[0].events().len(), 2);
+    }
+
+    #[test]
     fn recorders_write_each_event_once_and_say_what_was_evicted() {
         let runtime = Runtime::builder().event_capacity(4).build();
         mark(&runtime);

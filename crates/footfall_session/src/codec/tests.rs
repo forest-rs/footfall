@@ -662,6 +662,65 @@ fn frame_opportunities_and_scheduled_points_match_their_golden_fixture() {
     );
 }
 
+/// A frame plan carries its frame, its tick period, a tagged interval,
+/// depth, latency allowance, and hold with its reason, its kind, and args.
+#[test]
+fn frame_plans_match_their_golden_fixture() {
+    use footfall_core::{FrameKind, HoldReason, TickPeriod};
+    let envelope = OwnedSessionEnvelope::new(
+        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+        OwnedSessionPayload::Events(vec![
+            OwnedTimedObservation::new(
+                0,
+                0,
+                1,
+                OwnedObservation::FramePlan {
+                    number: FrameStream::new(1).frame(9),
+                    period: TickPeriod::new(125, 3),
+                    interval: Some(100),
+                    depth: Some(2),
+                    latency_allowance: Some(20),
+                    hold: Some((100, HoldReason::DrainQueue)),
+                    kind: FrameKind::Paced,
+                    args: Vec::new(),
+                },
+            ),
+            OwnedTimedObservation::new(
+                5,
+                1,
+                1,
+                OwnedObservation::FramePlan {
+                    number: 10.into(),
+                    period: TickPeriod::NANOSECOND,
+                    interval: None,
+                    depth: None,
+                    latency_allowance: None,
+                    hold: None,
+                    kind: FrameKind::Synchronous,
+                    args: Vec::new(),
+                },
+            ),
+        ]),
+    );
+    let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
+    // Tag `0e`; frame 9 written one more `0a` in stream 1 generation 0,
+    // period 125 ns per 3 ticks, interval `01` of 100 `64`, depth `01` of 2,
+    // latency allowance `01` of 20 `14`, hold `01` of 100 `64` to drain the
+    // queue `00`, paced `00`, no args `00`. Then tag `0e`; frame 10 written
+    // `0b` in stream 0 generation 0, 1 ns per tick, no interval, depth,
+    // allowance, or hold `00 00 00 00`, synchronous `01`, no args `00`.
+    assert_eq!(
+        to_hex(&encoded),
+        "01000100000602\
+         0000010e0a01007d030164010201140164000000\
+         0a02010e0b00000101000000000100"
+    );
+    assert_eq!(
+        decode_envelope(&encoded).expect("decoding should succeed"),
+        envelope
+    );
+}
+
 /// Every frame point kind, drop reason, and timing basis survives the wire,
 /// with args.
 #[test]
