@@ -251,6 +251,8 @@ pub trait Backend: Send + Sync {
     }
 
     /// Ends a scope previously begun by [`Backend::scope_begin`].
+    ///
+    /// Complete previously admitted scopes even if the capture level has since been lowered.
     fn scope_end(&self, token: ScopeToken) {
         let _ = token;
     }
@@ -448,6 +450,7 @@ pub fn scope_begin_with(
 
 /// Ends a previously-begun scope.
 ///
+/// Valid tokens are forwarded even when the current level excludes new scopes.
 /// Ending [`ScopeToken::INVALID`] does nothing.
 #[cfg_attr(footfall_compile_out, inline(always))]
 #[cfg_attr(not(footfall_compile_out), inline)]

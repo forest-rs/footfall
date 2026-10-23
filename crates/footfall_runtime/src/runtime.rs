@@ -256,8 +256,9 @@ impl Runtime {
     /// Once installed this way, the runtime's capture level also sets
     /// [`footfall_core::set_max_level`], now and on every
     /// [`set_level`](Self::set_level), so emissions the level excludes return
-    /// before reaching the runtime at all. A runtime installed any other way
-    /// leaves the process maximum level to whoever installed it.
+    /// before reaching the runtime at all. Ends for previously admitted scopes
+    /// still reach the runtime after a level reduction. A runtime installed any
+    /// other way leaves the process maximum level to whoever installed it.
     pub fn install_global(self) -> Result<&'static Self, InstallBackendError> {
         let runtime: &'static Self = Box::leak(Box::new(self));
         install_backend(runtime)?;
@@ -312,6 +313,8 @@ impl Runtime {
     }
 
     /// Sets the runtime capture level used by subsequent backend emissions.
+    ///
+    /// Previously admitted scopes still emit their ends after the level is lowered.
     ///
     /// For a runtime installed with [`install_global`](Self::install_global)
     /// this also sets the process-wide [`footfall_core::max_level`].
@@ -1411,9 +1414,7 @@ impl Backend for Runtime {
         if !token.is_valid() {
             return;
         }
-        if !self.level().captures_scopes() {
-            return;
-        }
+        // The level controls admission at scope_begin, not completion of an admitted scope.
         let at_nanos = self.now_nanos();
         self.push_event_at(Observation::ScopeEnd { token }, at_nanos);
     }

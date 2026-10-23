@@ -5,6 +5,12 @@ crates share one version.
 
 ## Unreleased
 
+### Fixed
+
+- Closing scopes admitted before the runtime level is lowered to `Off` or
+  `Counters` still emits their end events. New scopes remain filtered and
+  invalid scope tokens remain ignored.
+
 ### Instrumenting
 
 - `FramePointKind::BufferRequested` and `FramePointKind::BufferAcquired`
