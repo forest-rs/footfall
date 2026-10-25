@@ -76,6 +76,28 @@ values. Unknown changes are JSON `null`, including incomplete batches or gaps.
 See the [sampling guide](../../docs/instrumenting-an-app.md#counter-checkpoints)
 for cost and configuration.
 
+## Resource provenance
+
+```sh
+footfall analyze resources edits.ffcap --json
+footfall analyze resources edits.ffcap --created-in 13909 --alive-at-ns 50000000 --json
+```
+
+Resource histories retain create/update/drop event identities, times, contexts,
+threads, and enclosing scopes. JSON includes each scope's arguments and parent
+chain, so an edit id can be read from the observed creating work. `--created-in`
+selects a completed scope id from `analyze summary --scope NAME --json` or
+`analyze span`, including creations in its nested scopes. `--alive-at-ns` selects
+resources observed alive at a runtime-relative time inside the capture.
+Resources not yet observed at that time, with unknown creations, are counted
+separately as `unknown_at_query` rather than assumed present.
+
+An unknown creation or missing scope begin stays unknown; later updates do not
+become the origin. Reused resource ids have separate lifetimes distinguished by
+creation event sequences. Lifetimes describe observed resource events, so gaps
+can hide changes. A retained buffer's creating edit is not its current owner:
+undo roots and graph caches still need explicit application observations.
+
 ## Checking an integration
 
 `footfall check` says what a capture gives the analyses. That makes it the

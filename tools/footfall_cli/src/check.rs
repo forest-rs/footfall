@@ -745,10 +745,16 @@ pub(crate) fn unmet<'a>(items: &'a [Item], required: &[String]) -> Result<Vec<&'
     required
         .iter()
         .map(|id| {
-            items
-                .iter()
-                .find(|item| item.id == id)
-                .ok_or_else(|| format!("no check named {id}; checks are {}", IDS.join(", ")))
+            items.iter().find(|item| item.id == id).ok_or_else(|| {
+                format!(
+                    "no check named {id} for this selection; checks are {}",
+                    items
+                        .iter()
+                        .map(|item| item.id)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
         })
         .filter(|item| !matches!(item, Ok(item) if item.satisfied()))
         .collect()

@@ -87,7 +87,10 @@ pub use pacing::{
 pub use query::{
     DurationStats, GroupBy, Instances, KeyPart, Selected, SpanQuery, SpanStats, SpanTable, TableRow,
 };
-pub use signal::{CounterSample, CounterSeries, Flow, FlowStep, Message, Resource};
+pub use signal::{
+    CounterSample, CounterSeries, Flow, FlowStep, Message, Resource, ResourceAction,
+    ResourceObservation,
+};
 pub use span::{OpenSpan, Placement, Span, SpanId, Track, TrackKind, Zone};
 pub use time::{Selection, TimeRange};
 pub use trace::{CapturedTrace, Continuity, PushError, Pushed, Trace};

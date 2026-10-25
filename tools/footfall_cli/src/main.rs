@@ -26,6 +26,7 @@ mod format;
 mod json;
 mod pacing_json;
 mod report;
+mod resources;
 mod style;
 mod top;
 mod work;
@@ -135,6 +136,20 @@ impl TraceFormat {
 /// The questions `footfall analyze` answers about captures.
 #[derive(Debug, Subcommand)]
 enum Analysis {
+    /// Inspect resource lifetimes and the scopes that created, updated, or dropped them.
+    Resources {
+        /// Capture to inspect.
+        file: PathBuf,
+        /// Keep resources created in this completed scope or its descendants.
+        #[arg(long, value_name = "SPAN_ID")]
+        created_in: Option<u64>,
+        /// Keep resources observed alive at this runtime-relative nanosecond timestamp.
+        #[arg(long, value_name = "NANOSECONDS")]
+        alive_at_ns: Option<u64>,
+        /// Print lifecycle events, scope arguments, provenance, and read status as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// List named counter checkpoints, or compare two boundary sequences.
     Checkpoints {
         /// Capture to inspect.
@@ -156,7 +171,7 @@ enum Analysis {
         /// Frame budget in milliseconds; longer frames are slow. Without
         /// it, each frame is judged against its own deadline when the trace
         /// records deadlines, and against 16.7 ms when it does not.
-        #[arg(long)]
+        #[arg(long, value_parser = milliseconds)]
         budget_ms: Option<f64>,
         #[command(flatten)]
         work: work::Args,
@@ -173,7 +188,7 @@ enum Analysis {
         /// Frame budget in milliseconds; longer frames are slow. Without
         /// it, each frame is judged against its own deadline when the trace
         /// records deadlines, and against 16.7 ms when it does not.
-        #[arg(long)]
+        #[arg(long, value_parser = milliseconds)]
         budget_ms: Option<f64>,
         /// How many scopes to show.
         #[arg(long, default_value_t = 10)]
@@ -196,7 +211,7 @@ enum Analysis {
         file: PathBuf,
         /// How late, in milliseconds, a frame may be shown and still count
         /// as on time.
-        #[arg(long, default_value_t = 1.0)]
+        #[arg(long, default_value_t = 1.0, value_parser = milliseconds)]
         tolerance_ms: f64,
         /// How many late frames and scopes to show.
         #[arg(long, default_value_t = 8)]
@@ -283,6 +298,12 @@ async fn main() {
 /// Answers one `footfall analyze` question.
 fn analyze(analysis: Analysis) -> Result<()> {
     match analysis {
+        Analysis::Resources {
+            file,
+            created_in,
+            alive_at_ns,
+            json,
+        } => resources::run(&file, created_in, alive_at_ns, json),
         Analysis::Checkpoints {
             file,
             from,
@@ -339,6 +360,16 @@ fn analyze(analysis: Analysis) -> Result<()> {
 }
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+fn milliseconds(text: &str) -> std::result::Result<f64, String> {
+    let ms = text.parse::<f64>().map_err(|_| "expected milliseconds")?;
+    if ms < 0.0 {
+        return Err(String::from("milliseconds must be nonnegative"));
+    }
+    Duration::try_from_secs_f64(ms / 1_000.0)
+        .map_err(|_| "milliseconds must be finite, nonnegative, and within the duration range")?;
+    Ok(ms)
+}
 
 async fn record(path: &Path, session: Option<&str>, interval: Duration) -> Result<()> {
     let discovery = SessionClient::discover_local(Duration::from_secs(1)).await?;

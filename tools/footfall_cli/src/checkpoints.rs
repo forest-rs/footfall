@@ -48,6 +48,13 @@ pub(crate) fn run(
     json: bool,
 ) -> crate::Result<()> {
     let (trace, read) = crate::read_trace_saying(path)?;
+    let points: Vec<_> = trace
+        .counter_checkpoints()
+        .iter()
+        .filter(|point| {
+            from.is_none() || Some(point.sequence()) == from || Some(point.sequence()) == to
+        })
+        .collect();
     let changes = match from.zip(to) {
         Some((from, to)) => Some(
             trace
@@ -92,15 +99,13 @@ pub(crate) fn run(
                 ("capture", work_json::capture(path, &trace, read)),
                 (
                     "recorded",
-                    Json::from(
-                        trace
-                            .recorded(footfall::analysis::Signal::CounterSamples)
-                            .to_string()
+                    work_json::recorded(
+                        &trace.recorded(footfall::analysis::Signal::CounterSamples)
                     )
                 ),
                 (
                     "checkpoints",
-                    Json::Array(trace.counter_checkpoints().iter().map(point).collect())
+                    Json::Array(points.iter().map(|boundary| point(boundary)).collect())
                 ),
                 ("interval", interval),
             ])
@@ -110,7 +115,7 @@ pub(crate) fn run(
             "Counter checkpoints · {} boundaries · global values sampled across threads",
             trace.counter_checkpoints().len()
         );
-        for point in trace.counter_checkpoints() {
+        for point in points {
             anstream::println!(
                 "  {} {} at {} · {} values · {}",
                 point.sequence(),

@@ -5,6 +5,29 @@ did, from its snapshots: in process, from a live session, or from a capture
 file. This guide covers the model, the questions it answers, and what each
 answer says about its own completeness.
 
+## Edits, resources, and counter intervals
+
+Rendering frames are one work unit. `Trace::marks(MarkerKind::Transaction)` and
+`Trace::marks(MarkerKind::Pass)` expose other marked ranges; `Population::frames`
+accepts these too. Alternatively, select argument-bearing scope instances with
+`trace.spans().named(...).with_arg(...)` and pass their ranges to
+`Population::ranges`. The CLI exposes both through `--kind` and `--scope`;
+see [transactions and scoped work](../tools/footfall_cli/README.md#transactions-and-scoped-work).
+
+`Trace::counter_checkpoints` exposes named global sampling boundaries.
+`Trace::counter_changes(before_sequence, after_sequence)` compares retained
+endpoint values. Overlapping intervals can include the same activity and must
+not be summed as exclusive edit allocations. Incomplete batches and gaps leave
+deltas unknown. Sampling frequency and cost belong to the producer.
+
+`Resource::creation` identifies observed creating work, while
+`Resource::observations` retains each update and drop with its own scope,
+context, thread, time, and event sequence. Follow the creation's span and its
+parents to the edit's arguments. A resource can survive later edits without
+changing that origin. Unknown creations and missing scope begins remain
+unknown. Undo roots and graph cache ownership require application observations;
+they cannot be deduced from the creating scope or lifetime alone.
+
 ## The Trace
 
 A `Trace` holds what one runtime instance recorded, as far as its snapshots
