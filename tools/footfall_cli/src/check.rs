@@ -579,7 +579,7 @@ fn counter_samples(trace: &Trace, unavailable: Option<&'static str>) -> Item {
 
 /// Whether anything was lost: missing events, refused contexts, dropped
 /// counter updates, or a capture cut short.
-fn losses(trace: &Trace, read: Read) -> Item {
+pub(crate) fn losses(trace: &Trace, read: Read) -> Item {
     let missing: u64 = trace
         .gaps()
         .iter()
@@ -593,7 +593,6 @@ fn losses(trace: &Trace, read: Read) -> Item {
         }
     };
     note(missing, "event missing", "events missing");
-    note(drops.evicted_events(), "event evicted", "events evicted");
     note(
         drops.refused_contexts(),
         "context refused",
