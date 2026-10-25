@@ -574,11 +574,15 @@ impl Trace {
                 samples,
                 ..
             } => {
-                let values = self
+                let mut values = self
                     .checkpoint_samples
                     .remove(&thread_id)
                     .filter(|(when, _)| *when == at)
                     .map_or_else(Vec::new, |(_, values)| values);
+                // A preceding automatic batch can share this timestamp. The
+                // boundary belongs to the last expected samples on its thread.
+                let expected = usize::try_from(*samples).unwrap_or(usize::MAX);
+                values.drain(..values.len().saturating_sub(expected));
                 let name = self.intern(name);
                 let unique: std::collections::BTreeSet<_> =
                     values.iter().map(|v| (v.desc_id, v.context_id)).collect();
