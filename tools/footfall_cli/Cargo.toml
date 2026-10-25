@@ -17,12 +17,12 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-anstream = "1.0.0"
-anstyle = "1.0.14"
-clap = { features = ["derive"], version = "4.6.7" }
+anstream.workspace = true
+anstyle.workspace = true
+clap = { features = ["derive"], workspace = true }
 footfall = { features = ["analysis", "export", "session", "std", "wtransport"], workspace = true }
 ratatui = "0.30.2"
-tokio = { features = ["macros", "rt-multi-thread", "signal", "sync", "time"], version = "1.54.1" }
+tokio = { features = ["macros", "rt-multi-thread", "signal", "sync", "time"], workspace = true }
 
 [dev-dependencies]
 footfall = { features = ["runtime"], workspace = true }

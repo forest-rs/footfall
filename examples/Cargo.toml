@@ -10,9 +10,9 @@ publish = false
 description = "Runnable examples for Footfall: instrumenting, serving, attaching, and showing a capture live in Tracy."
 
 [dependencies]
-anstream = "1.0.0"
-anstyle = "1.0.14"
-clap = { features = ["derive"], version = "4.6.7" }
+anstream.workspace = true
+anstyle.workspace = true
+clap = { features = ["derive"], workspace = true }
 footfall = { features = [
     "analysis",
     "export",
@@ -25,9 +25,9 @@ footfall = { features = [
 ], workspace = true }
 footfall_fanout.workspace = true
 footfall_memory = { features = ["std"], workspace = true }
-tokio = { features = ["macros", "rt-multi-thread", "signal", "sync", "time"], version = "1.54.1" }
-tracing = "0.1.44"
-tracing-subscriber = { default-features = false, features = ["registry", "std"], version = "0.3.23" }
+tokio = { features = ["macros", "rt-multi-thread", "signal", "sync", "time"], workspace = true }
+tracing.workspace = true
+tracing-subscriber = { features = ["registry", "std"], workspace = true }
 
 [lints]
 workspace = true

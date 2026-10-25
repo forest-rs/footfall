@@ -28,7 +28,10 @@ keywords = ["instrumentation", "observability", "profiling", "tracing"]
 categories = ["development-tools::debugging", "development-tools::profiling"]
 
 [workspace.dependencies]
-# Internal crate dependencies
+# Shared dependency versions; member crates select the features they need.
+anstream = "1.0.0"
+anstyle = "1.0.14"
+clap = "4.6.7"
 footfall = { default-features = false, path = "crates/footfall", version = "0.2.0" }
 footfall_analysis = { default-features = false, path = "crates/footfall_analysis", version = "0.2.0" }
 footfall_core = { default-features = false, path = "crates/footfall_core", version = "0.2.0" }
@@ -42,6 +45,10 @@ footfall_tracing = { default-features = false, path = "crates/footfall_tracing",
 footfall_tracy = { default-features = false, path = "crates/footfall_tracy", version = "0.2.0" }
 # The default hasher is foldhash; hashbrown's other defaults are unused.
 hashbrown = { default-features = false, features = ["default-hasher"], version = "0.17.1" }
+tokio = "1.54.1"
+tracing = "0.1.44"
+tracing-core = "0.1.36"
+tracing-subscriber = { default-features = false, version = "0.3.23" }
 # These choose the Tracy protocol version: tracy-client-sys 0.30 is Tracy
 # 0.14, and the Tracy profiler must be the same version. When updating them,
 # update the Tracy version in crates/footfall_tracy/README.md, the crate docs

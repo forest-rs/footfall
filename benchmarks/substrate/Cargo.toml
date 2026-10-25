@@ -19,8 +19,8 @@ footfall_export.workspace = true
 footfall_fanout.workspace = true
 footfall_runtime = { features = ["std"], workspace = true }
 footfall_tracing.workspace = true
-tracing = "0.1.44"
-tracing-subscriber = { default-features = false, features = ["registry", "std"], version = "0.3.23" }
+tracing.workspace = true
+tracing-subscriber = { features = ["registry", "std"], workspace = true }
 
 [lib]
 path = "src/lib.rs"
