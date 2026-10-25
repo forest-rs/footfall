@@ -18,7 +18,8 @@ import tomllib
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--packages-dir", type=Path, help="archive directory (default: Cargo's target/package)")
+    parser.add_argument("--package", action="store_true", help="verify fresh packages before inspecting and consuming them")
+    parser.add_argument("--packages-dir", type=Path, help="archive directory to inspect (or write with --package; default: Cargo's target/package)")
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[2]
     metadata = json.loads(subprocess.check_output(
@@ -30,6 +31,7 @@ def main():
         raise SystemExit(f"Public crate versions disagree: {versions}")
     version = versions.pop()
     target = Path(metadata["target_directory"])
+    target.mkdir(parents=True, exist_ok=True)
     archives = (args.packages_dir or target / "package").resolve()
     results = {
         "version": version,
@@ -40,6 +42,24 @@ def main():
     }
     log_path = target / "release-consumer.log"
 
+    if args.package:
+        if results["source_dirty"]:
+            raise SystemExit("Commit or stash changes before packaging a release candidate")
+        # Cargo's temporary registry can retain an extracted crate from an
+        # earlier rehearsal with the same version. Its source identity depends
+        # on the target path, so each candidate needs a fresh staging directory.
+        with tempfile.TemporaryDirectory(prefix="footfall-package-") as package_target:
+            command = ["cargo", "package", "--workspace", "--all-features", "--offline", "--target-dir", package_target]
+            for package in metadata["packages"]:
+                if package["publish"] == []:
+                    command += ["--exclude", package["name"]]
+            print("Verifying fresh workspace packages", flush=True)
+            subprocess.run(command, cwd=repo, check=True)
+            archives.mkdir(parents=True, exist_ok=True)
+            for name in packages:
+                filename = f"{name}-{version}.crate"
+                shutil.copy2(Path(package_target) / "package" / filename, archives / filename)
+
     with tempfile.TemporaryDirectory(prefix="footfall-release-consumer-") as temporary, log_path.open("w") as log:
         stage = Path(temporary)
         extracted = stage / "packages"
@@ -47,6 +67,11 @@ def main():
             archive = archives / f"{name}-{version}.crate"
             prefix = f"{name}-{version}"
             with tarfile.open(archive) as tar:
+                vcs = json.loads(tar.extractfile(f"{prefix}/.cargo_vcs_info.json").read())
+                if vcs["git"]["sha1"] != results["source_commit"]:
+                    raise SystemExit(f"{archive} belongs to another commit; rerun with --package")
+                if not results["source_dirty"] and vcs["git"].get("dirty", False):
+                    raise SystemExit(f"{archive} was packaged with uncommitted changes; rerun with --package")
                 manifest = tomllib.loads(tar.extractfile(f"{prefix}/Cargo.toml").read().decode())
                 if manifest["package"]["version"] != version:
                     raise SystemExit(f"Wrong version in {archive}")
