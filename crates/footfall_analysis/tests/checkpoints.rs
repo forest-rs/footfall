@@ -186,3 +186,49 @@ fn a_checkpoint_batch_can_cross_capture_windows() {
     assert!(point.complete(), "batch survives a capture window boundary");
     assert_eq!(point.values()[0].value(), 7);
 }
+
+#[test]
+fn a_checkpoint_selects_its_batch_when_adjacent_samples_share_a_timestamp() {
+    use footfall_runtime::{
+        CounterKind, EventWindow, Observation, Snapshot, SnapshotMetadata, TimedObservation,
+    };
+    let mut builder = Snapshot::builder(SnapshotMetadata::new("coarse clock"))
+        .window(EventWindow::new(0, 3, 0))
+        .captured_at_nanos(11);
+    for (sequence, value) in [(0, 1), (1, 2)] {
+        builder = builder.event(TimedObservation::new(
+            10,
+            sequence,
+            1,
+            Observation::CounterSample {
+                desc_id: footfall_core::CounterDescId::new(1),
+                name: "copied",
+                unit: footfall_core::Unit::Bytes,
+                context_id: footfall_core::ContextId::new(0),
+                kind: CounterKind::Counter,
+                value,
+            },
+        ));
+    }
+    let snapshot = builder
+        .event(TimedObservation::new(
+            10,
+            2,
+            1,
+            Observation::CounterCheckpoint {
+                desc_id: footfall_core::EventDescId::new(2),
+                name: "point",
+                context_id: footfall_core::ContextId::new(0),
+                samples: 1,
+            },
+        ))
+        .build();
+    let trace = Trace::from_snapshot(&OwnedSnapshot::from(snapshot));
+    let point = &trace.counter_checkpoints()[0];
+    assert!(
+        point.complete(),
+        "the older automatic sample is outside this batch"
+    );
+    assert_eq!(point.values().len(), 1);
+    assert_eq!(point.values()[0].value(), 2);
+}
