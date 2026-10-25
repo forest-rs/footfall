@@ -88,7 +88,7 @@ pub use snapshot::{
 };
 
 /// Current protocol version for Footfall session messages.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(1, 2);
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(1, 1);
 
 /// Semantic protocol version for a stream of session messages.
 ///
@@ -155,7 +155,7 @@ impl ProtocolVersion {
 /// // A capture header from a protocol 2.0 producer.
 /// let bytes = b"FFALLCAP\x02\x00\x00\x00";
 /// let Err(error) = CaptureReader::new(&bytes[..]) else {
-///     panic!("this reader speaks 1.1");
+///     panic!("this reader supports protocol 1.x");
 /// };
 /// let incompatible = IncompatibleVersion::of(&error).expect("not damaged");
 /// assert_eq!(incompatible.produced().major(), 2);
@@ -223,10 +223,10 @@ mod tests {
 
     #[test]
     fn minor_versions_are_additive_for_decoders() {
-        let supported = ProtocolVersion::new(1, 2);
+        let supported = super::PROTOCOL_VERSION;
         assert!(supported.can_decode(ProtocolVersion::new(1, 0)));
-        assert!(supported.can_decode(ProtocolVersion::new(1, 2)));
-        assert!(!supported.can_decode(ProtocolVersion::new(1, 3)));
+        assert!(supported.can_decode(supported));
+        assert!(!supported.can_decode(ProtocolVersion::new(1, supported.minor() + 1)));
         assert!(!supported.can_decode(ProtocolVersion::new(2, 0)));
         assert!(!supported.can_decode(ProtocolVersion::new(0, 2)));
     }

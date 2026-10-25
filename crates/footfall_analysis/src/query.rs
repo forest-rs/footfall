@@ -898,7 +898,7 @@ impl<'t> SpanQuery<'t> {
         Basis {
             selection: self.selection,
             ranges: summary,
-            recorded: self.trace.recorded(Signal::Spans),
+            recorded: self.trace.recording_history(Signal::Spans),
             spans: selected.len() as u64,
             interrupted: selected
                 .iter()

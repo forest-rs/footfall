@@ -95,6 +95,11 @@ impl InstrumentationLevel {
 }
 
 /// Process-wide ceiling checked by every emission before dispatch.
+// Current level and minimum within the installed backend's epoch share one
+// atomic, so a concurrent setter cannot publish a level without its floor.
+const LEVEL_MASK: u8 = 0b11;
+const FLOOR_SHIFT: u32 = 2;
+const TRACK_HISTORY: u8 = 1 << 4;
 static MAX_LEVEL: AtomicU8 = AtomicU8::new(InstrumentationLevel::Off.to_u8());
 
 /// Sets the process-wide maximum instrumentation level.
@@ -112,7 +117,24 @@ static MAX_LEVEL: AtomicU8 = AtomicU8::new(InstrumentationLevel::Off.to_u8());
 /// scope or frame is open never leaves a backend with an unclosed one.
 /// Backends may still apply their own, finer filtering.
 pub fn set_max_level(level: InstrumentationLevel) {
-    MAX_LEVEL.store(level.to_u8(), Ordering::Relaxed);
+    let level = level.to_u8();
+    let mut state = MAX_LEVEL.load(Ordering::Relaxed);
+    loop {
+        let history = if state & TRACK_HISTORY != 0 {
+            TRACK_HISTORY | (((state >> FLOOR_SHIFT) & LEVEL_MASK).min(level) << FLOOR_SHIFT)
+        } else {
+            0
+        };
+        match MAX_LEVEL.compare_exchange_weak(
+            state,
+            level | history,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(current) => state = current,
+        }
+    }
 }
 
 /// Returns the process-wide maximum instrumentation level.
@@ -121,7 +143,34 @@ pub fn set_max_level(level: InstrumentationLevel) {
 #[inline]
 #[must_use]
 pub fn max_level() -> InstrumentationLevel {
-    InstrumentationLevel::from_u8(MAX_LEVEL.load(Ordering::Relaxed))
+    InstrumentationLevel::from_u8(MAX_LEVEL.load(Ordering::Relaxed) & LEVEL_MASK)
+}
+
+/// Returns the lowest process-wide ceiling since successful backend installation.
+/// Raising the ceiling never restores recording history suppressed by a lower one.
+///
+/// Before installation completes, returns `Trace` as the identity for combining
+/// with a backend's own floor: no installed front-door epoch applies yet. This
+/// does not certify pre-installation emissions, which can reach the no-op backend.
+/// Emissions concurrent with unfinished installation have no coverage guarantee.
+#[must_use]
+pub fn max_level_floor() -> InstrumentationLevel {
+    let state = MAX_LEVEL.load(Ordering::Relaxed);
+    if state & TRACK_HISTORY == 0 {
+        InstrumentationLevel::Trace
+    } else {
+        InstrumentationLevel::from_u8((state >> FLOOR_SHIFT) & LEVEL_MASK)
+    }
+}
+
+/// Starts the sole installed-backend epoch, atomically raising the front door.
+#[cfg(feature = "std")]
+pub(crate) fn start_max_level_history() {
+    let trace = InstrumentationLevel::Trace.to_u8();
+    MAX_LEVEL.store(
+        trace | (trace << FLOOR_SHIFT) | TRACK_HISTORY,
+        Ordering::Relaxed,
+    );
 }
 
 #[cfg(test)]

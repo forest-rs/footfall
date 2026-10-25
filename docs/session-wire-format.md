@@ -149,7 +149,7 @@ Each encoded envelope is a header, a `u8` payload tag, and the payload:
 | payload tag | `u8` |
 | payload | per tag |
 
-The current protocol version is `1.2`. Payload tags, in publication order:
+The current protocol version is `1.1`. Payload tags, in publication order:
 
 | Tag | Payload | Occurs |
 |---|---|---|
@@ -184,7 +184,7 @@ version, and rejects a different major version or a newer minor version.
 | counter capacity | `u64` | |
 | event capacity | `u64` | |
 | context capacity | `u64` | |
-| capture flags | `u8` | bit 0: counter samples recorded; bit 1: instrumentation compiled out; other bits zero |
+| capture flags | `u8` | bit 0: counter sampling; bit 1: compiled out; bits 2–3: level floor; bit 4: floor known; bits 5–7 zero |
 | kind | `u8` | `0` full, `1` changes; see below |
 | captured at | `u64` | nanoseconds since runtime creation |
 | window since | `u64` | first event sequence covered |
@@ -300,8 +300,17 @@ samples and their boundary have the same timestamp and thread id; sequence
 numbers order them, and another thread's events may interleave. A reader must
 not assume an incomplete batch contains every counter. Checkpoints can have
 zero samples. Histograms are not included. The boundary context identifies
-the request's origin, not ownership of the globally sampled values. Version
-`1.2` introduced checkpoint boundaries; counter-sample layouts are unchanged.
+the request's origin, not ownership of the globally sampled values.
+
+Protocol `1.1` introduces checkpoint boundaries and optional lifetime recording
+evidence together with the other 0.2 wire additions. Counter-sample layouts are
+unchanged. Capture flag bit 4 says the producer attests a minimum recording level,
+encoded in bits 2–3 using existing level codes. It combines runtime history and
+the process-wide gate since successful backend installation, and must not exceed
+the current level. If bit 4 is clear, bits 2–3 must be zero and historical coverage
+is unknown. Released protocol 1.0 has no such attestation; readers must not infer
+it from the current level. Known-floor flags require a 1.1 envelope. Readers from
+0.1 reject the new minor version. There were no intervening published protocols.
 
 A `clock` is one reading of a clock other than the producer's: the clock
 descriptor's id `u64`, its name `name`, the ticks read `u64`, and the tick

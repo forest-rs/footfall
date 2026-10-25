@@ -145,6 +145,7 @@ pub struct Runtime {
     created_at: Instant,
     wall_clock_anchor_nanos: u64,
     process_name: String,
+    /// Packed current level (low two bits) and lifetime minimum (next two).
     level: AtomicU8,
     /// Set once this runtime is the process-wide backend; its level then
     /// also drives `footfall_core`'s maximum level.
@@ -224,7 +225,7 @@ impl Runtime {
             created_at: Instant::now(),
             wall_clock_anchor_nanos: duration_to_nanos(wall_clock),
             process_name: process_name.unwrap_or_else(default_process_name),
-            level: AtomicU8::new(level_to_u8(level)),
+            level: AtomicU8::new(level_to_u8(level) | (level_to_u8(level) << 2)),
             drives_max_level: AtomicBool::new(false),
             counter_capacity,
             event_capacity,
@@ -312,7 +313,7 @@ impl Runtime {
     /// Returns the current runtime capture level.
     #[must_use]
     pub fn level(&self) -> InstrumentationLevel {
-        level_from_u8(self.level.load(Ordering::Relaxed))
+        level_from_u8(self.level.load(Ordering::Relaxed) & 0b11)
     }
 
     /// Sets the runtime capture level used by subsequent backend emissions.
@@ -322,7 +323,20 @@ impl Runtime {
     /// For a runtime installed with [`install_global`](Self::install_global)
     /// this also sets the process-wide [`footfall_core::max_level`].
     pub fn set_level(&self, level: InstrumentationLevel) {
-        self.level.store(level_to_u8(level), Ordering::Relaxed);
+        let next = level_to_u8(level);
+        let mut state = self.level.load(Ordering::Relaxed);
+        loop {
+            let updated = next | (((state >> 2) & 0b11).min(next) << 2);
+            match self.level.compare_exchange_weak(
+                state,
+                updated,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(current) => state = current,
+            }
+        }
         if self.drives_max_level.load(Ordering::Relaxed) {
             set_max_level(level);
         }
@@ -384,6 +398,9 @@ impl Runtime {
     }
 
     fn metadata(&self, labels: &LabelState) -> SnapshotMetadata {
+        let state = self.level.load(Ordering::Relaxed);
+        let level = level_from_u8(state & 0b11);
+        let floor = level_from_u8((state >> 2) & 0b11).min(footfall_core::max_level_floor());
         SnapshotMetadata {
             process_name: self.process_name.clone(),
             session_name: labels.session_name.clone(),
@@ -392,13 +409,14 @@ impl Runtime {
             producer_version: String::from(PRODUCER_VERSION),
             process_id: self.process_id,
             capture: CaptureSettings {
-                level: self.level(),
+                level,
+                level_floor: Some(floor.min(level)),
                 counter_capacity: self.counter_capacity,
                 event_capacity: self.event_capacity,
                 context_capacity: self.context_capacity,
-                // Samples are events taken at frame markers, so a level that
-                // does not capture markers records none.
-                counter_samples: self.counter_samples && self.level().captures_counters(),
+                // Sampling is configured once; historical availability is qualified
+                // separately by the recording floor.
+                counter_samples: self.counter_samples && level.captures_counters(),
                 compiled_out: cfg!(footfall_compile_out),
             },
         }
@@ -2421,6 +2439,7 @@ mod tests {
         assert_eq!(
             metadata.capture,
             CaptureSettings::new(InstrumentationLevel::Scoped, 8, 16, 32)
+                .with_level_floor(InstrumentationLevel::Scoped)
                 .with_counter_samples(true)
                 .with_compiled_out(cfg!(footfall_compile_out))
         );

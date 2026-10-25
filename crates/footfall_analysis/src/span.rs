@@ -260,9 +260,29 @@ pub struct OpenSpan {
     pub(crate) begin: Duration,
     pub(crate) depth: u32,
     pub(crate) interrupted: bool,
+    pub(crate) parent: Option<SpanId>,
+    pub(crate) args: Vec<OwnedArgEntry>,
 }
 
 impl OpenSpan {
+    /// Returns the captured parent, including while that parent is still open.
+    #[must_use]
+    pub const fn parent(&self) -> Option<SpanId> {
+        self.parent
+    }
+
+    /// Returns the arguments retained from the begin event.
+    #[must_use]
+    pub fn args(&self) -> &[OwnedArgEntry] {
+        &self.args
+    }
+
+    /// Returns a typed argument from the begin event.
+    #[must_use]
+    pub fn arg(&self, key: &str) -> Option<&OwnedLabelValue> {
+        crate::query::arg(&self.args, key)
+    }
+
     /// Returns the id the span will keep once it ends.
     #[must_use]
     pub const fn id(&self) -> SpanId {

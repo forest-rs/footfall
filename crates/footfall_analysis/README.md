@@ -27,3 +27,10 @@ code, start with the [`footfall`](https://docs.rs/footfall) crate.
 
 Licensed under either of Apache License, Version 2.0 or MIT license at your
 option.
+
+For connected edit investigations, use `Trace::inspect_work(WorkId::Scope(id))`
+or `WorkId::Marker(id)`. Message and flow queries accept typed predicates and
+bounded pages on the loaded trace. `Trace::resource_interval` accounts for
+application-reported storage, including resizes, peaks, and lifetime handles.
+See [connected work inspection](../../docs/analysing-a-trace.md#connected-work-inspection)
+for membership, boundary, and evidence rules.

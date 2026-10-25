@@ -201,7 +201,9 @@ impl Recording {
 
     /// A snapshot holding the events in `[since, next)` except `missing`.
     fn window(&self, since: u64, next: u64, missing: &[u64], captured_at: u64) -> OwnedSnapshot {
-        let capture = CaptureSettings::new(self.level, 1024, 1024, 64).with_counter_samples(true);
+        let capture = CaptureSettings::new(self.level, 1024, 1024, 64)
+            .with_level_floor(self.level)
+            .with_counter_samples(true);
         let metadata = SnapshotMetadata::new("test")
             .with_instance_id(self.instance)
             .with_producer_version("1.0.0")
@@ -3203,4 +3205,521 @@ fn a_latency_step_says_when_the_plans_depth_changed_with_it() {
         steps[0].to_string(),
         "latency rose from 25.00 ms to 33.33 ms at frame 11, while pipeline depth went from 1 to 2"
     );
+}
+
+#[test]
+fn typed_inspection_keeps_open_ancestry_and_full_flows_and_pages() {
+    use footfall_analysis::{
+        EventFilter, FlowQuery, InspectionError, Membership, MessageQuery, Page, WorkId,
+    };
+    let mut recording = Recording::new(72);
+    let marker = FrameId::new(recording.marker(0, MarkerPhase::Begin));
+    let root = SpanId::new(recording.next());
+    let token = recording.begin_with(1, MAIN, &UPDATE, 1, Args::none().with("edit", 4_u64));
+    let child = SpanId::new(recording.next());
+    let inner = recording.begin_with(2, MAIN, &LAYOUT, 1, Args::none().with("attempt", 7_u64));
+    let mut sequences = Vec::new();
+    for (at, thread, value) in [(3, MAIN, 7_u64), (4, WORKER, 7), (5, MAIN, 8)] {
+        sequences.push(recording.record(
+            at,
+            thread,
+            Observation::Message {
+                desc_id: LOG.id(),
+                name: LOG.name(),
+                context_id: ContextId::new(1),
+                text: String::from("outcome"),
+                args: Args::none().with("attempt", value),
+            },
+        ));
+    }
+    let begin = recording.record(
+        6,
+        MAIN,
+        Observation::Flow {
+            flow_id: FlowId::new(8),
+            phase: FlowPhase::Begin,
+            context_id: ContextId::new(1),
+        },
+    );
+    let mut trace = Trace::from_snapshot(&recording.snapshot(7));
+    let inspected = trace.inspect_work(WorkId::Scope(root)).expect("open work");
+    assert!(inspected.open);
+    assert_eq!(inspected.membership, Membership::CapturedAncestry);
+    assert_eq!(inspected.open_scopes.len(), 2);
+    assert_eq!(inspected.open_scopes[1].parent(), Some(root));
+    assert_eq!(inspected.open_scopes[1].arg("attempt"), Some(&7_u64.into()));
+    assert_eq!(
+        inspected.messages.len(),
+        2,
+        "another thread is not a descendant"
+    );
+    assert!(
+        inspected
+            .evidence
+            .iter()
+            .all(|(_, evidence)| !evidence.is_complete())
+    );
+    let query = MessageQuery {
+        filter: EventFilter {
+            within: Some(root),
+            labels: vec![("pass".into(), "main".into())],
+            ..Default::default()
+        },
+        name: Some("log".into()),
+        sequence: None,
+        args: vec![("attempt".into(), 7_u64.into())],
+    };
+    let found = trace
+        .select_messages(&query, Page::default())
+        .expect("query");
+    assert_eq!(
+        found
+            .items
+            .iter()
+            .map(|message| message.sequence())
+            .collect::<Vec<_>>(),
+        [sequences[0]]
+    );
+    let wrong_type = MessageQuery {
+        args: vec![("attempt".into(), "7".into())],
+        ..query.clone()
+    };
+    assert_eq!(
+        trace
+            .select_messages(&wrong_type, Page::default())
+            .expect("query")
+            .total,
+        0
+    );
+    let first = trace
+        .select_messages(
+            &MessageQuery::default(),
+            Page {
+                limit: 1,
+                after: None,
+            },
+        )
+        .expect("page");
+    assert_eq!(first.total, 3);
+    assert_eq!(first.next, Some(sequences[0]));
+    let second = trace
+        .select_messages(
+            &MessageQuery::default(),
+            Page {
+                limit: 1,
+                after: first.next,
+            },
+        )
+        .expect("page");
+    assert_eq!(second.items[0].sequence(), sequences[1]);
+    assert_eq!(
+        trace
+            .select_messages(
+                &query,
+                Page {
+                    limit: 0,
+                    after: None
+                }
+            )
+            .unwrap_err(),
+        InspectionError::EmptyPage
+    );
+    recording.end(8, MAIN, inner);
+    recording.end(9, MAIN, token);
+    let end = recording.record(
+        10,
+        WORKER,
+        Observation::Flow {
+            flow_id: FlowId::new(8),
+            phase: FlowPhase::End,
+            context_id: ContextId::new(0),
+        },
+    );
+    recording.marker(11, MarkerPhase::End);
+    trace.push(&recording.snapshot(12)).expect("push");
+    let result = trace
+        .select_flows(
+            &FlowQuery {
+                filter: EventFilter {
+                    within: Some(child),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            Page::default(),
+        )
+        .expect("flows");
+    assert_eq!(result.items[0].matching_steps, [begin]);
+    assert_eq!(
+        result.items[0]
+            .flow
+            .steps()
+            .iter()
+            .map(|step| step.sequence())
+            .collect::<Vec<_>>(),
+        [begin, end]
+    );
+    assert!(result.items[0].flow.is_complete());
+    let temporal = trace.inspect_work(WorkId::Marker(marker)).expect("marker");
+    assert_eq!(temporal.membership, Membership::IntervalActivity);
+    assert_eq!(temporal.messages.len(), 3);
+    assert!(matches!(
+        trace.inspect_work(WorkId::Scope(SpanId::new(999))),
+        Err(InspectionError::MissingScope(_))
+    ));
+    trace.forget_before(us(10));
+    assert!(matches!(
+        trace.inspect_work(WorkId::Scope(root)),
+        Err(InspectionError::MissingScope(_))
+    ));
+}
+
+#[test]
+fn flow_endpoints_do_not_hide_missing_intermediate_evidence() {
+    use footfall_analysis::{FlowQuery, Page};
+    let mut recording = Recording::new(73);
+    for (at, phase) in [
+        (1, FlowPhase::Begin),
+        (2, FlowPhase::Step),
+        (3, FlowPhase::End),
+    ] {
+        recording.record(
+            at,
+            MAIN,
+            Observation::Flow {
+                flow_id: FlowId::new(1),
+                phase,
+                context_id: ContextId::new(0),
+            },
+        );
+    }
+    let trace = Trace::from_snapshot(&recording.window(0, 3, &[1], 4));
+    let found = trace
+        .select_flows(&FlowQuery::default(), Page::default())
+        .expect("flow");
+    assert!(found.items[0].flow.is_complete());
+    assert!(!found.items[0].evidence.is_complete());
+    assert!(!found.evidence.is_complete());
+}
+
+fn resource_event(
+    recording: &mut Recording,
+    at: u64,
+    id: u64,
+    action: footfall_analysis::ResourceAction,
+    size: u64,
+) -> u64 {
+    use footfall_analysis::ResourceAction;
+    let kind_id = TEXTURE.id();
+    let kind_name = TEXTURE.name();
+    let resource_id = ResourceId::new(id);
+    let context_id = ContextId::new(0);
+    recording.record(
+        at,
+        MAIN,
+        match action {
+            ResourceAction::Create => Observation::ResourceCreate {
+                kind_id,
+                kind_name,
+                resource_id,
+                context_id,
+                size,
+            },
+            ResourceAction::Update => Observation::ResourceUpdate {
+                kind_id,
+                kind_name,
+                resource_id,
+                context_id,
+                size,
+            },
+            ResourceAction::Drop => Observation::ResourceDrop {
+                kind_id,
+                kind_name,
+                resource_id,
+                context_id,
+            },
+            _ => unreachable!("known action"),
+        },
+    )
+}
+
+#[test]
+fn resource_activity_uses_half_open_boundaries_resizes_and_lifetime_identity() {
+    use footfall_analysis::{
+        ResourceAction::{Create, Drop, Update},
+        ResourceGroupKey, ResourceGrouping,
+    };
+    let mut recording = Recording::new(74);
+    let root = SpanId::new(recording.next());
+    let scope = recording.begin(0, MAIN, &UPDATE, 0);
+    let first = resource_event(&mut recording, 1, 1, Create, 100);
+    resource_event(&mut recording, 2, 1, Update, 200);
+    resource_event(&mut recording, 2, 1, Drop, 0);
+    let reused = resource_event(&mut recording, 2, 1, Create, 30);
+    resource_event(&mut recording, 3, 1, Update, 10);
+    recording.end(4, MAIN, scope);
+    let mut trace = Trace::from_snapshot(&recording.snapshot(5));
+    let all = trace.resource_interval(range(0, 4), Some(ResourceGrouping::CreationRoot));
+    assert_eq!(all.activity.created.observed, 130);
+    assert_eq!(
+        all.activity.released.observed, 200,
+        "size before drop, not size_at(drop)"
+    );
+    assert_eq!(all.activity.grown.observed, 100);
+    assert_eq!(all.activity.shrunk.observed, 20);
+    assert_eq!(
+        all.activity.peak.observed, 200,
+        "sequence order preserves a same-timestamp peak"
+    );
+    assert_eq!(all.activity.ending.observed, 10);
+    assert!(all.activity.peak.exact);
+    assert_eq!(all.groups[0].key, ResourceGroupKey::Scope(root));
+    let before = trace.resource_interval(range(0, 2), None);
+    let after = trace.resource_interval(range(2, 4), None);
+    assert_eq!(before.activity.ending, after.activity.baseline);
+    assert_eq!(
+        before.activity.ending.observed, 100,
+        "boundary is before all events at timestamp 2"
+    );
+    assert_eq!(
+        before.activity.created.observed + after.activity.created.observed,
+        all.activity.created.observed
+    );
+    assert_eq!(
+        before.activity.released.observed + after.activity.released.observed,
+        all.activity.released.observed
+    );
+    assert_eq!(all.activity.survivors[0].sequence(), reused);
+    assert_eq!(trace.resources()[0].lifetime_id().sequence(), first);
+    let id = all.activity.survivors[0];
+    trace.forget_before(us(4));
+    assert_eq!(
+        trace
+            .resource_lifetime(id)
+            .expect("kept live")
+            .lifetime_id(),
+        id
+    );
+    assert!(
+        !trace
+            .resource_interval(range(4, 5), None)
+            .activity
+            .baseline
+            .exact
+    );
+}
+
+#[test]
+fn resource_accounting_does_not_extrapolate_late_updates_or_stale_sizes_across_loss() {
+    use footfall_analysis::{
+        ResourceAction::{Create, Drop, Update},
+        ResourceGroupKey, ResourceGrouping,
+    };
+    let mut recording = Recording::new(75);
+    resource_event(&mut recording, 1, 1, Create, 100);
+    resource_event(&mut recording, 2, 1, Update, 1000); // omitted
+    resource_event(&mut recording, 3, 1, Drop, 0);
+    resource_event(&mut recording, 8, 2, Update, 55);
+    let mut trace = Trace::from_snapshot(&recording.window(0, 4, &[1], 10));
+    let result = trace.resource_interval(range(0, 4), None);
+    assert_eq!(
+        result.activity.released.observed, 0,
+        "stale size is not a release lower bound"
+    );
+    assert!(!result.activity.released.exact);
+    let earlier = trace.resource_interval(range(4, 7), Some(ResourceGrouping::CreationRoot));
+    assert!(earlier.evidence.gaps.is_empty());
+    assert!(
+        !earlier.activity.baseline.exact,
+        "a prior gap invalidates the baseline"
+    );
+    assert!(
+        earlier.activity.survivors.is_empty(),
+        "a later first update cannot prove earlier liveness"
+    );
+    assert!(
+        earlier
+            .groups
+            .iter()
+            .any(|group| group.key == ResourceGroupKey::UnknownOrigin)
+    );
+    trace.forget_before(us(4));
+    assert!(
+        !trace
+            .resource_interval(range(5, 7), None)
+            .activity
+            .baseline
+            .exact,
+        "pruning gaps does not restore known history"
+    );
+}
+
+#[test]
+fn query_evidence_keeps_context_refusals_and_counter_loss_separate_from_event_loss() {
+    use footfall_analysis::Signal;
+    use footfall_runtime::Drops;
+    let metadata = SnapshotMetadata::new("evidence")
+        .with_instance_id(76)
+        .with_capture(
+            CaptureSettings::new(InstrumentationLevel::Trace, 64, 64, 64)
+                .with_level_floor(InstrumentationLevel::Trace)
+                .with_counter_samples(true),
+        );
+    let snapshot = Snapshot::builder(metadata.clone())
+        .drops(
+            Drops::default()
+                .with_refused_contexts(1)
+                .with_unattributed(2),
+        )
+        .build();
+    let trace = Trace::from_snapshot(&OwnedSnapshot::from(snapshot));
+    let evidence = trace.query_evidence(Signal::Messages, None);
+    assert!(evidence.history_complete);
+    assert_eq!(evidence.refused_contexts, 1);
+    assert_eq!(evidence.unattributed, 2);
+    assert!(
+        !evidence.is_complete(),
+        "unattributed observations may hide matching messages"
+    );
+    let snapshot = Snapshot::builder(metadata)
+        .drops(Drops::default().with_counter_updates(1))
+        .build();
+    let trace = Trace::from_snapshot(&OwnedSnapshot::from(snapshot));
+    assert!(trace.query_evidence(Signal::Messages, None).is_complete());
+    assert!(
+        !trace
+            .query_evidence(Signal::CounterSamples, None)
+            .is_complete()
+    );
+}
+
+#[test]
+fn resource_accounting_keeps_unknown_origins_and_overflow_explicit() {
+    use footfall_analysis::ResourceAction::{Create, Update};
+    let mut recording = Recording::new(77);
+    resource_event(&mut recording, 2, 1, Update, 100);
+    let trace = Trace::from_snapshot(&recording.snapshot(5));
+    let before = trace.resource_interval(range(0, 1), None);
+    assert_eq!(before.activity.baseline.observed, 0);
+    assert!(before.activity.survivors.is_empty());
+    let after = trace.resource_interval(range(3, 4), None);
+    assert_eq!(after.activity.baseline.observed, 100);
+    assert!(
+        !after.activity.baseline.exact,
+        "a missing creation cannot establish an exact baseline"
+    );
+    let mut recording = Recording::new(78);
+    resource_event(&mut recording, 1, 1, Create, u64::MAX);
+    resource_event(&mut recording, 2, 2, Create, 1);
+    let trace = Trace::from_snapshot(&recording.snapshot(5));
+    let result = trace.resource_interval(range(0, 4), None);
+    for bytes in [
+        result.activity.created,
+        result.activity.peak,
+        result.activity.ending,
+    ] {
+        assert_eq!(bytes.observed, u64::MAX);
+        assert!(!bytes.exact, "overflow cannot produce an exact total");
+    }
+}
+
+#[test]
+fn marker_inspection_includes_crossing_completed_and_open_scopes() {
+    use footfall_analysis::WorkId;
+    let mut recording = Recording::new(80);
+    let crossing = SpanId::new(recording.next());
+    let token = recording.begin(0, MAIN, &UPDATE, 0);
+    let open = SpanId::new(recording.next());
+    recording.begin(0, WORKER, &DECODE, 0);
+    let touching_start = recording.scope(MAIN, &LAYOUT, 0, 5, 10);
+    let marker = FrameId::new(recording.record(
+        10,
+        MAIN,
+        Observation::FrameMarker {
+            kind: MarkerKind::Transaction,
+            phase: MarkerPhase::Begin,
+            number: None,
+            context_id: ContextId::new(0),
+        },
+    ));
+    let instant_start = recording.scope(MAIN, &PAINT, 0, 10, 10);
+    recording.record(
+        20,
+        MAIN,
+        Observation::Message {
+            desc_id: LOG.id(),
+            name: LOG.name(),
+            context_id: ContextId::new(0),
+            text: "inside marker".into(),
+            args: Args::none(),
+        },
+    );
+    recording.record(
+        30,
+        MAIN,
+        Observation::FrameMarker {
+            kind: MarkerKind::Transaction,
+            phase: MarkerPhase::End,
+            number: None,
+            context_id: ContextId::new(0),
+        },
+    );
+    let instant_end = recording.scope(MAIN, &PAINT, 0, 30, 30);
+    let touching_end = recording.scope(MAIN, &LAYOUT, 0, 30, 35);
+    recording.end(40, MAIN, token);
+    let trace = Trace::from_snapshot(&recording.snapshot(50));
+    let inspected = trace.inspect_work(WorkId::Marker(marker)).expect("marker");
+    let ids: Vec<_> = inspected.scopes.iter().map(|span| span.id()).collect();
+    assert!(
+        ids.contains(&crossing),
+        "scope running throughout interval is activity"
+    );
+    assert!(ids.contains(&instant_start));
+    assert!(!ids.contains(&touching_start));
+    assert!(!ids.contains(&touching_end));
+    assert!(!ids.contains(&instant_end));
+    assert_eq!(
+        inspected
+            .open_scopes
+            .iter()
+            .map(|span| span.id())
+            .collect::<Vec<_>>(),
+        [open]
+    );
+    assert_eq!(inspected.messages[0].span(), Some(crossing));
+}
+
+#[test]
+fn unknown_recording_history_is_not_restored_by_push_or_pruning() {
+    use footfall_analysis::Signal;
+    let snapshot = |capture| {
+        OwnedSnapshot::from(
+            Snapshot::builder(
+                SnapshotMetadata::new("history")
+                    .with_instance_id(81)
+                    .with_capture(capture),
+            )
+            .captured_at_nanos(100)
+            .build(),
+        )
+    };
+    let unknown = CaptureSettings::new(InstrumentationLevel::Trace, 16, 16, 16);
+    let known = unknown.with_level_floor(InstrumentationLevel::Trace);
+    for captures in [[unknown, known], [known, unknown]] {
+        let mut trace = Trace::from_snapshot(&snapshot(captures[0]));
+        trace.push(&snapshot(captures[1])).expect("push");
+        trace.forget_before(Duration::from_nanos(50));
+        assert_eq!(
+            trace.recording_history(Signal::Messages),
+            Recorded::HistoryUnknown
+        );
+        assert!(!trace.query_evidence(Signal::Messages, None).is_complete());
+        assert!(
+            !trace
+                .resource_interval(trace.observed(), None)
+                .activity
+                .ending
+                .exact
+        );
+    }
 }
