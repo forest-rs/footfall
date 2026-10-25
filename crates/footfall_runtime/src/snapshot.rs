@@ -602,6 +602,7 @@ impl SnapshotMetadata {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CaptureSettings {
     pub(crate) level: InstrumentationLevel,
+    pub(crate) level_floor: Option<InstrumentationLevel>,
     pub(crate) counter_capacity: usize,
     pub(crate) event_capacity: usize,
     pub(crate) context_capacity: usize,
@@ -620,12 +621,31 @@ impl CaptureSettings {
     ) -> Self {
         Self {
             level,
+            level_floor: None,
             counter_capacity,
             event_capacity,
             context_capacity,
             counter_samples: false,
             compiled_out: false,
         }
+    }
+
+    /// Declares the lowest recording level over this runtime's history, combining
+    /// its backend and the installed process-wide gate. Hand-built snapshots must
+    /// supply this evidence explicitly. Unknown (including protocol 1.0 captures) is
+    /// the default. A floor above the current level is conservatively clamped.
+    #[must_use]
+    pub fn with_level_floor(mut self, floor: InstrumentationLevel) -> Self {
+        self.level_floor = Some(floor.min(self.level));
+        self
+    }
+
+    /// Returns the producer-attested minimum recording level, or `None` when
+    /// history is unknown. A current enabled level alone cannot prove that earlier
+    /// events were recorded. Raising the current level never raises this floor.
+    #[must_use]
+    pub const fn level_floor(self) -> Option<InstrumentationLevel> {
+        self.level_floor
     }
 
     /// Sets whether counter sampling is enabled, including explicit checkpoints.

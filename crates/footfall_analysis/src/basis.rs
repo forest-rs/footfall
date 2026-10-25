@@ -91,6 +91,8 @@ pub enum Recorded {
     CompiledOut,
     /// The producer has counter sampling disabled.
     SamplesOff,
+    /// Snapshot metadata does not attest earlier recording settings.
+    HistoryUnknown,
     /// The trace has seen no snapshot, so it cannot tell.
     Unknown,
 }
@@ -118,6 +120,9 @@ impl fmt::Display for Recorded {
             ),
             Self::SamplesOff => {
                 f.write_str("not recorded: the producer has counter sampling disabled")
+            }
+            Self::HistoryUnknown => {
+                f.write_str("unknown: earlier recording settings were not attested")
             }
             Self::Unknown => f.write_str("unknown: no snapshot seen"),
         }

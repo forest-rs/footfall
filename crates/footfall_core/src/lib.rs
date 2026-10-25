@@ -148,7 +148,7 @@ pub use id::{
     ScopeDescId, TimelineId,
 };
 pub use label::{LabelKey, LabelValue};
-pub use level::{InstrumentationLevel, max_level, set_max_level};
+pub use level::{InstrumentationLevel, max_level, max_level_floor, set_max_level};
 pub use timeline::{
     BeginsAt, DropReason, FrameKind, FrameOpportunity, FramePlan, FramePoint, FramePointKind,
     HoldReason, TimelineSpan, TimingBasis,

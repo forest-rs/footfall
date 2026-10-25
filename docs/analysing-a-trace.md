@@ -28,6 +28,118 @@ changing that origin. Unknown creations and missing scope begins remain
 unknown. Undo roots and graph cache ownership require application observations;
 they cannot be deduced from the creating scope or lifetime alone.
 
+## Connected work inspection
+
+For a runnable investigation with sample queries and results, start with
+[Following one edit through a capture](investigating-an-edit.md).
+
+Load once, then use `Trace::select_messages`, `Trace::select_flows`,
+`Trace::inspect_work`, and `Trace::resource_interval`. These typed operations
+accept no paths, serialization settings, or transport state. A session host can
+push later snapshots into the same trace and run the same queries again.
+
+```rust
+use footfall::analysis::{EventFilter, MessageQuery, Page, Trace, WorkId};
+
+fn investigate(trace: &Trace) -> Result<(), Box<dyn std::error::Error>> {
+    let edits = trace.spans().named("edit").with_arg("edit", 11_u64).iter();
+    if edits.len() != 1 { return Err("select exactly one edit".into()); }
+    let id = edits[0].span().id();
+    let work = trace.inspect_work(WorkId::Scope(id))?;
+    let query = MessageQuery {
+        filter: EventFilter { within: Some(id), ..Default::default() },
+        name: Some("body_outcome".into()),
+        args: vec![("node".into(), 2_u64.into())],
+        ..Default::default()
+    };
+    let first = trace.select_messages(&query, Page::default())?;
+    for message in first.items {
+        println!("{}: {}", message.sequence(), message.text());
+    }
+    println!("{} scopes, evidence {:?}", work.scopes.len(), work.evidence);
+    Ok(())
+}
+```
+
+Scope membership follows captured parent identities, including while scopes are
+open. Simultaneous work on another thread is excluded. `OpenSpan` exposes its
+parent and begin-event arguments. Open inspections describe retained observations
+so far and set `open`; they cannot establish a completed result. A missing work
+identity is an error. The CLI's selector form requires exactly one completed unit;
+use `analyze span ID --json` for an open scope whose begin identity is known.
+
+Marker inspection selects scopes overlapping `[begin,end)` and point observations
+inside it across threads and labels it
+`IntervalActivity`. It establishes no descendant, causal, or ownership relation.
+Flow queries return all retained steps of each matching flow and label matching
+step sequences, preserving endpoints outside the selected scope or time range.
+Endpoint presence (`Flow::is_complete`, JSON `endpoints_present`) and recording
+continuity are separate facts: intermediate steps can be lost even with both
+endpoints present.
+
+Message pages order by event sequence; flow pages order by flow ID. `Page::after`
+is exclusive, and `QueryPage::next` supplies the cursor when another page exists.
+`total` counts retained matches before pagination. Keep the query and runtime
+instance fixed when continuing. These operations currently scan retained data;
+pagination bounds the returned page, not scan cost or temporary matching storage.
+Counts can change after live updates or pruning. `Trace::message`, `Trace::flow`,
+`Trace::span`, and `Trace::resource_lifetime` support identity-based follow-up.
+
+`QueryEvidence` separates latest signal availability (`recorded`) from
+producer-attested historical enablement (`recording_history`), alongside selected
+coverage, retained gaps, open work, refused/unattributed contexts, lost counter
+updates, and whether history is complete. Completeness remains conservative
+after *any* event loss or forgetting, including losses preceding the selection.
+Protocol 1.1 snapshots attest the minimum runtime/process-gate level. Re-enabling
+recording cannot certify earlier disabled history. Older snapshots and hand-built
+snapshots without attestation have unknown coverage; retained events remain
+inspectable, while completeness and exact storage totals are withheld.
+Interrupted nesting can hide descendants; an empty incomplete answer cannot
+establish that none ran. Ancestry references whose scopes were forgotten remain
+identities, without substituting a later scope. Inspect file-read status separately:
+`CapturedTrace::complete` and CLI `capture_read` describe truncated ends and foreign
+snapshots; successful queries on a retained prefix cannot make that file complete.
+
+## Resource interval accounting
+
+`Trace::resource_interval(range, grouping)` reports create/drop/resize activity,
+live baseline, ending bytes, peak live bytes, and ending survivor identities.
+Sizes are application-reported tracked bytes, excluding allocator overhead, RSS,
+and uninstrumented allocations. Creation provenance does not establish present
+ownership by a graph, cache, or undo stack.
+
+Activity uses additive half-open intervals `[start,end)`. Boundary states are
+immediately **before** all events at the boundary timestamp. Equal timestamps
+are ordered by event sequence within the interval, so an intermediate create or
+resize peak survives a same-timestamp drop. An event at `end` belongs to the next
+interval. Adjacent intervals' create/drop/grow/shrink sums add; their peaks do not.
+A zero-length interval has no activity and identical boundary states. This differs
+from `Resource::alive_at(t)`, which applies events at `t` to the lifetime model.
+
+Release sizes come from the last supported size before drop. Increases and
+decreases on updates are reported separately from creation and release; they do
+not claim a particular allocator operation occurred. A lifetime first seen as an
+update or drop is never extrapolated backward as live before that observation.
+`ResourceLifetimeId` uses the first retained observation sequence and distinguishes
+logical ID reuse after a drop. It stays stable across live pushes and pruning
+while the lifetime is retained.
+
+Each byte measure has `observed` and `exact`. Missing creation or size evidence,
+gaps, forgotten history, coverage, disabled instrumentation, or sum overflow make
+exact totals unavailable. Unsupported stale sizes are excluded from release and
+boundary sums. Incomplete survivors are candidates from supported retained state,
+not proof of uninterrupted retention. A gap before the interval can invalidate
+its baseline even when no events are missing inside the interval. Pruning the gap
+does not restore completeness. Overflow saturates the observed sum and clears
+exactness.
+
+Group by kind, nearest creation scope, or highest fully resolved creation ancestor.
+Unknown and unscoped origins have an explicit group. Groups describe origins of
+lifetimes; global interval activity can overlap other edits and cannot be assigned
+exclusively to the selected work. Named counter checkpoints independently report
+sampled boundaries; resource events cannot supply samples an older capture never
+recorded. An absent initial gauge sample stays unknown.
+
 ## The Trace
 
 A `Trace` holds what one runtime instance recorded, as far as its snapshots

@@ -326,3 +326,80 @@ fn a_clock_synced_with_the_runtime_converts_to_trace_time() {
     assert_eq!(converted.nanos() - synced, 12_000);
     assert_eq!(converted.via(), Some(host));
 }
+
+#[test]
+fn enabling_recording_does_not_certify_disabled_history() {
+    use footfall_analysis::{MessageQuery, Page, Signal};
+    use footfall_core::{EventDesc, InstrumentationLevel, ResourceId, ResourceKindDesc};
+    static FAILURE: EventDesc = EventDesc::new("failure");
+    static BUFFER: ResourceKindDesc = ResourceKindDesc::new("buffer");
+    for between_reads in [false, true] {
+        let runtime = Runtime::builder().level(InstrumentationLevel::Off).build();
+        runtime.message(&FAILURE, ContextHandle::ROOT, "failed", &Args::none());
+        runtime.resource_create(&BUFFER, ResourceId::new(1), ContextHandle::ROOT, 100);
+        let mut trace = Trace::new();
+        if !between_reads {
+            trace
+                .push(&OwnedSnapshot::from(runtime.snapshot()))
+                .expect("first");
+        }
+        runtime.set_level(InstrumentationLevel::Trace);
+        trace
+            .push(&OwnedSnapshot::from(runtime.snapshot()))
+            .expect("enabled");
+        assert!(
+            trace.recorded(Signal::Messages).is_yes(),
+            "latest state is enabled"
+        );
+        let messages = trace
+            .select_messages(&MessageQuery::default(), Page::default())
+            .expect("query");
+        assert_eq!(messages.total, 0);
+        assert!(
+            !messages.evidence.is_complete(),
+            "disabled history cannot establish absence, even without a disabled snapshot"
+        );
+        let storage = trace.resource_interval(trace.observed(), None);
+        assert!(
+            !storage.activity.ending.exact,
+            "unrecorded creation cannot imply exactly zero live bytes"
+        );
+        trace.forget_before(trace.observed().end());
+        assert!(!trace.query_evidence(Signal::Resources, None).is_complete());
+    }
+    let runtime = Runtime::default();
+    let mut trace = Trace::from_snapshot(&OwnedSnapshot::from(runtime.snapshot()));
+    runtime.set_level(InstrumentationLevel::Off);
+    runtime.message(&FAILURE, ContextHandle::ROOT, "failed", &Args::none());
+    runtime.set_level(InstrumentationLevel::Trace);
+    trace
+        .push(&OwnedSnapshot::from(runtime.snapshot()))
+        .expect("cycled");
+    assert!(
+        !trace.query_evidence(Signal::Messages, None).is_complete(),
+        "between-read disablement must survive re-enabling"
+    );
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn concurrent_level_setters_cannot_publish_a_floor_above_current_level() {
+    use footfall_core::InstrumentationLevel::{Off, Trace as Full};
+    let runtime = std::sync::Arc::new(Runtime::default());
+    let writer = std::sync::Arc::clone(&runtime);
+    let thread = std::thread::spawn(move || {
+        for _ in 0..500 {
+            writer.set_level(Off);
+            writer.set_level(Full);
+        }
+    });
+    for _ in 0..50 {
+        let capture = runtime.snapshot().metadata().capture();
+        assert!(capture.level_floor().expect("attested") <= capture.level());
+    }
+    thread.join().expect("setter");
+    assert_eq!(
+        runtime.snapshot().metadata().capture().level_floor(),
+        Some(Off)
+    );
+}

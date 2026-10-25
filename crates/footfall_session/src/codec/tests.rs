@@ -25,11 +25,11 @@ use crate::{
     collect_snapshot,
 };
 
-// Retain protocol 1.1 golden fixtures as a backwards-compatibility contract.
+// Protocol 1.1 golden fixtures cover event layouts without optional history attestation.
 const FIXTURE_VERSION: ProtocolVersion = ProtocolVersion::new(1, 1);
 
 #[test]
-fn checkpoint_boundaries_round_trip_in_protocol_1_2() {
+fn checkpoint_boundaries_round_trip_in_protocol_1_1() {
     let observation = OwnedObservation::CounterCheckpoint {
         desc_id: EventDescId::new(1),
         name: String::from("storage"),
@@ -37,14 +37,14 @@ fn checkpoint_boundaries_round_trip_in_protocol_1_2() {
         samples: 3,
     };
     let envelope = OwnedSessionEnvelope::new(
-        EnvelopeHeader::new(crate::PROTOCOL_VERSION, 0),
+        EnvelopeHeader::new(ProtocolVersion::new(1, 1), 0),
         OwnedSessionPayload::Events(vec![OwnedTimedObservation::new(0, 0, 1, observation)]),
     );
     let encoded = encode_owned_envelope(&envelope).expect("checkpoint encoding");
     assert_eq!(
         &encoded[..4],
-        &[1, 0, 2, 0],
-        "the new observation requires protocol 1.2"
+        &[1, 0, 1, 0],
+        "the new observation requires protocol 1.1"
     );
     assert_eq!(
         decode_envelope(&encoded).expect("checkpoint decoding"),
@@ -1103,4 +1103,68 @@ fn codec_errors_say_what_failed() {
     assert_eq!(error.kind(), ErrorKind::InvalidData);
     let incompatible = crate::IncompatibleVersion::of(&error).expect("still an incompatibility");
     assert_eq!(incompatible.supported(), super::CODEC_VERSION);
+}
+
+#[test]
+fn recording_history_round_trips_and_legacy_metadata_remains_unknown() {
+    use footfall_core::InstrumentationLevel::{Counters, Off, Scoped, Trace};
+    for floor in [Off, Counters, Scoped, Trace] {
+        let capture = crate::CaptureSettings::new(Trace, 16, 16, 16).with_level_floor(floor);
+        let snapshot =
+            Snapshot::builder(SnapshotMetadata::new("history").with_capture(capture)).build();
+        let owned = crate::OwnedSnapshot::from(snapshot);
+        let envelopes = owned.to_envelopes(Chunking::default());
+        let encoded = encode_owned_envelope(&envelopes[0]).expect("encode");
+        let decoded = decode_envelope(&encoded).expect("decode");
+        let OwnedSessionPayload::SnapshotStart(summary) = decoded.payload() else {
+            panic!("start")
+        };
+        assert_eq!(summary.metadata().capture().level_floor(), Some(floor));
+        let old = OwnedSessionEnvelope::new(
+            EnvelopeHeader::new(ProtocolVersion::new(1, 0), 0),
+            envelopes[0].payload().clone(),
+        );
+        assert!(
+            encode_owned_envelope(&old).is_err(),
+            "cannot claim new fields under old protocol"
+        );
+        let mut mislabeled = encoded;
+        mislabeled[2..4].copy_from_slice(&0_u16.to_le_bytes());
+        assert!(decode_envelope(&mislabeled).is_err());
+    }
+    let snapshot = Snapshot::builder(
+        SnapshotMetadata::new("legacy")
+            .with_capture(crate::CaptureSettings::new(Trace, 16, 16, 16)),
+    )
+    .build();
+    let owned = crate::OwnedSnapshot::from(snapshot);
+    let envelopes = owned.to_envelopes(Chunking::default());
+    let old = OwnedSessionEnvelope::new(
+        EnvelopeHeader::new(ProtocolVersion::new(1, 0), 0),
+        envelopes[0].payload().clone(),
+    );
+    let decoded = decode_envelope(&encode_owned_envelope(&old).expect("legacy encode"))
+        .expect("legacy decode");
+    let OwnedSessionPayload::SnapshotStart(summary) = decoded.payload() else {
+        panic!("start")
+    };
+    assert_eq!(summary.metadata().capture().level_floor(), None);
+    let clamped = crate::CaptureSettings::new(Off, 1, 1, 1).with_level_floor(Trace);
+    assert_eq!(clamped.level_floor(), Some(Off));
+}
+
+#[test]
+fn malformed_recording_history_flags_are_rejected() {
+    use footfall_core::InstrumentationLevel::Off;
+    let metadata = SnapshotMetadata::new("history")
+        .with_capture(crate::CaptureSettings::new(Off, 1, 1, 1).with_level_floor(Off));
+    let mut bytes = Vec::new();
+    super::encode_snapshot_metadata(&mut bytes, &metadata).expect("metadata");
+    for flags in [0b1_1100, 0b0000_0100, 0b0010_0000] {
+        *bytes.last_mut().expect("flags") = flags;
+        assert!(
+            super::decode_snapshot_metadata(&mut Cursor::new(&bytes)).is_err(),
+            "invalid flags {flags:#x}"
+        );
+    }
 }

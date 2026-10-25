@@ -142,6 +142,7 @@ pub fn encode_envelope(envelope: Envelope<'_>) -> Result<Vec<u8>> {
     encode_header(&mut bytes, envelope.header());
     match envelope.payload() {
         Payload::SnapshotStart(summary) => {
+            check_capture_version(envelope.header().protocol_version(), summary.metadata())?;
             encode_u8(&mut bytes, TAG_SNAPSHOT_START);
             encode_snapshot_summary(
                 &mut bytes,
@@ -190,6 +191,7 @@ pub fn encode_owned_envelope(envelope: &OwnedSessionEnvelope) -> Result<Vec<u8>>
     encode_header(&mut bytes, envelope.header());
     match envelope.payload() {
         OwnedSessionPayload::SnapshotStart(summary) => {
+            check_capture_version(envelope.header().protocol_version(), summary.metadata())?;
             encode_u8(&mut bytes, TAG_SNAPSHOT_START);
             encode_snapshot_summary(
                 &mut bytes,
@@ -243,7 +245,9 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<OwnedSessionEnvelope> {
     let header = decode_header(&mut cursor)?;
     let payload = match decode_u8(&mut cursor)? {
         TAG_SNAPSHOT_START => {
-            OwnedSessionPayload::SnapshotStart(decode_snapshot_summary(&mut cursor)?)
+            let summary = decode_snapshot_summary(&mut cursor)?;
+            check_capture_version(header.protocol_version(), summary.metadata())?;
+            OwnedSessionPayload::SnapshotStart(summary)
         }
         TAG_THREADS => OwnedSessionPayload::Threads(decode_threads(&mut cursor)?),
         TAG_CONTEXTS => OwnedSessionPayload::Contexts(decode_contexts(&mut cursor)?),
@@ -282,6 +286,16 @@ pub(crate) fn decode_header(cursor: &mut Cursor<'_>) -> Result<EnvelopeHeader> {
         )));
     }
     Ok(EnvelopeHeader::new(protocol_version, decode_u64(cursor)?))
+}
+
+fn check_capture_version(version: ProtocolVersion, metadata: &SnapshotMetadata) -> Result<()> {
+    if metadata.capture().level_floor().is_some() && !version.can_decode(ProtocolVersion::new(1, 1))
+    {
+        return Err(CodecError::malformed(
+            "capture recording history requires protocol 1.1",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn encode_snapshot_summary(
@@ -389,7 +403,11 @@ pub(crate) fn encode_snapshot_metadata(
     encode_u64(bytes, usize_to_u64(capture.context_capacity()));
     encode_u8(
         bytes,
-        u8::from(capture.counter_samples()) | (u8::from(capture.compiled_out()) << 1),
+        u8::from(capture.counter_samples())
+            | (u8::from(capture.compiled_out()) << 1)
+            | capture.level_floor().map_or(Ok(0), |floor| {
+                encode_level(floor).map(|level| 0b1_0000 | (level << 2))
+            })?,
     );
     Ok(())
 }
@@ -408,7 +426,7 @@ pub(crate) fn decode_snapshot_metadata(cursor: &mut Cursor<'_>) -> Result<Snapsh
         decode_u64_as_usize(cursor)?,
     );
     let flags = decode_u8(cursor)?;
-    if flags & !0b11 != 0 {
+    if flags & !0b1_1111 != 0 || (flags & 0b1_0000 == 0 && flags & 0b1100 != 0) {
         return Err(CodecError::malformed(format!(
             "unknown capture flags: {flags:#04x}"
         )));
@@ -416,6 +434,17 @@ pub(crate) fn decode_snapshot_metadata(cursor: &mut Cursor<'_>) -> Result<Snapsh
     let capture = capture
         .with_counter_samples(flags & 0b01 != 0)
         .with_compiled_out(flags & 0b10 != 0);
+    let capture = if flags & 0b1_0000 != 0 {
+        let floor = decode_level((flags >> 2) & 0b11)?;
+        if floor > capture.level() {
+            return Err(CodecError::malformed(
+                "capture level floor exceeds current level",
+            ));
+        }
+        capture.with_level_floor(floor)
+    } else {
+        capture
+    };
     let metadata = SnapshotMetadata::new(process_name)
         .with_instance_id(instance_id)
         .with_process_id(process_id)

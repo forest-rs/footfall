@@ -96,6 +96,22 @@ they need no extra producer instrumentation or protocol change. Missing scope
 begins or creation events remain unknown. Application ownership roots are
 separate from the work that created a resource.
 
+## Inspect connected work and storage
+
+The analysis additions are opt-in and require no capture protocol change:
+`MessageQuery`, `FlowQuery`, `EventFilter`, `Page`, `WorkId`, `Inspection`, and
+`ResourceInterval` operate on an existing `Trace`. Existing span queries and
+resource lifetime accessors continue to work. Replace custom message filters and
+parent-walking reports with `select_messages`, `select_flows`, and `inspect_work`;
+use `OpenSpan::parent` and `OpenSpan::args` when inspecting live work.
+
+Persist resource lifetime handles (`Resource::lifetime_id`) alongside the runtime
+instance, rather than vector indices or logical resource IDs, which can be reused.
+Resource interval boundaries describe state before events at each timestamp;
+`Resource::alive_at` retains its existing inclusive-at-timestamp lifetime semantics.
+Read per-measure exactness and recording evidence alongside numbers. See the
+[analysis guide](analysing-a-trace.md#resource-interval-accounting).
+
 ## Choose the export format explicitly in scripts
 
 `footfall export run.ffcap` now writes `run.pftrace`, Perfetto's protobuf

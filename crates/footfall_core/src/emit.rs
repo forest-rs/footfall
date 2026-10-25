@@ -1,8 +1,6 @@
 // Copyright 2026 the Footfall Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-#[cfg(feature = "std")]
-use crate::InstrumentationLevel;
 #[cfg(not(footfall_compile_out))]
 use crate::max_level;
 use crate::{
@@ -724,13 +722,13 @@ pub fn message_with(desc: &'static EventDesc, context: ContextHandle, text: &str
 /// [`NoopBackend`].
 ///
 /// A successful installation raises the process-wide maximum level to
-/// [`InstrumentationLevel::Trace`] so the backend sees every emission; lower
+/// [`InstrumentationLevel::Trace`](crate::InstrumentationLevel::Trace) so the backend sees every emission; lower
 /// it afterwards with [`set_max_level`](crate::set_max_level) to filter
 /// emissions before they reach the backend.
 #[cfg(feature = "std")]
 pub fn install_backend(backend: &'static dyn Backend) -> Result<(), InstallBackendError> {
     BACKEND.set(backend).map_err(|_| InstallBackendError)?;
-    crate::set_max_level(InstrumentationLevel::Trace);
+    crate::level::start_max_level_history();
     Ok(())
 }
 

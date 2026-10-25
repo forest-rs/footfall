@@ -52,6 +52,9 @@ pub struct Trace {
     checkpoint_samples: HashMap<u64, (Duration, Vec<crate::CheckpointValue>)>,
     instance_id: Option<u64>,
     metadata: Option<SnapshotMetadata>,
+    recording_floor: Option<InstrumentationLevel>,
+    recording_compiled_out: bool,
+    recording_samples: bool,
     drops: Drops,
     captured_at: Duration,
     next_sequence: u64,
@@ -394,6 +397,16 @@ impl Trace {
         if first {
             self.complete_history = true;
         }
+        let capture = snapshot.metadata().capture();
+        self.recording_floor = if first {
+            capture.level_floor()
+        } else {
+            self.recording_floor
+                .zip(capture.level_floor())
+                .map(|(a, b)| a.min(b))
+        };
+        self.recording_compiled_out |= capture.compiled_out();
+        self.recording_samples = (first || self.recording_samples) && capture.counter_samples();
 
         for thread in snapshot.threads() {
             let track = self
@@ -737,7 +750,8 @@ impl Trace {
                 value,
             } => {
                 let name = self.intern(name);
-                let complete_history = self.complete_history;
+                let counters_recorded = self.recording_history(Signal::Counters).is_yes();
+                let complete_history = self.complete_history && counters_recorded;
                 let batch = self
                     .checkpoint_samples
                     .entry(thread_id)
@@ -768,7 +782,7 @@ impl Trace {
                 let change = match kind {
                     // A sample from before lost events says nothing about
                     // the change since.
-                    CounterKind::Counter if series.after_gap => None,
+                    CounterKind::Counter if series.after_gap || !counters_recorded => None,
                     CounterKind::Counter => match series.samples.last() {
                         Some(before) => Some(value.saturating_sub(before.value)),
                         None if complete_history => Some(*value),
@@ -1414,6 +1428,31 @@ impl Trace {
         Recorded::Yes
     }
 
+    /// Returns whether `signal` was enabled throughout producer-attested history.
+    /// Unlike [`Self::recorded`], this cannot become complete merely because the
+    /// latest snapshot enables recording. Unknown old-format history, lower levels,
+    /// or disabled sampling remain conservative across pushes and pruning.
+    #[must_use]
+    pub fn recording_history(&self, signal: Signal) -> Recorded {
+        if self.instance_id.is_none() {
+            return Recorded::Unknown;
+        }
+        if self.recording_compiled_out {
+            return Recorded::CompiledOut;
+        }
+        let Some(level) = self.recording_floor else {
+            return Recorded::HistoryUnknown;
+        };
+        let needs = signal.level();
+        if level < needs || level == InstrumentationLevel::Off {
+            return Recorded::BelowLevel { level, needs };
+        }
+        if signal == Signal::CounterSamples && !self.recording_samples {
+            return Recorded::SamplesOff;
+        }
+        Recorded::Yes
+    }
+
     /// Starts a query over the trace's completed spans.
     #[must_use]
     pub fn spans(&self) -> SpanQuery<'_> {
@@ -1567,10 +1606,31 @@ impl Trace {
                 begin: begun.begin,
                 depth: begun.depth,
                 interrupted: begun.interrupted,
+                parent: begun.parent,
+                args: begun.args.clone(),
             })
             .collect();
         open.sort_by_key(|span| (span.begin, span.id));
         open
+    }
+
+    /// Returns the retained parent link, for completed or open scopes.
+    /// The outer option distinguishes a missing scope from a root scope.
+    #[must_use]
+    pub fn scope_parent(&self, id: SpanId) -> Option<Option<SpanId>> {
+        self.span(id).map(|span| span.parent()).or_else(|| {
+            self.begun
+                .values()
+                .find(|begun| begun.id == id)
+                .map(|begun| begun.parent)
+        })
+    }
+
+    /// Whether all event history since instance creation is retained without loss.
+    /// This is conservative after forgetting or a gap, even for an earlier interval.
+    #[must_use]
+    pub fn has_complete_history(&self) -> bool {
+        self.instance_id.is_some() && self.complete_history && self.forgotten_before.is_zero()
     }
 
     pub(crate) fn begun(
@@ -1733,7 +1793,8 @@ impl Trace {
         if before.sequence > after.sequence || before.at > after.at {
             return None;
         }
-        let complete = before.complete
+        let complete = self.recording_history(Signal::Counters).is_yes()
+            && before.complete
             && after.complete
             && self.drops.counter_updates() == 0
             && !self

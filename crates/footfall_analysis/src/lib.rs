@@ -65,8 +65,10 @@ mod basis;
 mod checkpoint;
 mod compare;
 mod frame;
+mod inspect;
 mod pacing;
 mod query;
+mod resource_interval;
 mod signal;
 mod span;
 mod time;
@@ -97,4 +99,14 @@ pub use trace::{CapturedTrace, Continuity, PushError, Pushed, Trace};
 
 pub use footfall_session::{
     OwnedArgEntry, OwnedLabelValue, OwnedObservation, OwnedSnapshot, OwnedSourceLocation,
+};
+
+pub use inspect::{
+    EventFilter, FlowMatch, FlowQuery, Inspection, InspectionError, Membership, MessageQuery, Page,
+    QueryEvidence, QueryPage, WorkId,
+};
+
+pub use resource_interval::{
+    ObservedBytes, ResourceActivity, ResourceGroup, ResourceGroupKey, ResourceGrouping,
+    ResourceInterval, ResourceLifetimeId,
 };
