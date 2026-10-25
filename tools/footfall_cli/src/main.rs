@@ -23,6 +23,7 @@ mod budget;
 mod check;
 mod checkpoints;
 mod format;
+mod inspect;
 mod json;
 mod pacing_json;
 mod report;
@@ -136,6 +137,72 @@ impl TraceFormat {
 /// The questions `footfall analyze` answers about captures.
 #[derive(Debug, Subcommand)]
 enum Analysis {
+    /// Select structured messages by channel, arguments, context, time, and captured ancestry.
+    Messages {
+        /// Capture to inspect.
+        file: PathBuf,
+        #[command(flatten)]
+        filter: inspect::Filter,
+        /// Exact event descriptor name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Inspect one exact message event sequence.
+        #[arg(long)]
+        sequence: Option<u64>,
+        /// Typed message-argument equality, repeatable (KEY=VALUE).
+        #[arg(long)]
+        arg: Vec<work::Term>,
+        /// Print structured results.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect full flows, labeling the steps that matched the selection.
+    Flows {
+        /// Capture to inspect.
+        file: PathBuf,
+        #[command(flatten)]
+        filter: inspect::Filter,
+        /// Exact flow ID.
+        #[arg(long)]
+        id: Option<u64>,
+        /// Print structured results.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect exactly one selected edit, transaction, frame, or pass.
+    Work {
+        /// Capture to inspect.
+        file: PathBuf,
+        #[command(flatten)]
+        work: work::Args,
+        /// Inspect one completed work ID from a survey, within the selected kind/scope.
+        #[arg(long)]
+        id: Option<u64>,
+        /// Include full observations rather than a survey of counts and identities.
+        #[arg(long)]
+        detail: bool,
+        /// Print structured results.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Account for global resource create, drop, resize, peak, and survivor observations.
+    ResourceInterval {
+        /// Capture to inspect.
+        file: PathBuf,
+        /// Inclusive start in runtime nanoseconds.
+        #[arg(long)]
+        start_ns: u64,
+        /// Exclusive end in runtime nanoseconds.
+        #[arg(long)]
+        end_ns: u64,
+        /// Group by kind or captured creating work.
+        #[arg(long, value_enum)]
+        group: Option<inspect::Group>,
+        /// Print structured results.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Inspect resource lifetimes and the scopes that created, updated, or dropped them.
     Resources {
         /// Capture to inspect.
@@ -143,6 +210,9 @@ enum Analysis {
         /// Keep resources created in this completed scope or its descendants.
         #[arg(long, value_name = "SPAN_ID")]
         created_in: Option<u64>,
+        /// Inspect one retained lifetime by first observation sequence.
+        #[arg(long)]
+        lifetime: Option<u64>,
         /// Keep resources observed alive at this runtime-relative nanosecond timestamp.
         #[arg(long, value_name = "NANOSECONDS")]
         alive_at_ns: Option<u64>,
@@ -245,6 +315,9 @@ enum Analysis {
         file: PathBuf,
         /// The span's id: the number after `span@`.
         id: u64,
+        /// Print connected observations as JSON, including open scopes.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -298,12 +371,41 @@ async fn main() {
 /// Answers one `footfall analyze` question.
 fn analyze(analysis: Analysis) -> Result<()> {
     match analysis {
+        Analysis::Messages {
+            file,
+            filter,
+            name,
+            sequence,
+            arg,
+            json,
+        } => inspect::messages(&file, &filter, name, sequence, &arg, json),
+        Analysis::Flows {
+            file,
+            filter,
+            id,
+            json,
+        } => inspect::flows(&file, &filter, id, json),
+        Analysis::Work {
+            file,
+            work,
+            id,
+            detail,
+            json,
+        } => inspect::work(&file, &work, id, detail, json),
+        Analysis::ResourceInterval {
+            file,
+            start_ns,
+            end_ns,
+            group,
+            json,
+        } => inspect::accounting(&file, start_ns, end_ns, group, json),
         Analysis::Resources {
             file,
             created_in,
+            lifetime,
             alive_at_ns,
             json,
-        } => resources::run(&file, created_in, alive_at_ns, json),
+        } => resources::run(&file, created_in, alive_at_ns, json, lifetime),
         Analysis::Checkpoints {
             file,
             from,
@@ -355,7 +457,13 @@ fn analyze(analysis: Analysis) -> Result<()> {
             top,
             json,
         } => pacing(&file, tolerance_ms, top, json),
-        Analysis::Span { file, id } => span(&file, SpanId::new(id)),
+        Analysis::Span { file, id, json } => {
+            if json {
+                inspect::span(&file, id, true)
+            } else {
+                span(&file, SpanId::new(id))
+            }
+        }
     }
 }
 

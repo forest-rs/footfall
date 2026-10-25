@@ -4,7 +4,7 @@
 //! Structured work analysis, with its population, metric, and evidence limits.
 
 use crate::{check, json::Json, work};
-use footfall::analysis::{Basis, Caveat, Comparison, OwnedLabelValue, Recorded, SpanTable, Trace};
+use footfall::analysis::{Basis, Caveat, Comparison, Recorded, SpanTable, Trace};
 use std::path::Path;
 
 pub(crate) fn recorded(recorded: &Recorded) -> Json {
@@ -13,6 +13,7 @@ pub(crate) fn recorded(recorded: &Recorded) -> Json {
         Recorded::BelowLevel { .. } => "below_level",
         Recorded::CompiledOut => "compiled_out",
         Recorded::SamplesOff => "sampling_disabled",
+        Recorded::HistoryUnknown => "history_unknown",
         _ => "unknown",
     };
     let mut fields = vec![("status", Json::from(status))];
@@ -114,21 +115,7 @@ pub(crate) fn selection(args: &work::Args, units: &work::Units<'_>) -> Json {
         Json::Array(
             terms
                 .iter()
-                .map(|term| {
-                    Json::object([
-                        ("key", Json::from(term.key.as_str())),
-                        (
-                            "value",
-                            match &term.value {
-                                OwnedLabelValue::Unsigned(v) => Json::from(*v),
-                                OwnedLabelValue::Signed(v) => Json::Signed(*v),
-                                OwnedLabelValue::Bool(v) => Json::from(*v),
-                                OwnedLabelValue::String(v) => Json::from(v.as_str()),
-                                _ => Json::Null,
-                            },
-                        ),
-                    ])
-                })
+                .map(|term| crate::inspect::term(&term.key, &term.value))
                 .collect(),
         )
     };
@@ -155,36 +142,8 @@ pub(crate) fn selection(args: &work::Args, units: &work::Units<'_>) -> Json {
                             ("duration_ns", Json::nanos(unit.duration())),
                             (
                                 "scope_arguments",
-                                unit.span.map_or(Json::Null, |span| {
-                                    Json::Array(
-                                        span.args()
-                                            .iter()
-                                            .map(|arg| {
-                                                Json::object([
-                                                    ("key", Json::from(arg.key())),
-                                                    (
-                                                        "value",
-                                                        match arg.value() {
-                                                            OwnedLabelValue::Unsigned(v) => {
-                                                                Json::from(*v)
-                                                            }
-                                                            OwnedLabelValue::Signed(v) => {
-                                                                Json::Signed(*v)
-                                                            }
-                                                            OwnedLabelValue::Bool(v) => {
-                                                                Json::from(*v)
-                                                            }
-                                                            OwnedLabelValue::String(v) => {
-                                                                Json::from(v.as_str())
-                                                            }
-                                                            _ => Json::Null,
-                                                        },
-                                                    ),
-                                                ])
-                                            })
-                                            .collect(),
-                                    )
-                                }),
+                                unit.span
+                                    .map_or(Json::Null, |span| crate::inspect::args(span.args())),
                             ),
                         ])
                     })

@@ -6,6 +6,7 @@
 //! see the examples README for what each one shows.
 
 pub mod demo;
+pub mod edit_fixture;
 pub mod format;
 pub mod report;
 pub mod style;
@@ -27,3 +28,7 @@ struct AnalysingATraceDoctests;
 #[cfg(doctest)]
 #[doc = include_str!("../../docs/migrating-to-0.2.md")]
 struct MigratingTo02Doctests;
+
+#[cfg(doctest)]
+#[doc = include_str!("../../docs/investigating-an-edit.md")]
+struct InvestigatingAnEditDoctests;

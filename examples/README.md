@@ -72,3 +72,12 @@ need, plus `footfall_fanout` and `footfall_memory`. The shared code in
 [`src/`](src) is the demo renderer, which follows the
 [instrumenting guide](../docs/instrumenting-an-app.md), and the formatting
 used by the printed reports.
+
+`cargo run -p footfall_examples --bin edit_inspection -- NEW.ffcap 2` writes a
+synthetic, deterministic contract fixture for connected edit inspection. It is
+reduced from execution's procedural example at commit
+`41d577c691b64be4424e449060eba2de0a948ccc`, with explicit named checkpoints.
+It models initial buffers retained until undo release, amplitude topology reuse,
+a topology edit, a rejected node attempt, and graph retirement. Public-result tests
+answer all five investigation questions. It records no actual VM or native graph
+execution; regenerate real workload measurements from the consumer separately.

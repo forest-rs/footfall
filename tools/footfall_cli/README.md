@@ -268,3 +268,74 @@ code, start with the [`footfall`](https://docs.rs/footfall) crate.
 
 Licensed under either of Apache License, Version 2.0 or MIT license at your
 option.
+
+## Connected work inspection
+
+Survey one completed edit with the existing work selectors, then request detail:
+
+```sh
+footfall analyze work edits.ffcap --scope procedural.edit --arg kind=rejected --json
+footfall analyze work edits.ffcap --scope procedural.edit --arg kind=rejected --detail --json
+footfall analyze work edits.ffcap --kind transaction --id 95 --detail --json
+footfall analyze messages edits.ffcap --name procedural.body_outcome --arg node=u:2 --arg attempt=u:11 --json
+footfall analyze messages edits.ffcap --within 387 --limit 20 --json
+footfall analyze messages edits.ffcap --sequence 402 --json
+footfall analyze flows edits.ffcap --within 400 --json
+footfall analyze flows edits.ffcap --id 11 --json
+footfall analyze span edits.ffcap 400 --json
+footfall analyze resources edits.ffcap --lifetime 19 --json
+footfall analyze resource-interval edits.ffcap --start-ns 1000000 --end-ns 2000000 --group kind --json
+```
+
+IDs and timestamps above illustrate one capture; use the identities returned by
+your survey. Ambiguous work selectors fail with the match count. Scope membership
+uses captured ancestry; `--kind transaction` selects temporal interval activity
+across threads, including scopes that began before the interval and overlap it.
+It implies no causal or exclusive relationship. Use `--id` to follow a surveyed
+marker or scope unit within the selected kind/scope and predicates. Open scopes can
+be inspected by ID with `span --json`; selector-based `work` requires completion.
+
+Surveys include counts and follow-up identities. `--detail` adds scopes, messages,
+full flows, named checkpoints, and resource observations. Interval storage totals
+always describe global activity in the selected time, separately from descendant
+observations. Resource JSON shares the same scope and observation representation
+across commands. A creation scope identifies origin, not current ownership.
+
+Messages and flows support `--within`, `--start-ns`/`--end-ns`, `--context`,
+`--thread`, and repeatable typed `--label`. Message `--arg` uses the same typed
+syntax as work selectors. Argument and label objects include `value_type`,
+preserving signed and unsigned integers separately. Flow selection returns all retained steps, setting
+`matched` on those that selected the flow. `endpoints_present` does not rule out
+lost intermediate steps. Use `--limit` and the returned `next` as `--after` to
+continue with the same predicates. Pages order messages by sequence and flows by
+ID. `total` counts all retained matches; pagination bounds returned items, while
+queries currently scan retained histories.
+
+`resource-interval` uses `[start,end)` activity and boundary states **before**
+events at each timestamp. Equal-time events run in sequence order. It reports
+application-reported create/release bytes, growth/shrinkage on updates, live
+baseline, ending bytes, peak, and survivor lifetime IDs. Group with `--group kind`,
+`creation-scope`, or `creation-root`; missing or unscoped origins remain explicit.
+Every byte result includes `observed_bytes` and `exact`. Missing origins, stale
+sizes across gaps, forgotten history, or unavailable recording prevent exact
+claims. Incomplete survivors are candidates, not proof of uninterrupted retention.
+
+`evidence.recorded` describes latest instrumentation settings;
+`evidence.recording_history` describes producer-attested historical enablement.
+Re-enabling a level never restores coverage for earlier disabled work. Protocol
+1.0 captures remain readable, with unknown historical enablement rather than
+complete absence or exact storage totals. `evidence` also describes retained event
+history and gaps. `capture_read`
+independently describes file truncation, skipped snapshots, and runtime/capture
+loss counters. Complete runtime history in a retained prefix does not establish
+a complete file read. See [the evidence and boundary rules](../../docs/analysing-a-trace.md#connected-work-inspection).
+
+A synthetic contract fixture is available without the execution repository:
+
+```sh
+cargo run -p footfall_examples --bin edit_inspection -- edits.ffcap 2
+footfall analyze work edits.ffcap --scope procedural.edit --arg kind=rejected --detail --json
+```
+
+Its timestamps and sequence numbers are deterministic. It models the procedural
+consumer's investigation questions; it does not replay or benchmark that graph.

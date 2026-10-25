@@ -19,7 +19,7 @@ crates share one version.
 - `counter_checkpoint` samples counters and gauges at a named boundary outside
   rendering frames. Sampling frequency is explicit, can be disabled, and scans
   all counter shards. Automatic transaction/pass-end sampling is opt-in through
-  `RuntimeBuilder::counter_samples_on`. Protocol 1.2 records checkpoint boundaries
+  `RuntimeBuilder::counter_samples_on`. Protocol 1.1 records checkpoint boundaries
   and their expected batch sizes; older readers must be upgraded first.
 - `FramePointKind::BufferRequested` and `FramePointKind::BufferAcquired`
   record when a frame asked for a buffer to render into, such as by
@@ -44,7 +44,21 @@ crates share one version.
   to analysis. `Backend::frame_plan` receives plans, and `footfall_fanout`
   passes them to both of its backends.
 
+- Protocol 1.1 snapshots attest the minimum runtime and process-gate recording
+  level. Changing levels between reads cannot certify earlier unrecorded work as
+  absent or resource totals as exact. Older captures retain explicit unknown
+  historical coverage. Current recording state remains separately inspectable.
+
 ### Consuming
+
+- Connected work inspection follows captured scope ancestry or explicitly labeled
+  marker-interval activity. Typed message and flow queries provide bounded pages,
+  stable event identities, full retained flows with matching steps, and recording
+  evidence. CLI JSON supports surveys and targeted detail, including open scopes.
+- Resource interval accounting exposes application-reported create/drop/resize
+  bytes, boundary states, peaks, and survivor lifetime handles that distinguish
+  logical ID reuse. Unknown sizes and missing history retain explicit uncertainty;
+  grouping by kind or creating work does not infer ownership.
 
 - Resource lifetimes retain create/update/drop provenance: event identities,
   contexts, threads, and enclosing scopes. `analyze resources` can select

@@ -4,68 +4,35 @@
 //! Resource lifetimes and observed scope provenance, without inferred ownership.
 
 use crate::{json::Json, work_json};
-use footfall::analysis::{OwnedLabelValue, ResourceAction, ResourceObservation, SpanId, Trace};
+use footfall::analysis::{ResourceAction, ResourceObservation, SpanId, Trace};
 use std::{path::Path, time::Duration};
 
 fn scopes(trace: &Trace, mut id: Option<SpanId>) -> Json {
     let mut scopes = Vec::new();
+    let open = trace.open_spans();
     while let Some(held) = id {
-        let Some(span) = trace.span(held) else {
+        let scope = if let Some(span) = trace.span(held) {
+            crate::inspect::scope(trace, span)
+        } else if let Some(span) = open.iter().find(|span| span.id() == held) {
+            crate::inspect::open_scope(trace, span)
+        } else {
             scopes.push(Json::object([
                 ("id", Json::from(held.sequence())),
                 ("resolved", Json::from(false)),
             ]));
             break;
         };
-        scopes.push(Json::object([
-            ("id", Json::from(held.sequence())),
-            ("resolved", Json::from(true)),
-            ("name", Json::from(span.name())),
-            (
-                "arguments",
-                Json::Array(
-                    span.args()
-                        .iter()
-                        .map(|arg| {
-                            Json::object([
-                                ("key", Json::from(arg.key())),
-                                (
-                                    "value",
-                                    match arg.value() {
-                                        OwnedLabelValue::Unsigned(value) => Json::from(*value),
-                                        OwnedLabelValue::Signed(value) => Json::Signed(*value),
-                                        OwnedLabelValue::Bool(value) => Json::from(*value),
-                                        OwnedLabelValue::String(value) => {
-                                            Json::from(value.as_str())
-                                        }
-                                        _ => Json::Null,
-                                    },
-                                ),
-                            ])
-                        })
-                        .collect(),
-                ),
-            ),
-        ]));
-        id = trace.parent(span).map(|parent| parent.id());
+        let Json::Object(mut fields) = scope else {
+            unreachable!("scope object")
+        };
+        fields.push(("resolved".into(), Json::from(true)));
+        scopes.push(Json::Object(fields));
+        id = trace.scope_parent(held).flatten();
     }
     Json::Array(scopes)
 }
 
-fn within(trace: &Trace, mut id: Option<SpanId>, ancestor: SpanId) -> bool {
-    while let Some(held) = id {
-        if held == ancestor {
-            return true;
-        }
-        id = trace
-            .span(held)
-            .and_then(|span| trace.parent(span))
-            .map(|parent| parent.id());
-    }
-    false
-}
-
-fn observation(trace: &Trace, event: &ResourceObservation) -> Json {
+pub(crate) fn observation(trace: &Trace, event: &ResourceObservation) -> Json {
     Json::object([
         ("sequence", Json::from(event.sequence())),
         ("at_ns", Json::nanos(event.at())),
@@ -91,10 +58,18 @@ pub(crate) fn run(
     created_in: Option<u64>,
     alive_at_ns: Option<u64>,
     json: bool,
+    lifetime: Option<u64>,
 ) -> crate::Result<()> {
     let (trace, read) = crate::read_trace_saying(path)?;
-    if created_in.is_some_and(|id| trace.span(SpanId::new(id)).is_none()) {
-        return Err("--created-in needs the id of a retained completed scope; use analyze summary --scope NAME --json".into());
+    if created_in.is_some_and(|id| trace.scope_parent(SpanId::new(id)).is_none()) {
+        return Err("--created-in needs the id of a retained scope; use analyze summary --scope NAME --json".into());
+    }
+    if lifetime.is_some_and(|id| {
+        trace
+            .resource_lifetime(footfall::analysis::ResourceLifetimeId::new(id))
+            .is_none()
+    }) {
+        return Err("resource lifetime is absent from retained history".into());
     }
     let alive = alive_at_ns.map(Duration::from_nanos);
     if alive.is_some_and(|at| at < trace.observed().start() || at > trace.observed().end()) {
@@ -104,17 +79,19 @@ pub(crate) fn run(
         .resources()
         .iter()
         .filter(|resource| {
-            created_in.is_none_or(|id| {
-                resource
-                    .creation()
-                    .is_some_and(|event| within(&trace, event.span(), SpanId::new(id)))
-            }) && alive.is_none_or(|at| {
-                resource.alive_at(at)
-                    && resource
-                        .observations()
-                        .first()
-                        .is_some_and(|event| event.at() <= at)
-            })
+            lifetime.is_none_or(|id| resource.lifetime_id().sequence() == id)
+                && created_in.is_none_or(|id| {
+                    resource
+                        .creation()
+                        .is_some_and(|event| trace.scope_contains(SpanId::new(id), event.span()))
+                })
+                && alive.is_none_or(|at| {
+                    resource.alive_at(at)
+                        && resource
+                            .observations()
+                            .first()
+                            .is_some_and(|event| event.at() <= at)
+                })
         })
         .collect();
     if json {
@@ -170,34 +147,18 @@ pub(crate) fn run(
                     Json::Array(
                         resources
                             .iter()
-                            .map(|resource| Json::object([
-                                ("kind", Json::from(resource.kind_name())),
-                                ("kind_id", Json::from(resource.kind_id().get())),
-                                ("resource_id", Json::from(resource.resource_id().get())),
-                                ("created_ns", Json::nanos_or_null(resource.created())),
-                                ("dropped_ns", Json::nanos_or_null(resource.dropped())),
-                                ("latest_size_bytes", Json::from(resource.size())),
-                                (
-                                    "size_at_query_bytes",
-                                    alive.map_or(Json::Null, |at| Json::from(resource.size_at(at)))
-                                ),
-                                (
-                                    "creation",
-                                    resource
-                                        .creation()
-                                        .map_or(Json::Null, |event| observation(&trace, event))
-                                ),
-                                (
-                                    "observations",
-                                    Json::Array(
-                                        resource
-                                            .observations()
-                                            .iter()
-                                            .map(|event| observation(&trace, event))
-                                            .collect()
-                                    )
-                                ),
-                            ]))
+                            .map(|resource| {
+                                let Json::Object(mut fields) =
+                                    crate::inspect::resource(&trace, resource)
+                                else {
+                                    unreachable!("resource object")
+                                };
+                                fields.push((
+                                    "size_at_query_bytes".into(),
+                                    alive.map_or(Json::Null, |at| Json::from(resource.size_at(at))),
+                                ));
+                                Json::Object(fields)
+                            })
                             .collect()
                     )
                 ),

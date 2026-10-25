@@ -120,6 +120,8 @@ https://127.0.0.1:43091/footfall/session · main
   contexts, levels, capture, export, and serving.
 - [Session consumer contract](docs/session-consumer-contract.md): what a tool
   attaching to a session can rely on.
+- [Following one edit through a capture](docs/investigating-an-edit.md): a runnable
+  investigation from a rejected attempt through flows, topology reuse, and retained buffers.
 - [Analysing a trace](docs/analysing-a-trace.md): asking where time went,
   what changed, and what an answer covers.
 - [Session wire format](docs/session-wire-format.md): the bytes, for tools in
