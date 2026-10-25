@@ -628,7 +628,7 @@ impl CaptureSettings {
         }
     }
 
-    /// Sets whether frame ends record counter samples.
+    /// Sets whether counter sampling is enabled, including explicit checkpoints.
     #[must_use]
     pub const fn with_counter_samples(mut self, enabled: bool) -> Self {
         self.counter_samples = enabled;
@@ -643,10 +643,10 @@ impl CaptureSettings {
         self
     }
 
-    /// Returns `true` when frame ends record counter samples: they are
-    /// enabled (see [`RuntimeBuilder::counter_samples`]) and the level
-    /// captures markers. When `false`, no samples means they were not
-    /// recorded, not that no counter changed.
+    /// Returns `true` when counter sampling is enabled and the level captures
+    /// counters. Automatic marker-end sampling additionally needs a marker
+    /// trigger and a level that captures markers. When `false`, no samples
+    /// means they were not recorded, not that no counter changed.
     #[must_use]
     pub const fn counter_samples(self) -> bool {
         self.counter_samples
@@ -1211,13 +1211,13 @@ pub enum Observation {
         /// Per-instance arguments carried by this message.
         args: Args,
     },
-    /// A counter's or gauge's value at the end of a frame.
+    /// A counter's or gauge's value at a sampling point.
     ///
     /// When the runtime records counter samples (see
-    /// [`RuntimeBuilder::counter_samples`]), each frame end records one
-    /// sample for every counter and gauge updated during the frame. A
-    /// counter's value is cumulative, so its change over a frame is the
-    /// difference from its previous sample.
+    /// [`RuntimeBuilder::counter_samples`]), configured marker ends record
+    /// changed rows; explicit checkpoints record every counter and gauge.
+    /// Counter values are cumulative, so successive values measure global
+    /// interval activity rather than exclusive work by a marker or scope.
     CounterSample {
         /// Opaque counter descriptor id; see [`Snapshot`].
         desc_id: CounterDescId,
@@ -1231,6 +1231,17 @@ pub enum Observation {
         kind: CounterKind,
         /// The value at the end of the frame.
         value: u64,
+    },
+    /// The boundary after a named batch of counter/gauge samples.
+    CounterCheckpoint {
+        /// Checkpoint descriptor id.
+        desc_id: EventDescId,
+        /// Stable checkpoint name.
+        name: &'static str,
+        /// Originating work; sampled counters can belong to other contexts.
+        context_id: ContextId,
+        /// Number of sample events emitted immediately before this boundary.
+        samples: u64,
     },
     /// A clock other than the runtime's read [`ClockTicks::ticks`] at the
     /// observation's time; see [`footfall_core::clock_sync`].
@@ -1495,7 +1506,8 @@ impl Observation {
             | Self::FrameMarker { context_id, .. }
             | Self::Flow { context_id, .. }
             | Self::Message { context_id, .. }
-            | Self::CounterSample { context_id, .. } => Some(*context_id),
+            | Self::CounterSample { context_id, .. }
+            | Self::CounterCheckpoint { context_id, .. } => Some(*context_id),
             Self::TimelineSpan { span } => Some(span.context_id),
             Self::ScopeEnd { .. }
             | Self::ClockSync { .. }
@@ -1516,7 +1528,8 @@ impl Observation {
             | Self::FrameMarker { context_id, .. }
             | Self::Flow { context_id, .. }
             | Self::Message { context_id, .. }
-            | Self::CounterSample { context_id, .. } => Some(context_id),
+            | Self::CounterSample { context_id, .. }
+            | Self::CounterCheckpoint { context_id, .. } => Some(context_id),
             Self::TimelineSpan { span } => Some(&mut span.context_id),
             Self::ScopeEnd { .. }
             | Self::ClockSync { .. }

@@ -13,6 +13,8 @@ use std::{
 
 static EDIT: ScopeDesc = ScopeDesc::new("edit");
 static BODY: ScopeDesc = ScopeDesc::new("body");
+static COPIED: footfall::CounterDesc = footfall::CounterDesc::bytes("copied");
+static STORAGE: footfall::EventDesc = footfall::EventDesc::new("storage");
 
 struct Capture(PathBuf);
 impl Drop for Capture {
@@ -43,6 +45,7 @@ fn text(output: Output) -> String {
 #[test]
 fn transaction_and_scope_units_have_shared_structured_analysis() {
     let runtime = Runtime::default();
+    runtime.counter_checkpoint(&STORAGE, ContextHandle::ROOT);
     for kind in ["amplitude", "quality", "amplitude"] {
         runtime.frame_marker(
             MarkerKind::Transaction,
@@ -52,6 +55,7 @@ fn transaction_and_scope_units_have_shared_structured_analysis() {
         let edit =
             runtime.scope_begin(&EDIT, ContextHandle::ROOT, &Args::none().with("kind", kind));
         let body = runtime.scope_begin(&BODY, ContextHandle::ROOT, &Args::none());
+        runtime.counter_add(&COPIED, ContextHandle::ROOT, 3);
         runtime.scope_end(body);
         runtime.scope_end(edit);
         runtime.frame_marker(
@@ -60,6 +64,13 @@ fn transaction_and_scope_units_have_shared_structured_analysis() {
             ContextHandle::ROOT,
         );
     }
+    runtime.counter_checkpoint(&STORAGE, ContextHandle::ROOT);
+    let trace = footfall::analysis::Trace::from_snapshot(&footfall::session::OwnedSnapshot::from(
+        runtime.snapshot(),
+    ));
+    let points = trace.counter_checkpoints();
+    let from = points[0].sequence().to_string();
+    let to = points[1].sequence().to_string();
     let capture =
         Capture(std::env::temp_dir().join(format!("footfall-work-{}.ffcap", std::process::id())));
     let mut writer = CaptureWriter::new(Vec::new()).expect("writer");
@@ -67,6 +78,17 @@ fn transaction_and_scope_units_have_shared_structured_analysis() {
         .write_snapshot(&runtime.snapshot())
         .expect("snapshot");
     std::fs::write(&capture.0, writer.finish().expect("bytes")).expect("capture");
+    let json = text(capture.command(&[
+        "analyze",
+        "checkpoints",
+        "--json",
+        "--from",
+        &from,
+        "--to",
+        &to,
+    ]));
+    assert!(json.contains(r#""change":9"#), "{json}");
+    assert!(json.contains(r#""complete":true"#), "{json}");
     let json = text(capture.command(&["analyze", "summary", "--kind", "transaction", "--json"]));
     assert!(
         json.contains(r#""kind":"transaction","scope":null"#),

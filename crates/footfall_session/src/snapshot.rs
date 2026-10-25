@@ -952,6 +952,17 @@ impl core::fmt::Debug for OwnedSourceLocation {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum OwnedObservation {
+    /// A named counter checkpoint; see `footfall_runtime::Observation::CounterCheckpoint`.
+    CounterCheckpoint {
+        /// Checkpoint descriptor id.
+        desc_id: EventDescId,
+        /// Checkpoint name.
+        name: String,
+        /// Context of the originating work.
+        context_id: ContextId,
+        /// Expected number of samples in the batch.
+        samples: u64,
+    },
     /// Scope begin event.
     ScopeBegin {
         /// Descriptor id for the scope.
@@ -1891,6 +1902,17 @@ fn owned_observation(observation: &Observation) -> Option<OwnedObservation> {
             context_id: *context_id,
             text: text.clone(),
             args: owned_args(*args),
+        },
+        Observation::CounterCheckpoint {
+            desc_id,
+            name,
+            context_id,
+            samples,
+        } => OwnedObservation::CounterCheckpoint {
+            desc_id: *desc_id,
+            name: String::from(*name),
+            context_id: *context_id,
+            samples: *samples,
         },
         Observation::CounterSample {
             desc_id,

@@ -237,6 +237,12 @@ pub trait Backend: Send + Sync {
         let _ = (desc, context, value);
     }
 
+    /// Samples the backend's counters at a named boundary. Optional;
+    /// backends without checkpoint support record nothing.
+    fn counter_checkpoint(&self, desc: &'static EventDesc, context: ContextHandle) {
+        let _ = (desc, context);
+    }
+
     /// Begins a scope and returns the token that ends it.
     ///
     /// The default records nothing and returns [`ScopeToken::INVALID`].
@@ -407,6 +413,22 @@ impl core::error::Error for InstallBackendError {}
 #[cfg_attr(not(footfall_compile_out), inline)]
 pub fn counter_add(desc: &'static CounterDesc, context: ContextHandle, value: u64) {
     dispatch!(when max_level().captures_counters() => counter_add(desc, context, value));
+}
+
+/// Records a named checkpoint of counters and gauges, when supported by the
+/// backend. Sampling covers the backend, not only `context`; the context
+/// identifies the checkpoint's originating work.
+///
+/// With the bounded runtime, this locks and scans every counter shard and
+/// records one event per counter/gauge plus the checkpoint boundary. Values
+/// are merged across threads, not an atomic process-wide snapshot. Choose
+/// checkpoint frequency explicitly; sampling can be disabled on the runtime.
+/// Differences between checkpoints measure interval activity, not exclusive
+/// attribution to overlapping scopes or transactions. Histograms are not sampled.
+#[cfg_attr(footfall_compile_out, inline(always))]
+#[cfg_attr(not(footfall_compile_out), inline)]
+pub fn counter_checkpoint(desc: &'static EventDesc, context: ContextHandle) {
+    dispatch!(when max_level().captures_counters() => counter_checkpoint(desc, context));
 }
 
 /// Sets a gauge descriptor under a semantic context.

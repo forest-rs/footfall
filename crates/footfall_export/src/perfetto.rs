@@ -889,6 +889,19 @@ pub fn to_perfetto_trace(snapshot: &OwnedSnapshot) -> Vec<u8> {
                 }
                 writer.event(at, &instant);
             }
+            OwnedObservation::CounterCheckpoint {
+                name,
+                context_id,
+                samples,
+                ..
+            } => {
+                let track = writer.thread(event.thread_id());
+                let point = Event::named(TYPE_INSTANT, track, name, "counter_checkpoint")
+                    .with(uint_annotation("context_id", context_id.get()))
+                    .with(uint_annotation("samples", *samples))
+                    .with(context_annotation(writer.context(*context_id)));
+                writer.event(at, &point);
+            }
             OwnedObservation::CounterSample {
                 name,
                 unit,

@@ -48,6 +48,8 @@ use std::sync::Arc;
 /// consumer calls [`forget_before`](Self::forget_before).
 #[derive(Clone, Debug, Default)]
 pub struct Trace {
+    checkpoints: Vec<crate::CounterCheckpoint>,
+    checkpoint_samples: HashMap<u64, (Duration, Vec<crate::CheckpointValue>)>,
     instance_id: Option<u64>,
     metadata: Option<SnapshotMetadata>,
     drops: Drops,
@@ -428,7 +430,7 @@ impl Trace {
         };
         let mut pending = new_gaps.iter().peekable();
         // The frame end whose counter samples are being collected.
-        let mut collecting: Option<(FrameId, u64, Duration)> = None;
+        let mut collecting: Option<(usize, FrameId, u64, Duration)> = None;
         for event in events {
             let at = nanos(event.at_nanos());
             while pending.next_if(|gap| gap.range.start() <= at).is_some() {
@@ -520,6 +522,7 @@ impl Trace {
     /// now may miss nested spans or their own end, and the next counter
     /// sample's change is unknown.
     fn lose_continuity(&mut self) {
+        self.checkpoint_samples.clear();
         for begun in self.begun.values_mut() {
             begun.interrupted = true;
         }
@@ -555,10 +558,41 @@ impl Trace {
         event: &footfall_session::OwnedTimedObservation,
         at: Duration,
         pushed: &mut Pushed,
-        collecting: &mut Option<(FrameId, u64, Duration)>,
+        collecting: &mut Option<(usize, FrameId, u64, Duration)>,
     ) {
         let thread_id = event.thread_id();
+        if !matches!(
+            event.observation(),
+            OwnedObservation::CounterSample { .. } | OwnedObservation::CounterCheckpoint { .. }
+        ) {
+            self.checkpoint_samples.remove(&thread_id);
+        }
         match event.observation() {
+            OwnedObservation::CounterCheckpoint {
+                name,
+                context_id,
+                samples,
+                ..
+            } => {
+                let values = self
+                    .checkpoint_samples
+                    .remove(&thread_id)
+                    .filter(|(when, _)| *when == at)
+                    .map_or_else(Vec::new, |(_, values)| values);
+                let name = self.intern(name);
+                let unique: std::collections::BTreeSet<_> =
+                    values.iter().map(|v| (v.desc_id, v.context_id)).collect();
+                self.checkpoints.push(crate::CounterCheckpoint {
+                    sequence: event.sequence(),
+                    at,
+                    name,
+                    context: *context_id,
+                    thread: thread_id,
+                    span: self.innermost(thread_id),
+                    complete: values.len() as u64 == *samples && unique.len() == values.len(),
+                    values,
+                });
+            }
             OwnedObservation::ScopeBegin {
                 desc_id,
                 name,
@@ -685,9 +719,7 @@ impl Trace {
                                 self.numbered.insert((index, number), open.id);
                             }
                             pushed.frames.push(open.id);
-                            if *kind == MarkerKind::Frame {
-                                *collecting = Some((open.id, thread_id, at));
-                            }
+                            *collecting = Some((index, open.id, thread_id, at));
                         }
                     }
                 }
@@ -702,6 +734,21 @@ impl Trace {
             } => {
                 let name = self.intern(name);
                 let complete_history = self.complete_history;
+                let batch = self
+                    .checkpoint_samples
+                    .entry(thread_id)
+                    .or_insert_with(|| (at, Vec::new()));
+                if batch.0 != at {
+                    *batch = (at, Vec::new());
+                }
+                batch.1.push(crate::CheckpointValue {
+                    desc_id: *desc_id,
+                    name: Arc::clone(&name),
+                    unit: *unit,
+                    context_id: *context_id,
+                    kind: *kind,
+                    value: *value,
+                });
                 let series = self
                     .series
                     .entry((*desc_id, *context_id))
@@ -732,10 +779,10 @@ impl Trace {
                     value: *value,
                     change,
                 });
-                if let Some((frame_id, frame_thread, frame_end)) = *collecting
+                if let Some((index, frame_id, frame_thread, frame_end)) = *collecting
                     && frame_thread == thread_id
                     && frame_end == at
-                    && let Some(frame) = self.marks[0]
+                    && let Some(frame) = self.marks[index]
                         .iter_mut()
                         .rev()
                         .find(|frame| frame.id == frame_id)
@@ -1625,6 +1672,84 @@ impl Trace {
     /// context.
     pub fn counter_series(&self) -> impl Iterator<Item = &CounterSeries> {
         self.series.values()
+    }
+
+    /// Returns the named counter checkpoints whose boundaries were retained.
+    /// Each checkpoint reports whether its entire sample batch was retained.
+    #[must_use]
+    pub fn counter_checkpoints(&self) -> &[crate::CounterCheckpoint] {
+        &self.checkpoints
+    }
+
+    /// Compares two checkpoint boundary sequence numbers from this trace.
+    /// Returns `None` for missing or reversed endpoints. Deltas describe global
+    /// interval activity, not exclusive ownership by the originating contexts.
+    /// Gaps or incomplete batches make additive changes unknown.
+    #[must_use]
+    pub fn counter_changes(&self, before: u64, after: u64) -> Option<crate::CounterChanges> {
+        let before = self
+            .checkpoints
+            .iter()
+            .find(|point| point.sequence == before)?;
+        let after = self
+            .checkpoints
+            .iter()
+            .find(|point| point.sequence == after)?;
+        if before.sequence > after.sequence || before.at > after.at {
+            return None;
+        }
+        let complete = before.complete
+            && after.complete
+            && self.drops.counter_updates() == 0
+            && !self
+                .gaps
+                .iter()
+                .any(|gap| gap.range().start() <= after.at && gap.range().end() >= before.at);
+        let first: BTreeMap<_, _> = before
+            .values
+            .iter()
+            .map(|v| ((v.desc_id, v.context_id), v))
+            .collect();
+        let last: BTreeMap<_, _> = after
+            .values
+            .iter()
+            .map(|v| ((v.desc_id, v.context_id), v))
+            .collect();
+        let keys: std::collections::BTreeSet<_> =
+            first.keys().chain(last.keys()).copied().collect();
+        let counters = keys
+            .into_iter()
+            .map(|key| {
+                let previous = first.get(&key).copied();
+                let next = last.get(&key).copied();
+                let counter = next
+                    .or(previous)
+                    .expect("each union key has an endpoint")
+                    .clone();
+                let baseline = previous.map(|v| v.value).or_else(|| {
+                    (before.complete && counter.kind == CounterKind::Counter).then_some(0)
+                });
+                let ending = next.map(|v| v.value);
+                let compatible =
+                    previous.is_none_or(|v| v.kind == counter.kind && v.unit == counter.unit);
+                let change = if complete && compatible && counter.kind == CounterKind::Counter {
+                    baseline.zip(ending).and_then(|(a, b)| b.checked_sub(a))
+                } else {
+                    None
+                };
+                crate::CounterChange {
+                    counter,
+                    before: baseline,
+                    after: ending,
+                    change,
+                }
+            })
+            .collect();
+        Some(crate::CounterChanges {
+            range: TimeRange::new(before.at, after.at),
+            complete,
+            counters,
+        })
     }
 
     /// Returns the messages, by time.

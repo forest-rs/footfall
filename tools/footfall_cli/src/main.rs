@@ -21,6 +21,7 @@
 
 mod budget;
 mod check;
+mod checkpoints;
 mod format;
 mod json;
 mod pacing_json;
@@ -134,6 +135,20 @@ impl TraceFormat {
 /// The questions `footfall analyze` answers about captures.
 #[derive(Debug, Subcommand)]
 enum Analysis {
+    /// List named counter checkpoints, or compare two boundary sequences.
+    Checkpoints {
+        /// Capture to inspect.
+        file: PathBuf,
+        /// Baseline checkpoint sequence; requires --to.
+        #[arg(long, requires = "to")]
+        from: Option<u64>,
+        /// Ending checkpoint sequence; requires --from.
+        #[arg(long, requires = "from")]
+        to: Option<u64>,
+        /// Print boundary values, interval changes, and completeness as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Summarize a capture: frames, where the time went, counters, losses.
     Summary {
         /// The capture file to read.
@@ -268,6 +283,12 @@ async fn main() {
 /// Answers one `footfall analyze` question.
 fn analyze(analysis: Analysis) -> Result<()> {
     match analysis {
+        Analysis::Checkpoints {
+            file,
+            from,
+            to,
+            json,
+        } => checkpoints::run(&file, from, to, json),
         Analysis::Summary {
             file,
             budget_ms,
