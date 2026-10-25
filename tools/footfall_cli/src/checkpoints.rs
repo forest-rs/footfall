@@ -5,7 +5,7 @@
 
 use crate::{json::Json, work_json};
 use footfall::analysis::{CheckpointValue, CounterCheckpoint};
-use footfall::runtime::CounterKind;
+use footfall::session::CounterKind;
 use std::path::Path;
 
 fn value(value: &CheckpointValue) -> Json {
