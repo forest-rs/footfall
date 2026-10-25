@@ -278,7 +278,11 @@ mod tests {
     }
 
     impl Backend for Recorder {
-        fn counter_checkpoint(&self, _desc: &'static footfall_core::EventDesc, _context: ContextHandle) {
+        fn counter_checkpoint(
+            &self,
+            _desc: &'static footfall_core::EventDesc,
+            _context: ContextHandle,
+        ) {
             self.record("counter_checkpoint");
         }
         fn context_registered(&self, handle: ContextHandle, _context: &Context) {
