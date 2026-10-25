@@ -1,0 +1,23 @@
+[package]
+name = "footfall_release_consumer"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88.0"
+publish = false
+
+# Copied outside the source workspace for the release rehearsal.
+[workspace]
+
+[features]
+full = [
+    "footfall/analysis",
+    "footfall/export",
+    "footfall/runtime",
+    "footfall/session",
+    "footfall/tracing",
+    "footfall/tracy",
+    "footfall/wtransport",
+]
+
+[dependencies]
+footfall = { default-features = false, version = "=0.2.0" }

@@ -18,7 +18,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88.0"
 authors = ["Footfall Contributors"]
@@ -29,17 +29,17 @@ categories = ["development-tools::debugging", "development-tools::profiling"]
 
 [workspace.dependencies]
 # Internal crate dependencies
-footfall = { default-features = false, path = "crates/footfall", version = "0.1.0" }
-footfall_analysis = { default-features = false, path = "crates/footfall_analysis", version = "0.1.0" }
-footfall_core = { default-features = false, path = "crates/footfall_core", version = "0.1.0" }
-footfall_export = { default-features = false, path = "crates/footfall_export", version = "0.1.0" }
-footfall_fanout = { default-features = false, path = "crates/footfall_fanout", version = "0.1.0" }
-footfall_memory = { default-features = false, path = "crates/footfall_memory", version = "0.1.0" }
-footfall_runtime = { default-features = false, path = "crates/footfall_runtime", version = "0.1.0" }
-footfall_session = { default-features = false, path = "crates/footfall_session", version = "0.1.0" }
-footfall_session_wtransport = { default-features = false, path = "crates/footfall_session_wtransport", version = "0.1.0" }
-footfall_tracing = { default-features = false, path = "crates/footfall_tracing", version = "0.1.0" }
-footfall_tracy = { default-features = false, path = "crates/footfall_tracy", version = "0.1.0" }
+footfall = { default-features = false, path = "crates/footfall", version = "0.2.0" }
+footfall_analysis = { default-features = false, path = "crates/footfall_analysis", version = "0.2.0" }
+footfall_core = { default-features = false, path = "crates/footfall_core", version = "0.2.0" }
+footfall_export = { default-features = false, path = "crates/footfall_export", version = "0.2.0" }
+footfall_fanout = { default-features = false, path = "crates/footfall_fanout", version = "0.2.0" }
+footfall_memory = { default-features = false, path = "crates/footfall_memory", version = "0.2.0" }
+footfall_runtime = { default-features = false, path = "crates/footfall_runtime", version = "0.2.0" }
+footfall_session = { default-features = false, path = "crates/footfall_session", version = "0.2.0" }
+footfall_session_wtransport = { default-features = false, path = "crates/footfall_session_wtransport", version = "0.2.0" }
+footfall_tracing = { default-features = false, path = "crates/footfall_tracing", version = "0.2.0" }
+footfall_tracy = { default-features = false, path = "crates/footfall_tracy", version = "0.2.0" }
 # The default hasher is foldhash; hashbrown's other defaults are unused.
 hashbrown = { default-features = false, features = ["default-hasher"], version = "0.17.1" }
 # These choose the Tracy protocol version: tracy-client-sys 0.30 is Tracy

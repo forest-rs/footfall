@@ -35,7 +35,12 @@ const TIMED: [FramePointKind; 10] = [
 ];
 
 /// The document for `pacing`, judged from `trace`, read from `path`.
-pub(crate) fn document(path: &Path, trace: &Trace, pacing: &Pacing) -> Json {
+pub(crate) fn document(
+    path: &Path,
+    trace: &Trace,
+    pacing: &Pacing,
+    read: crate::check::Read,
+) -> Json {
     let counts = pacing.counts();
     let deadlines = pacing.deadlines();
     let capture = trace.metadata().map_or(Json::Null, |metadata| {
@@ -53,6 +58,14 @@ pub(crate) fn document(path: &Path, trace: &Trace, pacing: &Pacing) -> Json {
     Json::object([
         ("footfall_version", Json::from(env!("CARGO_PKG_VERSION"))),
         ("capture", capture),
+        (
+            "capture_read",
+            Json::object([
+                ("complete", Json::from(!read.truncated && read.skipped == 0)),
+                ("truncated", Json::from(read.truncated)),
+                ("skipped_snapshots", Json::from(read.skipped)),
+            ]),
+        ),
         ("tolerance_ns", Json::nanos(pacing.tolerance())),
         (
             "counts",
@@ -552,7 +565,13 @@ mod tests {
         let trace = Trace::from_snapshot(&OwnedSnapshot::from(runtime.snapshot()));
         let pacing = trace.pacing(Duration::from_millis(1));
 
-        let text = document(Path::new("run.ffcap"), &trace, &pacing).to_string();
+        let text = document(
+            Path::new("run.ffcap"),
+            &trace,
+            &pacing,
+            crate::check::Read::default(),
+        )
+        .to_string();
         for expected in [
             r#""tolerance_ns":1000000"#,
             r#""counts":{"frames":3,"on_time":1,"early":0,"late":1,"dropped":0,"skipped":1"#,
@@ -617,7 +636,13 @@ mod tests {
         let trace = Trace::from_snapshot(&OwnedSnapshot::from(runtime.snapshot()));
         let pacing = trace.pacing(Duration::from_millis(1));
 
-        let text = document(Path::new("run.ffcap"), &trace, &pacing).to_string();
+        let text = document(
+            Path::new("run.ffcap"),
+            &trace,
+            &pacing,
+            crate::check::Read::default(),
+        )
+        .to_string();
         for expected in [
             r#""severity":{"partial":0,"full":1}"#,
             r#""buffer_waits":{"count":1"#,
@@ -662,7 +687,13 @@ mod tests {
         let trace = Trace::from_snapshot(&OwnedSnapshot::from(runtime.snapshot()));
         let pacing = trace.pacing(Duration::from_millis(1));
 
-        let text = document(Path::new("run.ffcap"), &trace, &pacing).to_string();
+        let text = document(
+            Path::new("run.ffcap"),
+            &trace,
+            &pacing,
+            crate::check::Read::default(),
+        )
+        .to_string();
         for expected in [
             r#""held":1,"synchronous":1,"unknown":0,"missed":0,"planned":3"#,
             r#""outcome":"held","by_ns":17000000,"missed":false"#,
