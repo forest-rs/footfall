@@ -13,6 +13,7 @@ pub(crate) enum Json {
     Bool(bool),
     Unsigned(u64),
     Signed(i64),
+    Float(f64),
     String(String),
     Array(Vec<Self>),
     Object(Vec<(String, Self)>),
@@ -43,6 +44,16 @@ impl Json {
 impl From<bool> for Json {
     fn from(value: bool) -> Self {
         Self::Bool(value)
+    }
+}
+
+impl From<f64> for Json {
+    fn from(value: f64) -> Self {
+        if value.is_finite() {
+            Self::Float(value)
+        } else {
+            Self::Null
+        }
     }
 }
 
@@ -83,6 +94,7 @@ impl fmt::Display for Json {
             Self::Bool(value) => write!(f, "{value}"),
             Self::Unsigned(value) => write!(f, "{value}"),
             Self::Signed(value) => write!(f, "{value}"),
+            Self::Float(value) => write!(f, "{value}"),
             Self::String(value) => write_string(f, value),
             Self::Array(values) => {
                 f.write_char('[')?;
