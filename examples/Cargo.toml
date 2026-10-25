@@ -25,9 +25,9 @@ footfall = { features = [
 ], workspace = true }
 footfall_fanout.workspace = true
 footfall_memory = { features = ["std"], workspace = true }
-tokio = { features = ["macros", "rt-multi-thread", "signal", "sync", "time"], version = "1.51.1" }
-tracing = "0.1.41"
-tracing-subscriber = { default-features = false, features = ["registry", "std"], version = "0.3.20" }
+tokio = { features = ["macros", "rt-multi-thread", "signal", "sync", "time"], version = "1.54.1" }
+tracing = "0.1.44"
+tracing-subscriber = { default-features = false, features = ["registry", "std"], version = "0.3.23" }
 
 [lints]
 workspace = true

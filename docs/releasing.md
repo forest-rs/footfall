@@ -10,6 +10,10 @@ Update `[workspace.package].version`, all internal dependency requirements,
 the lockfile, and current dependency snippets together. Keep versions in
 historical capture fixtures and protocol golden tests unchanged. Review
 the [migration guide](migrating-to-0.2.md) against the current public APIs.
+Refresh `Cargo.lock` with `cargo update` and inspect direct requirements
+with `cargo upgrade --dry-run --incompatible allow --recursive false`.
+Review releases outside the current semver ranges before upgrading, and
+recheck the MSRV and feature matrix after dependency changes.
 The changelog's Unreleased section is the 0.2.0 candidate; move it to a
 dated `0.2.0` heading when publishing.
 

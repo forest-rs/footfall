@@ -10,6 +10,12 @@ Preparing the coordinated **0.2.0** release. See
 protocol, and command-line changes, and [Releasing](docs/releasing.md) for
 package verification and publication order.
 
+### Dependencies
+
+- Refresh the lockfile and direct dependency requirements, including
+  `x509-parser` 0.18.1, Tokio 1.54.1, and `tracy-client-sys` 0.30.1.
+  The minimum Rust version remains 1.88, and the Tracy protocol remains 0.14.
+
 ### Fixed
 
 - Closing scopes admitted before the runtime level is lowered to `Off` or

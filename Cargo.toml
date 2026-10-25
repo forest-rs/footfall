@@ -48,7 +48,7 @@ hashbrown = { default-features = false, features = ["default-hasher"], version =
 # in crates/footfall_tracy/src/lib.rs, examples/README.md, CHANGELOG.md, and
 # the docs and output of examples/src/bin/tracy_live.rs.
 tracy-client = { default-features = false, version = "0.19.0" }
-tracy-client-sys = { default-features = false, version = "0.30.0" }
+tracy-client-sys = { default-features = false, version = "0.30.1" }
 
 [workspace.lints]
 # LINEBENDER LINT SET - Cargo.toml - v8
