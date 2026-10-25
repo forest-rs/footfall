@@ -18,6 +18,7 @@ footfall_analysis.workspace = true
 footfall_export.workspace = true
 footfall_fanout.workspace = true
 footfall_runtime = { features = ["std"], workspace = true }
+footfall_session.workspace = true
 footfall_tracing.workspace = true
 tracing.workspace = true
 tracing-subscriber = { features = ["registry", "std"], workspace = true }
@@ -46,6 +47,10 @@ harness = false
 
 [[bench]]
 name = "pacing"
+harness = false
+
+[[bench]]
+name = "inspection"
 harness = false
 
 [lints]
