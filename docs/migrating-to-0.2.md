@@ -59,14 +59,15 @@ deadline alone does not establish how much time was computation or waiting.
 
 ## Upgrade readers before producers
 
-The Rust crate version is 0.2.0; the session and capture protocol is **1.2**.
+The Rust crate version is 0.2.0; the session and capture protocol is **1.1**.
 These are separate version numbers.
 
-- New consumers read protocol 1.0 and 1.1 captures and producers. Existing release
+- New consumers read released protocol 1.0 captures and producers. Existing release
   captures are retained unchanged and tested for compatibility.
-- Older consumers reject protocol 1.2 envelopes and captures. Protocol 1.1
-  added frame opportunities, plans, and buffer points; 1.2 adds named counter
-  checkpoint boundaries. Consumers cannot skip unknown observation tags.
+- Older consumers reject protocol 1.1 envelopes and captures. Protocol 1.1
+  adds frame opportunities, plans, buffer points, named counter checkpoints,
+  and producer-attested recording history together for the 0.2 release.
+  Consumers cannot skip unknown observation tags or capture flags.
 - Upgrade the CLI and other consumers first, then upgrade producers. Once
   0.2.0 is published, `cargo install footfall_cli --version 0.2.0 --locked`
   installs the matching command-line reader.
@@ -98,7 +99,29 @@ separate from the work that created a resource.
 
 ## Inspect connected work and storage
 
-The analysis additions are opt-in and require no capture protocol change:
+`CaptureSettings::level_floor` attests the lowest recording level across runtime
+history and the process-wide gate's installed-backend epoch. Runtime snapshots
+supply it automatically, including level changes between snapshots. Hand-built
+snapshots opt in with `with_level_floor`; their default is unknown. A declared
+floor above the current level is clamped, and invalid wire declarations are rejected.
+`Trace::recording_history` and JSON `evidence.recording_history` distinguish that
+history from `Trace::recorded`, which continues to describe the latest snapshot.
+Unknown or disabled history cannot establish absence or exact resource totals.
+Earlier captures remain readable, with history marked `history_unknown`; their
+current enabled level does not certify earlier coverage. Span report bases and
+counter changes also retain this historical qualification.
+
+`footfall_core::max_level_floor` reports the gate's minimum since successful
+backend installation. Before installation it returns `Trace` as an identity when
+combining floors, without certifying pre-installation calls. Calls concurrent
+with unfinished installation have no recording-coverage guarantee. Core and
+runtime store current/minimum levels together, preserving the emission path's
+single atomic load. Raising a level cannot restore the minimum, including in
+snapshots queried after pruning.
+
+
+The query operations also inspect older captures; historical completeness uses
+the protocol 1.1 evidence described above:
 `MessageQuery`, `FlowQuery`, `EventFilter`, `Page`, `WorkId`, `Inspection`, and
 `ResourceInterval` operate on an existing `Trace`. Existing span queries and
 resource lifetime accessors continue to work. Replace custom message filters and
@@ -111,6 +134,14 @@ Resource interval boundaries describe state before events at each timestamp;
 `Resource::alive_at` retains its existing inclusive-at-timestamp lifetime semantics.
 Read per-measure exactness and recording evidence alongside numbers. See the
 [analysis guide](analysing-a-trace.md#resource-interval-accounting).
+
+CLI additions include `analyze messages`, `flows`, `work`, `resource-interval`,
+`span --json`, `work --id`, and `resources --lifetime`. Resource JSON now includes `lifetime`,
+and its scope-chain objects reuse the scope serializer, adding parent, timing,
+context, and interruption details. The added context object exposes `context.id`
+and `context.labels`. Existing resource fields remain available. Argument and label objects now also
+include `value_type` (`unsigned`, `signed`, `bool`, or `string`), preserving
+integer signedness that a JSON number alone cannot represent.
 
 ## Choose the export format explicitly in scripts
 

@@ -157,7 +157,9 @@ fn transaction_and_scope_units_have_shared_structured_analysis() {
     let json = text(capture.command(&args));
     assert!(json.contains(r#""count":2,"units":["#), "{json}");
     assert!(
-        json.contains(r#""scope_arguments":[{"key":"kind","value":"amplitude"}]"#),
+        json.contains(
+            r#""scope_arguments":[{"key":"kind","value":"amplitude","value_type":"string"}]"#
+        ),
         "{json}"
     );
     assert!(json.contains(r#""scope":"body","count":2"#), "{json}");
