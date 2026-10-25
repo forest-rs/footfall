@@ -594,6 +594,10 @@ impl FramePacing {
     /// [`BufferAcquired`](FramePointKind::BufferAcquired) point, when it has
     /// both.
     ///
+    /// `None` when either endpoint was not recorded, not evidence of zero
+    /// wait. If acquisition cannot be separated from application work, the
+    /// frame's work retains that combined elapsed time.
+    ///
     /// A long wait means every buffer was held by frames queued ahead:
     /// backpressure from the presentation pipeline. The frame's work looks
     /// that much longer for it, but the time was not its own.
@@ -1155,6 +1159,8 @@ impl Pacing {
 
     /// Returns how long the frames that waited for a buffer waited; see
     /// [`FramePacing::buffer_wait`].
+    /// Only known waits longer than the pacing tolerance are included.
+    /// An empty distribution does not establish that no frames blocked.
     #[must_use]
     pub fn buffer_waits(&self) -> DurationStats {
         DurationStats::of(

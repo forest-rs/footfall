@@ -589,10 +589,10 @@ fn slow(path: &Path, budget_ms: Option<f64>, top: usize, by_arg: Option<&str>) -
 }
 
 fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> {
-    let trace = read_trace(path)?;
+    let (trace, read) = read_trace_saying(path)?;
     let pacing = trace.pacing(Duration::from_secs_f64(tolerance_ms / 1000.0));
     if json {
-        println!("{}", pacing_json::document(path, &trace, &pacing));
+        println!("{}", pacing_json::document(path, &trace, &pacing, read));
         return Ok(());
     }
     let counts = pacing.counts();

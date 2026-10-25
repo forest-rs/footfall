@@ -113,23 +113,51 @@ frame is judged against the frame before it in its own stream, and
 | `Late { by, cause }` | Shown after its target, and why |
 | `Dropped { reason }` | Never shown, and why |
 | `SubmittedLate { by }` | Submitted past its deadline, with no presentation time to confirm it |
+| `Held { by, reason }` | Shown late by no more than the scheduler deliberately held it back; not a miss |
+| `Synchronous` | Presented outside the scheduler's pacing, such as a synchronous resize; not judged against a target or deadline |
 | `Unknown` | Too little reported to tell |
 
 A late frame's `LateCause` is the first of these the trace shows, in order:
 
 | Cause | The frame |
 |---|---|
+| `WaitedForBuffer` | was submitted late by no more than it waited for a rendering buffer; removing the wait would have met its deadline |
 | `MissedDeadline` | had its CPU work submitted after its deadline |
 | `SkippedOpportunity` | was to begin at a frame opportunity, and the platform skipped the one it was meant for, so it began at a later one |
 | `BeganLate` | began more than `tolerance` after it could have: after its scheduled time, or after the opportunity it was to begin at |
 | `Backlog` | was in time, but the frame before it was still being shown at this one's target |
 | `Gpu` | was in time, but its GPU work finished after its target |
+| `Mispredicted` | was shown a fraction of a refresh after its target, rather than whole refreshes, where the platform stated its interval; the target is inferred to have missed the refresh phase |
 | `Display` | was submitted and rendered in time with nothing ahead of it: the compositor or display held it |
 | `AfterSubmit` | was in time with nothing ahead of it, but has no GPU work to tell the GPU from the display |
 | `Unknown` | has no deadline or CPU work to judge |
 
-So the first frame of a run of late frames carries the cause, and the ones
-behind it say `Backlog`.
+`Backlog` can explain later frames submitted in time while a preceding
+frame was still waiting to be shown. A frame's own missed deadline or
+late begin takes precedence. `LateCause::party` groups these explanations
+as the program, the platform, the queue, or unknown; it does not turn an
+inferred explanation into an observed cause.
+
+`FramePacing::buffer_wait` is the time between its `BufferRequested` and
+`BufferAcquired` points. A wait longer than the tolerance contributes to
+`Pacing::buffer_waits`. When estimated buffer or submission times establish
+`WaitedForBuffer`, its support is inferred.
+
+If the producer cannot separate buffer acquisition from application work,
+leave those points absent. `buffer_wait` is then `None` (`null` in JSON),
+not zero, and the frame's measured work retains the combined elapsed time.
+A late submission can still be observed as `MissedDeadline`, but it does
+not prove that computation rather than an unobserved wait caused the miss.
+Its `Party::Program` is the leading explanation under the available
+evidence, not a measurement of CPU execution time. Use `footfall check`'s
+`buffers` check to see whether a capture can make that distinction.
+
+`FramePacing::plan` returns the scheduler's recorded interval, pipeline
+depth, learned latency allowance, deliberate hold, and paced or synchronous
+kind. A hold that explains the lateness produces `Outcome::Held`; lateness
+beyond the hold retains its normal cause and records the hold in
+`Why::held_back`. Synchronous frames are excluded from cadence, severity,
+presentation intervals, stutters, and latency steps, and restart the rhythm.
 
 When a frame began is judged from its `Scheduled` point and its begin
 marker. A frame scheduled to begin at a time (`BeginsAt::Time`) could have
@@ -171,7 +199,7 @@ times were known, and how strongly the trace supports the cause:
 | `Support` | Meaning |
 |---|---|
 | `Observed` | The trace recorded the condition, from times that were not estimates: a late submission, a skipped opportunity, a late begin, or recorded GPU work finishing after the target |
-| `Inferred` | It rests on something not observed: a queue read from the frame before's presentation, or an estimated submission or presentation time |
+| `Inferred` | It rests on a queue read from the previous frame, a mispredicted target, or estimated buffer, submission, or presentation times |
 | `Unresolved` | The program's part looked in time, and what came after was not observed |
 
 Deadlines and targets are the scheduler's plans, taken as given. And an
@@ -231,6 +259,31 @@ extra refresh), how late the late frames were,
 and latency from each frame's begin marker to its presentation. A frame's
 `work` is the time between its markers, waits included, and its latency
 starts at its begin marker, not at the input it answers.
+
+`FramePacing::cadence` judges smoothness separately from lateness. `Steady`
+means the spacing matched the targets; `Stalled` or `Hurried` says by how
+much it differed. A frame can be late but steady, so its lateness describes
+latency rather than another hitch. Without both targets, cadence uses the
+sum of planned intervals since the last shown frame, including known
+drops. Missing intervals leave cadence unjudged. A spacing difference
+explained by a deliberate hold is `Cadence::Held`, not a hitch.
+`Pacing::cadence` counts these, including `late_but_steady` and `hitches`.
+
+`FramePacing::severity` grades late or early presentations and drops that
+are misses. It is `Partial` for less than one refresh and `Full` for a
+refresh or more, within the tolerance, or a drop for a miss. A late frame
+with steady cadence, an on-time frame, and a held or synchronous frame
+have no severity. When cadence broke, its spacing error is judged;
+otherwise its presentation error is. An unknown refresh interval leaves
+the severity unknown. `Pacing::severity` counts the partial and full misses.
+
+`Pacing::latency_steps` finds changes of at least half a refresh that
+persist for `LATENCY_STEP_FRAMES` measured frames (five). Missing frame
+numbers, latency measurements, lost events, or synchronous frames restart
+the run and its baseline. A step also says whether the scheduler's pipeline
+depth or latency allowance changed across it. This exposes a lasting
+latency increase even when the scheduler moved its targets to compensate.
+
 `frame_ids` turns an outcome into frames to compare:
 
 ```rust

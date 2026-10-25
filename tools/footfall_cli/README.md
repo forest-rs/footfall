@@ -118,6 +118,14 @@ The document holds:
 
 - `footfall_version`, and `capture`: the file, process, process id,
   runtime instance (hex), and the producer's Footfall version.
+- `capture_read`: `complete`, whether every snapshot was consumed;
+  `truncated`, whether the file ended partway through a snapshot; and
+  `skipped_snapshots`, how many snapshots from other runtime instances were
+  left out. A usable prefix still produces a successful result and stderr
+  warnings, with `complete: false`. This describes reading the file, not
+  whether the producer recorded every event or instrumented every signal;
+  use `footfall check --require losses` and the relevant signal checks for
+  those questions.
 - `tolerance_ns`, `counts` (with `held`, frames shown late by no more
   than the scheduler held them back, `synchronous`, frames presented
   outside pacing, `planned`, frames with a plan, `late_causes`,
