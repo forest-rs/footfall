@@ -149,7 +149,7 @@ Each encoded envelope is a header, a `u8` payload tag, and the payload:
 | payload tag | `u8` |
 | payload | per tag |
 
-The current protocol version is `1.1`. Payload tags, in publication order:
+The current protocol version is `1.2`. Payload tags, in publication order:
 
 | Tag | Payload | Occurs |
 |---|---|---|
@@ -291,10 +291,17 @@ thread id, then a `u8` observation tag and its fields:
 | `12` | frame point | frame `frame` (never none), kind `u8` (`0` deadline, `1` target, `2` presented, `3` dropped, `4` predicted, `5` expected, `6` submitted, `7` sampled, `8` scheduled, `9` buffer requested, `10` buffer acquired), for a scheduled frame what it begins at `u8` (`0` the time, `1` an opportunity), for a dropped frame its reason `u8` (`0` unknown, `1` discarded, `2` superseded, `3` missed deadline, `4` surface unavailable, `5` output unavailable, `6` replaced, `7` not presented), timing basis `u8` (`0` unknown, `1` observed, `2` estimated), time tag `u8` (`0` none, `1` present) and, when present, `clock`, args |
 | `13` | frame opportunity | frame stream id `u64` and generation `u64`, time `clock`, interval tag `u8` (`0` none, `1` present) and, when present, the interval in the clock's ticks `u64`, args |
 | `14` | frame plan | frame `frame` (never none), tick period as nanoseconds `u32` per ticks `u32`, then a presence tag `u8` (`0` none, `1` present) and, when present, the value for each of: the interval in ticks `u64`, the pipeline depth `u8`, the latency allowance in ticks `u64`, and the hold, as its ticks `u64` and reason `u8` (`0` to drain the queue); then the kind `u8` (`0` paced, `1` synchronous), args |
+| `15` | counter checkpoint | descriptor id `u64`, name `name`, context id `u64`, expected sample count `u64` |
 
-A counter sample is a counter's or gauge's value at a frame end, recorded
-for each one the frame updated; a counter's change over a frame is the
-difference from its previous sample.
+A counter sample is a cumulative counter or current gauge value. Automatic
+marker-end triggers record changed rows. An explicit checkpoint records all
+counter/gauge rows, then a boundary (tag `15`) with the sample count. Batch
+samples and their boundary have the same timestamp and thread id; sequence
+numbers order them, and another thread's events may interleave. A reader must
+not assume an incomplete batch contains every counter. Checkpoints can have
+zero samples. Histograms are not included. The boundary context identifies
+the request's origin, not ownership of the globally sampled values. Version
+`1.2` introduced checkpoint boundaries; counter-sample layouts are unchanged.
 
 A `clock` is one reading of a clock other than the producer's: the clock
 descriptor's id `u64`, its name `name`, the ticks read `u64`, and the tick

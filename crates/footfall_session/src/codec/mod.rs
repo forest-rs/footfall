@@ -891,6 +891,17 @@ pub(crate) fn encode_borrowed_observation(
             encode_string(bytes, text)?;
             encode_borrowed_args(bytes, *args)?;
         }
+        footfall_runtime::Observation::CounterCheckpoint {
+            desc_id,
+            name,
+            context_id,
+            samples,
+        } => {
+            encode_u8(bytes, 15);
+            names.encode(bytes, desc_id.get(), name)?;
+            encode_u64(bytes, context_id.get());
+            encode_u64(bytes, *samples);
+        }
         footfall_runtime::Observation::CounterSample {
             desc_id,
             name,
@@ -1203,6 +1214,17 @@ pub(crate) fn encode_observation(
             encode_string(bytes, text)?;
             encode_args(bytes, args)?;
         }
+        OwnedObservation::CounterCheckpoint {
+            desc_id,
+            name,
+            context_id,
+            samples,
+        } => {
+            encode_u8(bytes, 15);
+            names.encode(bytes, desc_id.get(), name)?;
+            encode_u64(bytes, context_id.get());
+            encode_u64(bytes, *samples);
+        }
         OwnedObservation::CounterSample {
             desc_id,
             name,
@@ -1340,6 +1362,12 @@ pub(crate) fn decode_observation(
             context_id: ContextId::new(decode_u64(cursor)?),
             text: decode_string(cursor)?,
             args: decode_args(cursor)?,
+        }),
+        15 => Ok(OwnedObservation::CounterCheckpoint {
+            desc_id: EventDescId::new(names.id(cursor)?),
+            name: names.name(cursor)?,
+            context_id: ContextId::new(decode_u64(cursor)?),
+            samples: decode_u64(cursor)?,
         }),
         8 => Ok(OwnedObservation::CounterSample {
             desc_id: CounterDescId::new(names.id(cursor)?),

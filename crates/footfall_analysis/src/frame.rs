@@ -111,8 +111,9 @@ impl Frame {
     }
 
     /// Returns the counters and gauges the frame updated, from the samples
-    /// recorded at its end. Only frames carry them, not passes or
-    /// transactions, and only when the runtime records samples; see
+    /// recorded at its end. The runtime samples frame ends by default;
+    /// transaction/pass triggers are opt-in. Changes are since the previous
+    /// sample, not exclusive work attribution when units overlap. See
     /// [`Recorded`](crate::Recorded).
     #[must_use]
     pub fn counters(&self) -> &[FrameCounter] {

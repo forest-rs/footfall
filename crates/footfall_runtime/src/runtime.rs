@@ -153,7 +153,8 @@ pub struct Runtime {
     event_capacity: usize,
     context_capacity: usize,
     counter_samples: bool,
-    /// When the previous frame end sampled counters.
+    counter_sample_markers: [bool; 3],
+    /// When the previous automatic sample or explicit checkpoint ran.
     last_counter_sample_nanos: AtomicU64,
     next_scope_token: AtomicU64,
     /// Sequence number of the next event.
@@ -212,6 +213,7 @@ impl Runtime {
             event_capacity,
             context_capacity,
             counter_samples,
+            counter_sample_markers,
         } = builder;
         let wall_clock = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -228,6 +230,7 @@ impl Runtime {
             event_capacity,
             context_capacity,
             counter_samples,
+            counter_sample_markers,
             last_counter_sample_nanos: AtomicU64::new(0),
             next_scope_token: AtomicU64::new(1),
             next_event_sequence: AtomicU64::new(0),
@@ -395,7 +398,7 @@ impl Runtime {
                 context_capacity: self.context_capacity,
                 // Samples are events taken at frame markers, so a level that
                 // does not capture markers records none.
-                counter_samples: self.counter_samples && self.level().captures_markers(),
+                counter_samples: self.counter_samples && self.level().captures_counters(),
                 compiled_out: cfg!(footfall_compile_out),
             },
         }
@@ -700,14 +703,17 @@ impl Runtime {
             },
             at_nanos,
         );
-        if self.counter_samples && kind == MarkerKind::Frame && phase == MarkerPhase::End {
-            self.sample_counters(at_nanos);
+        if self.counter_samples
+            && phase == MarkerPhase::End
+            && marker_index(kind).is_some_and(|i| self.counter_sample_markers[i])
+        {
+            self.sample_counters(at_nanos, false);
         }
     }
 
     /// Records a sample of every counter and gauge updated since the previous
     /// frame end, with its value merged across threads.
-    fn sample_counters(&self, at_nanos: u64) {
+    fn sample_counters(&self, at_nanos: u64, all: bool) -> u64 {
         let since = self
             .last_counter_sample_nanos
             .swap(at_nanos, Ordering::Relaxed);
@@ -718,7 +724,7 @@ impl Runtime {
                 .lock()
                 .expect("runtime counter shard should not be poisoned");
             for (key, counter) in &shard.counters {
-                if counter.updated_at_nanos >= since {
+                if all || counter.updated_at_nanos >= since {
                     changed.insert(*key);
                 }
                 match merged.get_mut(key) {
@@ -741,6 +747,7 @@ impl Runtime {
                 counter_kind_discriminant(counter.kind),
             )
         });
+        let count = samples.len() as u64;
         for counter in samples {
             self.push_event_at(
                 Observation::CounterSample {
@@ -754,6 +761,7 @@ impl Runtime {
                 at_nanos,
             );
         }
+        count
     }
 
     /// Evicts the oldest event of the first non-empty shard, keeping its
@@ -907,6 +915,16 @@ pub struct RuntimeBuilder {
     event_capacity: usize,
     context_capacity: usize,
     counter_samples: bool,
+    counter_sample_markers: [bool; 3],
+}
+
+fn marker_index(kind: MarkerKind) -> Option<usize> {
+    match kind {
+        MarkerKind::Frame => Some(0),
+        MarkerKind::Transaction => Some(1),
+        MarkerKind::Pass => Some(2),
+        _ => None,
+    }
 }
 
 impl Default for RuntimeBuilder {
@@ -919,6 +937,7 @@ impl Default for RuntimeBuilder {
             event_capacity: Self::DEFAULT_EVENT_CAPACITY,
             context_capacity: Self::DEFAULT_CONTEXT_CAPACITY,
             counter_samples: true,
+            counter_sample_markers: [true, false, false],
         }
     }
 }
@@ -981,16 +1000,38 @@ impl RuntimeBuilder {
         self
     }
 
-    /// Sets whether each frame end records a
+    /// Enables counter/gauge sampling, both explicit checkpoints and the
+    /// automatic marker triggers selected by [`Self::counter_samples_on`].
+    /// Defaults to `true`, with frame ends as the only automatic trigger.
+    /// Each automatic marker end records a
     /// [`CounterSample`](Observation::CounterSample) for every counter and
-    /// gauge updated during the frame. Defaults to `true`.
+    /// gauge updated since the previous sampling call.
     ///
     /// Samples give per-frame counter values without registering a context
     /// per frame, and a time series for each counter. They are events, so
     /// they take event capacity, one per updated counter per frame, and are
-    /// recorded only at levels that capture markers.
+    /// recorded only at levels that capture markers. Explicit checkpoints
+    /// capture all counter/gauge rows, including unchanged values, at levels
+    /// that capture counters. Sampling locks and scans all counter shards;
+    /// it is not an atomic process-wide snapshot. Disable it here to avoid
+    /// both the scans and their events.
     pub const fn counter_samples(mut self, enabled: bool) -> Self {
         self.counter_samples = enabled;
+        self
+    }
+
+    /// Enables automatic sampling at the end of `kind`. Frames are enabled
+    /// by default; transactions and passes are disabled. Explicit checkpoints
+    /// are independent of these triggers. [`counter_samples(false)`](Self::counter_samples)
+    /// disables both automatic and explicit sampling.
+    ///
+    /// Automatic sampling scans all counter shards and emits one event per
+    /// changed counter/gauge. Changes are since the previous sample, not
+    /// exclusively attributable to this marker when work overlaps.
+    pub fn counter_samples_on(mut self, kind: MarkerKind, enabled: bool) -> Self {
+        if let Some(index) = marker_index(kind) {
+            self.counter_sample_markers[index] = enabled;
+        }
         self
     }
 
@@ -1053,7 +1094,8 @@ impl DescriptorIds {
                 Observation::ScopeBegin { desc_id, .. } => {
                     *desc_id = ScopeDescId::new(self.dense(desc_id.get()));
                 }
-                Observation::Message { desc_id, .. } => {
+                Observation::Message { desc_id, .. }
+                | Observation::CounterCheckpoint { desc_id, .. } => {
                     *desc_id = EventDescId::new(self.dense(desc_id.get()));
                 }
                 Observation::CounterSample { desc_id, .. } => {
@@ -1335,6 +1377,23 @@ impl CounterKey {
 }
 
 impl Backend for Runtime {
+    fn counter_checkpoint(&self, desc: &'static EventDesc, context: ContextHandle) {
+        if !self.counter_samples || !self.level().captures_counters() {
+            return;
+        }
+        let at = self.now_nanos();
+        let samples = self.sample_counters(at, true);
+        self.push_event_at(
+            Observation::CounterCheckpoint {
+                desc_id: desc.id(),
+                name: desc.name(),
+                context_id: context.id(),
+                samples,
+            },
+            at,
+        );
+    }
+
     fn context_registered(&self, handle: ContextHandle, context: &Context) {
         let mut contexts = self
             .contexts

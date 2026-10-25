@@ -62,6 +62,7 @@
 //! ```
 
 mod basis;
+mod checkpoint;
 mod compare;
 mod frame;
 mod pacing;
@@ -72,6 +73,7 @@ mod time;
 mod trace;
 
 pub use basis::{Basis, Gap, Recorded, Signal};
+pub use checkpoint::{CheckpointValue, CounterChange, CounterChanges, CounterCheckpoint};
 pub use compare::{
     Caveat, Comparison, ComparisonQuery, ComparisonRow, Measure, Metric, Population, Side,
 };

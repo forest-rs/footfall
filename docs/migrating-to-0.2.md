@@ -59,13 +59,14 @@ deadline alone does not establish how much time was computation or waiting.
 
 ## Upgrade readers before producers
 
-The Rust crate version is 0.2.0; the session and capture protocol is **1.1**.
+The Rust crate version is 0.2.0; the session and capture protocol is **1.2**.
 These are separate version numbers.
 
-- New consumers read protocol 1.0 captures and producers. Existing release
+- New consumers read protocol 1.0 and 1.1 captures and producers. Existing release
   captures are retained unchanged and tested for compatibility.
-- Protocol 1.0 consumers reject protocol 1.1 envelopes and captures. They
-  cannot skip the new frame opportunity, frame plan, or buffer-point data.
+- Older consumers reject protocol 1.2 envelopes and captures. Protocol 1.1
+  added frame opportunities, plans, and buffer points; 1.2 adds named counter
+  checkpoint boundaries. Consumers cannot skip unknown observation tags.
 - Upgrade the CLI and other consumers first, then upgrade producers. Once
   0.2.0 is published, `cargo install footfall_cli --version 0.2.0 --locked`
   installs the matching command-line reader.
@@ -73,6 +74,19 @@ These are separate version numbers.
 Custom consumers should use the current session decoder and its version
 checks rather than interpreting unknown tags as older layouts. See the
 [wire contract](session-wire-format.md#compatibility-rule).
+
+`counter_checkpoint(&EventDesc, context)` requests an explicit global counter
+sample batch at a named work boundary. Backends can implement the new optional
+`Backend::counter_checkpoint`; `Fanout` forwards it to both children. The runtime
+supports it at counter-capable levels, with sampling enabled. Capture settings'
+`counter_samples` flag now describes enabled sampling, including explicit
+checkpoints; automatic marker triggers still require a marker-capable level.
+`RuntimeBuilder::counter_samples_on` selects automatic frame/transaction/pass
+triggers. `Frame::counters` can consequently contain samples for transactions
+and passes too. Their changes remain relative to the preceding sample rather
+than exclusive activity owned by a work unit. See
+[counter checkpoints](instrumenting-an-app.md#counter-checkpoints) for cost,
+configuration, and interval semantics.
 
 ## Choose the export format explicitly in scripts
 

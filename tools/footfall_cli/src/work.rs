@@ -464,6 +464,18 @@ pub(crate) fn checks(
         },
     ];
     items.push(crate::check::losses(&trace, read));
+    let samples = trace.counter_series().count() as u64;
+    let recorded = trace.recorded(footfall::analysis::Signal::CounterSamples);
+    items.insert(2, Item {
+        id: "counter_samples",
+        status: if !recorded.is_yes() { Status::NotRecorded(recorded.to_string()) }
+            else if samples == 0 && trace.counter_checkpoints().is_empty() { Status::Missing } else { Status::Present },
+        found: format!("{samples} counter series · {} named checkpoints", trace.counter_checkpoints().len()),
+        have: Some(samples), of: None,
+        needed_for: "counter and gauge values at explicit work boundaries; interval activity is not exclusive attribution",
+        fix: "record counter_checkpoint before and after work; enable RuntimeBuilder::counter_samples",
+        section: "counter-checkpoints",
+    });
     let unmet = crate::check::unmet(&items, required)?;
     if json {
         let crate::json::Json::Object(mut fields) = crate::check::document(path, &trace, &items)

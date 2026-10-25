@@ -774,7 +774,7 @@ mod tests {
     #[test]
     fn captures_from_incompatible_versions_say_so_and_are_never_misread() {
         // Today's capture reads, and so does one an older minor wrote.
-        for version in [(1, 1), (1, 0)] {
+        for version in [(1, 2), (1, 1), (1, 0)] {
             let capture = capture_at(version, version);
             let snapshots: Vec<_> = CaptureReader::new(capture.as_slice())
                 .expect("header reads")
@@ -785,7 +785,7 @@ mod tests {
 
         // A newer minor or another major is refused at the header, saying
         // which version wrote it.
-        for header in [(1, 2), (2, 0), (0, 9)] {
+        for header in [(1, 3), (2, 0), (0, 9)] {
             let bytes = capture_at(header, (1, 0));
             let error = CaptureReader::new(bytes.as_slice()).expect_err("refused");
             assert_eq!(error.kind(), ErrorKind::InvalidData);
@@ -798,8 +798,8 @@ mod tests {
             assert!(error.to_string().contains("cannot decode"), "{error}");
         }
 
-        // An envelope newer than its file's header is refused too.
-        let bytes = capture_at((1, 1), (1, 2));
+        // An unsupported envelope in a supported file is refused too.
+        let bytes = capture_at((1, 2), (1, 3));
         let error = CaptureReader::new(bytes.as_slice())
             .expect("the header is current")
             .next()
@@ -807,7 +807,7 @@ mod tests {
             .expect_err("its envelope is refused");
         assert_eq!(
             IncompatibleVersion::of(&error).map(IncompatibleVersion::produced),
-            Some(ProtocolVersion::new(1, 2))
+            Some(ProtocolVersion::new(1, 3))
         );
 
         // A damaged capture is not an incompatible one.

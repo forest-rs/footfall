@@ -14,10 +14,11 @@ use footfall_runtime::CounterKind;
 use footfall_session::OwnedArgEntry;
 use std::sync::Arc;
 
-/// One counter or gauge under one context, sampled at each frame end: what a
+/// One counter or gauge under one context, sampled at work boundaries: what a
 /// timeline plots.
 ///
-/// Samples exist only where the runtime records them, at frame ends; the
+/// Samples exist only where the runtime records them, at configured marker
+/// ends or explicit checkpoints; the
 /// latest value of every counter, sampled or not, is in
 /// [`Trace::counters`](crate::Trace::counters).
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -82,7 +83,7 @@ impl CounterSeries {
     }
 }
 
-/// A counter's or gauge's value at one frame end.
+/// A counter's or gauge's value at one sampling point.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CounterSample {
     pub(crate) at: Duration,

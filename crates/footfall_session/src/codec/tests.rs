@@ -21,9 +21,36 @@ use crate::{
     Chunking, Envelope, EnvelopeHeader, OwnedArgEntry, OwnedClockTicks, OwnedContextEntry,
     OwnedContextSnapshot, OwnedCounterSnapshot, OwnedLabelValue, OwnedObservation,
     OwnedSessionEnvelope, OwnedSessionPayload, OwnedSnapshotSummary, OwnedSourceLocation,
-    OwnedTimedObservation, OwnedTimelineWork, PROTOCOL_VERSION, Payload, RowCounts,
+    OwnedTimedObservation, OwnedTimelineWork, Payload, ProtocolVersion, RowCounts,
     collect_snapshot,
 };
+
+// Retain protocol 1.1 golden fixtures as a backwards-compatibility contract.
+const FIXTURE_VERSION: ProtocolVersion = ProtocolVersion::new(1, 1);
+
+#[test]
+fn checkpoint_boundaries_round_trip_in_protocol_1_2() {
+    let observation = OwnedObservation::CounterCheckpoint {
+        desc_id: EventDescId::new(1),
+        name: String::from("storage"),
+        context_id: ContextId::new(2),
+        samples: 3,
+    };
+    let envelope = OwnedSessionEnvelope::new(
+        EnvelopeHeader::new(crate::PROTOCOL_VERSION, 0),
+        OwnedSessionPayload::Events(vec![OwnedTimedObservation::new(0, 0, 1, observation)]),
+    );
+    let encoded = encode_owned_envelope(&envelope).expect("checkpoint encoding");
+    assert_eq!(
+        &encoded[..4],
+        &[1, 0, 2, 0],
+        "the new observation requires protocol 1.2"
+    );
+    assert_eq!(
+        decode_envelope(&encoded).expect("checkpoint decoding"),
+        envelope
+    );
+}
 
 static FRAME: LabelKey = LabelKey::new("frame");
 static REASON: LabelKey = LabelKey::new("reason");
@@ -43,7 +70,7 @@ fn to_hex(bytes: &[u8]) -> String {
 #[test]
 fn encoded_envelopes_match_golden_fixtures() {
     let counters = OwnedSessionEnvelope::new(
-        EnvelopeHeader::new(PROTOCOL_VERSION, 2),
+        EnvelopeHeader::new(FIXTURE_VERSION, 2),
         OwnedSessionPayload::Counters(vec![OwnedCounterSnapshot::new(
             CounterDescId::new(3),
             String::from("ops"),
@@ -61,7 +88,7 @@ fn encoded_envelopes_match_golden_fixtures() {
     // descriptor's name, with a scope's source location, is written only the
     // first time its id appears.
     let events = OwnedSessionEnvelope::new(
-        EnvelopeHeader::new(PROTOCOL_VERSION, 3),
+        EnvelopeHeader::new(FIXTURE_VERSION, 3),
         OwnedSessionPayload::Events(vec![
             OwnedTimedObservation::new(
                 15,
@@ -143,7 +170,7 @@ fn encoded_envelopes_match_golden_fixtures() {
         ),
     ];
     let encoded = encode_envelope(Envelope::new(
-        EnvelopeHeader::new(PROTOCOL_VERSION, 3),
+        EnvelopeHeader::new(FIXTURE_VERSION, 3),
         Payload::Events(&borrowed),
     ))
     .expect("encoding should succeed");
@@ -151,7 +178,7 @@ fn encoded_envelopes_match_golden_fixtures() {
 
     // A scope without a location writes one absent tag (`00`) after its name.
     let unlocated = OwnedSessionEnvelope::new(
-        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+        EnvelopeHeader::new(FIXTURE_VERSION, 0),
         OwnedSessionPayload::Events(vec![OwnedTimedObservation::new(
             0,
             0,
@@ -178,7 +205,7 @@ fn encoded_envelopes_match_golden_fixtures() {
 
     // Context rows carry label keys by name. The production encoder for
     // borrowed runtime snapshots must produce the same bytes.
-    let header = EnvelopeHeader::new(PROTOCOL_VERSION, 1);
+    let header = EnvelopeHeader::new(FIXTURE_VERSION, 1);
     let contexts = OwnedSessionEnvelope::new(
         header,
         OwnedSessionPayload::Contexts(vec![OwnedContextSnapshot::new(
@@ -223,7 +250,7 @@ fn snapshot_framing_envelopes_match_golden_fixtures() {
             32,
         ));
     let start = OwnedSessionEnvelope::new(
-        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+        EnvelopeHeader::new(FIXTURE_VERSION, 0),
         OwnedSessionPayload::SnapshotStart(OwnedSnapshotSummary::new(
             metadata,
             crate::SnapshotKind::Full,
@@ -239,7 +266,7 @@ fn snapshot_framing_envelopes_match_golden_fixtures() {
     );
 
     let threads = OwnedSessionEnvelope::new(
-        EnvelopeHeader::new(PROTOCOL_VERSION, 1),
+        EnvelopeHeader::new(FIXTURE_VERSION, 1),
         OwnedSessionPayload::Threads(vec![
             ThreadSnapshot::new(3, Some(String::from("render"))),
             ThreadSnapshot::new(4, None),
@@ -251,7 +278,7 @@ fn snapshot_framing_envelopes_match_golden_fixtures() {
     );
 
     let end = OwnedSessionEnvelope::new(
-        EnvelopeHeader::new(PROTOCOL_VERSION, 2),
+        EnvelopeHeader::new(FIXTURE_VERSION, 2),
         OwnedSessionPayload::SnapshotEnd(
             crate::Drops::new()
                 .with_refused_contexts(1)
@@ -393,7 +420,7 @@ fn markers_match_their_golden_fixture() {
         )
     };
     let envelope = OwnedSessionEnvelope::new(
-        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+        EnvelopeHeader::new(FIXTURE_VERSION, 0),
         OwnedSessionPayload::Events(vec![
             marker(0, 0, MarkerPhase::Begin, None),
             marker(5, 1, MarkerPhase::End, Some(FrameStream::new(2).frame(41))),
@@ -428,7 +455,7 @@ fn clock_readings_match_their_golden_fixture() {
         )
     };
     let envelope = OwnedSessionEnvelope::new(
-        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+        EnvelopeHeader::new(FIXTURE_VERSION, 0),
         OwnedSessionPayload::Events(vec![
             OwnedTimedObservation::new(
                 0,
@@ -494,7 +521,7 @@ fn timeline_spans_match_their_golden_fixture() {
     .with_frame(Some(FrameNumber::from(7)))
     .with_flow(Some(FlowId::new(3)));
     let envelope = OwnedSessionEnvelope::new(
-        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+        EnvelopeHeader::new(FIXTURE_VERSION, 0),
         OwnedSessionPayload::Events(vec![OwnedTimedObservation::new(
             0,
             0,
@@ -533,7 +560,7 @@ fn timeline_spans_match_their_golden_fixture() {
 #[test]
 fn frame_points_match_their_golden_fixture() {
     let envelope = OwnedSessionEnvelope::new(
-        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+        EnvelopeHeader::new(FIXTURE_VERSION, 0),
         OwnedSessionPayload::Events(vec![
             OwnedTimedObservation::new(
                 0,
@@ -601,7 +628,7 @@ fn frame_opportunities_and_scheduled_points_match_their_golden_fixture() {
         )
     };
     let envelope = OwnedSessionEnvelope::new(
-        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+        EnvelopeHeader::new(FIXTURE_VERSION, 0),
         OwnedSessionPayload::Events(vec![
             OwnedTimedObservation::new(
                 0,
@@ -668,7 +695,7 @@ fn frame_opportunities_and_scheduled_points_match_their_golden_fixture() {
 fn frame_plans_match_their_golden_fixture() {
     use footfall_core::{FrameKind, HoldReason, TickPeriod};
     let envelope = OwnedSessionEnvelope::new(
-        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+        EnvelopeHeader::new(FIXTURE_VERSION, 0),
         OwnedSessionPayload::Events(vec![
             OwnedTimedObservation::new(
                 0,
@@ -776,7 +803,7 @@ fn every_frame_point_kind_round_trips() {
         })
         .collect();
     let envelope = OwnedSessionEnvelope::new(
-        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+        EnvelopeHeader::new(FIXTURE_VERSION, 0),
         OwnedSessionPayload::Events(events),
     );
     let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
@@ -789,7 +816,7 @@ fn every_frame_point_kind_round_trips() {
 #[test]
 fn cursor_detects_trailing_bytes() {
     let envelope = OwnedSessionEnvelope::new(
-        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+        EnvelopeHeader::new(FIXTURE_VERSION, 0),
         OwnedSessionPayload::Events(vec![OwnedTimedObservation::new(
             2,
             0,
@@ -819,7 +846,7 @@ fn decoder_rejects_oversized_envelope_frames() {
 #[test]
 fn decoder_rejects_oversized_strings_before_payload_allocation() {
     let mut bytes = Vec::new();
-    encode_header(&mut bytes, EnvelopeHeader::new(PROTOCOL_VERSION, 0));
+    encode_header(&mut bytes, EnvelopeHeader::new(FIXTURE_VERSION, 0));
     encode_u8(&mut bytes, 0);
     encode_u32(
         &mut bytes,
@@ -834,7 +861,7 @@ fn decoder_rejects_oversized_strings_before_payload_allocation() {
 #[test]
 fn decoder_rejects_oversized_row_counts_before_allocation() {
     let mut bytes = Vec::new();
-    encode_header(&mut bytes, EnvelopeHeader::new(PROTOCOL_VERSION, 0));
+    encode_header(&mut bytes, EnvelopeHeader::new(FIXTURE_VERSION, 0));
     encode_u8(&mut bytes, 1);
     encode_u32(
         &mut bytes,
@@ -849,7 +876,7 @@ fn decoder_rejects_oversized_row_counts_before_allocation() {
 #[test]
 fn decoder_rejects_oversized_context_entry_counts_before_allocation() {
     let mut bytes = Vec::new();
-    encode_header(&mut bytes, EnvelopeHeader::new(PROTOCOL_VERSION, 0));
+    encode_header(&mut bytes, EnvelopeHeader::new(FIXTURE_VERSION, 0));
     encode_u8(&mut bytes, 1);
     encode_u32(&mut bytes, 1);
     encode_u64(&mut bytes, 0);
@@ -868,7 +895,7 @@ fn decoder_rejects_oversized_context_entry_counts_before_allocation() {
 #[test]
 fn counter_samples_match_their_golden_fixture() {
     let envelope = OwnedSessionEnvelope::new(
-        EnvelopeHeader::new(PROTOCOL_VERSION, 1),
+        EnvelopeHeader::new(FIXTURE_VERSION, 1),
         OwnedSessionPayload::Events(vec![OwnedTimedObservation::new(
             9,
             2,
@@ -896,7 +923,7 @@ fn counter_samples_match_their_golden_fixture() {
 #[test]
 fn scope_token_observation_round_trips() {
     let envelope = OwnedSessionEnvelope::new(
-        EnvelopeHeader::new(PROTOCOL_VERSION, 1),
+        EnvelopeHeader::new(FIXTURE_VERSION, 1),
         OwnedSessionPayload::Events(vec![OwnedTimedObservation::new(
             3,
             0,
@@ -915,7 +942,7 @@ fn scope_token_observation_round_trips() {
 #[test]
 fn decoder_rejects_incompatible_codec_versions() {
     let envelope = OwnedSessionEnvelope::new(
-        EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+        EnvelopeHeader::new(FIXTURE_VERSION, 0),
         OwnedSessionPayload::SnapshotEnd(crate::Drops::new()),
     );
     let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
@@ -1015,7 +1042,7 @@ fn typical_events_stay_compact() {
             ));
         }
         let envelope = OwnedSessionEnvelope::new(
-            EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+            EnvelopeHeader::new(FIXTURE_VERSION, 0),
             OwnedSessionPayload::Events(events),
         );
         let encoded = encode_owned_envelope(&envelope).expect("encoding should succeed");
@@ -1054,7 +1081,7 @@ fn codec_errors_say_what_failed() {
 
     let threads = |name: String| {
         OwnedSessionEnvelope::new(
-            EnvelopeHeader::new(PROTOCOL_VERSION, 0),
+            EnvelopeHeader::new(FIXTURE_VERSION, 0),
             OwnedSessionPayload::Threads(vec![ThreadSnapshot::new(1, Some(name))]),
         )
     };

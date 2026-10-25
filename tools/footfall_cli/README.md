@@ -61,6 +61,21 @@ capture can retain every event even after the runtime has evicted them all.
 truncation, or skipped runtime instances, rather than cumulative eviction.
 Scopes measure elapsed wall time, including waits; they do not measure CPU use.
 
+## Counter checkpoints
+
+```sh
+footfall analyze checkpoints edits.ffcap --json
+footfall analyze checkpoints edits.ffcap --from 120 --to 480 --json
+```
+
+The first command lists named boundaries, sample batches, completeness, and
+originating scope ids. Use their sequence numbers with `--from` and `--to` to
+compare an interval. Counter changes are global activity during that interval;
+overlapping intervals can include the same work. Gauges report before/after
+values. Unknown changes are JSON `null`, including incomplete batches or gaps.
+See the [sampling guide](../../docs/instrumenting-an-app.md#counter-checkpoints)
+for cost and configuration.
+
 ## Checking an integration
 
 `footfall check` says what a capture gives the analyses. That makes it the

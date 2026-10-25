@@ -82,6 +82,11 @@ impl fmt::Debug for Fanout {
 }
 
 impl Backend for Fanout {
+    fn counter_checkpoint(&self, desc: &'static EventDesc, context: ContextHandle) {
+        self.primary.counter_checkpoint(desc, context);
+        self.secondary.counter_checkpoint(desc, context);
+    }
+
     fn context_registered(&self, handle: ContextHandle, context: &Context) {
         self.primary.context_registered(handle, context);
         self.secondary.context_registered(handle, context);
@@ -273,6 +278,9 @@ mod tests {
     }
 
     impl Backend for Recorder {
+        fn counter_checkpoint(&self, _desc: &'static footfall_core::EventDesc, _context: ContextHandle) {
+            self.record("counter_checkpoint");
+        }
         fn context_registered(&self, handle: ContextHandle, _context: &Context) {
             self.record(&format!("context_registered {}", handle.get()));
         }
@@ -350,6 +358,8 @@ mod tests {
         fanout.context_registered(context, &Context::root().with(&FRAME, 1_u32));
 
         fanout.counter_add(&COUNTER, context, 3);
+        static CHECKPOINT: footfall_core::EventDesc = footfall_core::EventDesc::new("checkpoint");
+        fanout.counter_checkpoint(&CHECKPOINT, context);
         let token = fanout.scope_begin(&SCOPE, context, &Args::none());
         fanout.scope_end(token);
         fanout.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, context);
@@ -362,6 +372,8 @@ mod tests {
                 "secondary context_registered 4",
                 "primary counter_add",
                 "secondary counter_add",
+                "primary counter_checkpoint",
+                "secondary counter_checkpoint",
                 "primary scope_begin",
                 "secondary scope_begin",
                 "secondary scope_end 22",
