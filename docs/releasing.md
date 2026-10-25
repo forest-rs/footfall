@@ -1,8 +1,6 @@
 # Releasing Footfall
 
-The public crates share one version. The current preparation targets
-**0.2.0**, with Rust 1.88 and protocol 1.1. Packaging and the consumer
-rehearsal below do not publish crates or create a release tag.
+The public crates share one version. This procedure covers **0.2.0**.
 
 ## Prepare and verify
 
@@ -10,10 +8,6 @@ Update `[workspace.package].version`, all internal dependency requirements,
 the lockfile, and current dependency snippets together. Keep versions in
 historical capture fixtures and protocol golden tests unchanged. Review
 the [migration guide](migrating-to-0.2.md) against the current public APIs.
-Refresh `Cargo.lock` with `cargo update` and inspect direct requirements
-with `cargo upgrade --dry-run --incompatible allow --recursive false`.
-Review releases outside the current semver ranges before upgrading, and
-recheck the MSRV and feature matrix after dependency changes.
 The changelog's Unreleased section is the 0.2.0 candidate; move it to a
 dated `0.2.0` heading when publishing.
 
@@ -45,8 +39,7 @@ cargo package --workspace --exclude footfall_benchmarks --exclude footfall_examp
 
 Every public crate must include its README and both license files.
 Workspace packaging stages the unpublished sibling packages for dependency
-resolution. A successful local rehearsal verifies the package set; it does
-not establish registry availability or grant publication permission.
+resolution.
 
 Run the independent consumer with Python 3.11+ and the
 `x86_64-unknown-none` Rust target installed:
@@ -72,22 +65,6 @@ crates.io, including `cargo install footfall_cli --version 0.2.0 --locked`.
 Do not substitute `cargo package --no-verify` for verification. It is useful
 only for inspecting package contents when sibling versions are unavailable.
 
-## 0.2.0 preparation results
-
-The preparation pass on 2026-10-25 verified all twelve public packages with
-all features enabled using Cargo 1.99. The external consumer exercised bare
-and fully featured use, the packaged no_std facade, the capture and export
-round-trip, and the packaged CLI. Workspace formatting, spelling, copyright,
-Clippy with warnings denied, tests, doctests, documentation, and Rust 1.88
-checks passed. The migration guide's Rust example is also a doctest.
-
-The first package verification failed inside the restricted environment
-while unpacking a staged sibling, with Cargo's internal `no hash listed`
-error. The identical command passed with writable Cargo caches; do not
-treat that failed run as verification. Rehearsal reports describe the
-specific archive checksums tested. Registry publication and installation
-without local patches remain part of the explicit publishing step.
-
 ## Publish in dependency order
 
 Confirm the intended version is not already published, and confirm the
@@ -112,6 +89,4 @@ depends on analysis, and the facade's optional dependencies must all be
 published before the facade. The examples and benchmark crates have
 `publish = false`.
 
-The existing repository tag convention is `v0.1.0`; use `v0.2.0` for the
-verified release commit after publication succeeds. Tag creation, tag
-push, and publishing require an explicit release instruction.
+Tag the verified release commit `v0.2.0` after publication succeeds.
