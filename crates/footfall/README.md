@@ -40,7 +40,7 @@ within a Tokio runtime.
 
 ```toml
 [dependencies]
-footfall = { version = "0.1", features = ["runtime", "export"] }
+footfall = { version = "0.2", features = ["runtime", "export"] }
 ```
 
 ```rust
@@ -91,6 +91,7 @@ Trace JSON instead, for `chrome://tracing` and other tools that read it.
 
 ## Guides
 
+- [Migrating from 0.1 to 0.2](https://github.com/forest-rs/footfall/blob/main/docs/migrating-to-0.2.md)
 - [Instrumenting an app](https://github.com/forest-rs/footfall/blob/main/docs/instrumenting-an-app.md)
 - [Session consumer contract](https://github.com/forest-rs/footfall/blob/main/docs/session-consumer-contract.md)
 - [Performance](https://github.com/forest-rs/footfall/blob/main/docs/performance.md)

@@ -19,7 +19,7 @@ Depend on `footfall` and turn on what the application needs:
 
 ```toml
 [dependencies]
-footfall = { version = "0.1", features = ["runtime", "export"] }
+footfall = { version = "0.2", features = ["runtime", "export"] }
 ```
 
 - no features: descriptors, contexts, and emission calls. This is the only
@@ -406,6 +406,15 @@ Say how each time of something that happened was known, with
 on estimates. Record `Submitted` when the frame was handed to the
 compositor or swapchain, which can differ from when its CPU work ended, and
 `Sampled`, the time its content was made for, such as the animation time.
+
+If buffer acquisition can block, record `BufferRequested` immediately before
+requesting a drawable or swapchain image and `BufferAcquired` when it becomes
+available, with their timing bases. That lets analysis distinguish a missed
+submission deadline explained by the wait from one late by more than the
+wait. If the API cannot separate acquisition from application work, leave
+these points absent. The elapsed frame work still includes the wait, and
+`buffer_wait` is unknown rather than zero; a late submission alone cannot
+establish how much time was computation or blocking.
 
 Say when each frame was meant to begin, and what it waited for. Record
 each frame opportunity the platform offers as it arrives, with

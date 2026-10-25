@@ -24,3 +24,6 @@ struct SessionConsumerContractDoctests;
 #[cfg(doctest)]
 #[doc = include_str!("../../docs/analysing-a-trace.md")]
 struct AnalysingATraceDoctests;
+#[cfg(doctest)]
+#[doc = include_str!("../../docs/migrating-to-0.2.md")]
+struct MigratingTo02Doctests;

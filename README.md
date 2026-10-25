@@ -28,7 +28,7 @@ by thread and call stack.
 
 ```toml
 [dependencies]
-footfall = { version = "0.1", features = ["runtime", "export"] }
+footfall = { version = "0.2", features = ["runtime", "export"] }
 ```
 
 ```rust
@@ -114,6 +114,8 @@ https://127.0.0.1:43091/footfall/session · main
 
 ## Guides
 
+- [Migrating from 0.1 to 0.2](docs/migrating-to-0.2.md): crate requirements,
+  analysis construction, reader compatibility, and export defaults.
 - [Instrumenting an app](docs/instrumenting-an-app.md): descriptors,
   contexts, levels, capture, export, and serving.
 - [Session consumer contract](docs/session-consumer-contract.md): what a tool

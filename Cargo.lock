@@ -733,7 +733,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "footfall"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "footfall_analysis",
  "footfall_core",
@@ -747,7 +747,7 @@ dependencies = [
 
 [[package]]
 name = "footfall_analysis"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "footfall_core",
  "footfall_runtime",
@@ -757,7 +757,7 @@ dependencies = [
 
 [[package]]
 name = "footfall_benchmarks"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "criterion",
  "footfall",
@@ -772,7 +772,7 @@ dependencies = [
 
 [[package]]
 name = "footfall_cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -785,11 +785,11 @@ dependencies = [
 
 [[package]]
 name = "footfall_core"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "footfall_examples"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -804,7 +804,7 @@ dependencies = [
 
 [[package]]
 name = "footfall_export"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "footfall_analysis",
  "footfall_core",
@@ -815,7 +815,7 @@ dependencies = [
 
 [[package]]
 name = "footfall_fanout"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "footfall_core",
  "hashbrown 0.17.1",
@@ -823,14 +823,14 @@ dependencies = [
 
 [[package]]
 name = "footfall_memory"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "footfall_core",
 ]
 
 [[package]]
 name = "footfall_runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "footfall_core",
  "hashbrown 0.17.1",
@@ -838,7 +838,7 @@ dependencies = [
 
 [[package]]
 name = "footfall_session"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "footfall_core",
  "footfall_runtime",
@@ -847,7 +847,7 @@ dependencies = [
 
 [[package]]
 name = "footfall_session_wtransport"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "footfall_core",
  "footfall_runtime",
@@ -861,7 +861,7 @@ dependencies = [
 
 [[package]]
 name = "footfall_tracing"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "footfall_core",
  "footfall_runtime",
@@ -873,7 +873,7 @@ dependencies = [
 
 [[package]]
 name = "footfall_tracy"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "footfall_core",
  "hashbrown 0.17.1",

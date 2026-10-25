@@ -5,6 +5,11 @@ crates share one version.
 
 ## Unreleased
 
+Preparing the coordinated **0.2.0** release. See
+[Migrating from 0.1 to 0.2](docs/migrating-to-0.2.md) for the Rust API,
+protocol, and command-line changes, and [Releasing](docs/releasing.md) for
+package verification and publication order.
+
 ### Fixed
 
 - Closing scopes admitted before the runtime level is lowered to `Off` or
@@ -174,6 +179,10 @@ crates share one version.
 
 ### Tools
 
+- `footfall analyze pacing --json` includes `capture_read`, with whether
+  every snapshot was consumed, whether the file was truncated, and how many
+  snapshots from other runtime instances were skipped. Warnings remain on
+  stderr, and a usable prefix still produces a successful result.
 - `footfall analyze pacing` says how many frames were the scheduler's
   choices rather than misses or hitches: shown late by their hold, off
   their spacing by it, or presented outside pacing. Latency steps say when
