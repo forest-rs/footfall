@@ -54,7 +54,7 @@ pub enum Signal {
     Resources,
     /// Counter, gauge, and histogram totals.
     Counters,
-    /// Counter samples at frame ends.
+    /// Counter samples from automatic marker triggers or explicit checkpoints.
     CounterSamples,
 }
 
@@ -89,7 +89,7 @@ pub enum Recorded {
     },
     /// The producer was built with instrumentation compiled out.
     CompiledOut,
-    /// The producer does not record counter samples at frame ends.
+    /// The producer has counter sampling disabled.
     SamplesOff,
     /// The trace has seen no snapshot, so it cannot tell.
     Unknown,
@@ -117,7 +117,7 @@ impl fmt::Display for Recorded {
                 "not recorded: the producer was built with instrumentation compiled out",
             ),
             Self::SamplesOff => {
-                f.write_str("not recorded: the producer does not sample counters at frame ends")
+                f.write_str("not recorded: the producer has counter sampling disabled")
             }
             Self::Unknown => f.write_str("unknown: no snapshot seen"),
         }

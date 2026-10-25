@@ -1304,6 +1304,30 @@ fn build_timed_observation(
             json.push_str("}}");
             Ok(Exported::Event(json))
         }
+        OwnedObservation::CounterCheckpoint {
+            name,
+            context_id,
+            samples,
+            ..
+        } => {
+            let mut json = String::new();
+            json.push('{');
+            write_json_field_str(&mut json, "name", name)?;
+            json.push(',');
+            write_json_field_str(&mut json, "cat", "counter_checkpoint")?;
+            json.push_str(",\"ph\":\"i\",\"s\":\"t\",");
+            write_json_field_time(&mut json, "ts", wall_nanos(snapshot, event.at_nanos()))?;
+            json.push(',');
+            write_json_field_u64(&mut json, "pid", trace_pid(snapshot))?;
+            json.push(',');
+            write_json_field_u64(&mut json, "tid", event.thread_id())?;
+            json.push_str(",\"args\":{");
+            write_json_field_u64(&mut json, "context_id", context_id.get())?;
+            json.push(',');
+            write_json_field_u64(&mut json, "samples", *samples)?;
+            json.push_str("}}");
+            Ok(Exported::Event(json))
+        }
         OwnedObservation::CounterSample {
             name,
             unit,

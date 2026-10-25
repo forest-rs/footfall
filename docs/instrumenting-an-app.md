@@ -289,6 +289,48 @@ footfall::frame_begin_numbered(inspector.frame(0), ContextHandle::ROOT);
 footfall::frame_end_numbered(inspector.frame(0), ContextHandle::ROOT);
 ```
 
+## Counter Checkpoints
+
+Use explicit checkpoints around edits, imports, compilations, or background jobs
+that do not correspond to rendering frames:
+
+```rust
+use footfall::{ContextHandle, CounterDesc, EventDesc};
+
+static BEFORE: EventDesc = EventDesc::new("edit.before");
+static AFTER: EventDesc = EventDesc::new("edit.after");
+static COPIED: CounterDesc = CounterDesc::bytes("copied");
+
+let context = ContextHandle::ROOT;
+footfall::counter_checkpoint(&BEFORE, context);
+footfall::counter_add(&COPIED, context, 1024);
+footfall::counter_checkpoint(&AFTER, context);
+```
+
+The runtime samples every counter and gauge, including unchanged values, then
+records a named boundary with the expected sample count. A boundary remains
+visible even when there are no counters. Analysis marks a batch incomplete if
+its samples are missing; it never treats missing evidence as zero activity.
+`Trace::counter_checkpoints` exposes the boundaries and their originating scopes;
+`Trace::counter_changes` compares two boundary sequence numbers. Additive counters
+have deltas; gauges retain before/after values. Missing endpoints, incomplete
+batches, gaps, and decreasing totals cannot establish an additive change.
+
+Each checkpoint locks and scans all counter shards, merges values across threads,
+and uses one event per counter/gauge plus one boundary. It is not an atomic
+process-wide snapshot. Choose the sampling frequency at the call site and size
+event capacity for it. `RuntimeBuilder::counter_samples(false)` disables both
+explicit and automatic sampling. `counter_samples_on(MarkerKind::Transaction,
+true)` opts into automatic sampling at transaction ends; frames are the default
+trigger, and passes are also configurable. Automatic samples include changed
+rows and measure from the preceding sample, not necessarily the unit's begin.
+
+Global differences describe activity during the interval, including other
+threads and overlapping transactions. They do not assign allocation or copy
+activity exclusively to the edit that requested the checkpoint. Use explicit
+application counters/contexts for narrower accounting; allocator overhead,
+ownership roots, and uninstrumented storage remain outside this evidence.
+
 ## Other Clocks
 
 Some times come from clocks other than the runtime's: a GPU's timestamp

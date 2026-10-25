@@ -33,6 +33,9 @@ impl Counting {
 }
 
 impl Backend for Counting {
+    fn counter_checkpoint(&self, _: &'static EventDesc, _: ContextHandle) {
+        self.hit();
+    }
     fn counter_add(&self, _: &'static CounterDesc, _: ContextHandle, _: u64) {
         self.hit();
     }
@@ -94,6 +97,7 @@ fn compiled_out_emissions_never_reach_the_backend() {
     footfall_core::counter_add(&COUNTER, context, 1);
     footfall_core::gauge_set(&COUNTER, context, 1);
     footfall_core::histogram_record(&COUNTER, context, 1);
+    footfall_core::counter_checkpoint(&EVENT, context);
     let token = footfall_core::scope_begin_with(&SCOPE, context, &args);
     assert_eq!(token, ScopeToken::INVALID, "no scope is recorded");
     footfall_core::scope_end(ScopeToken::new(7));

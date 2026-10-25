@@ -16,6 +16,11 @@ crates share one version.
 
 ### Instrumenting
 
+- `counter_checkpoint` samples counters and gauges at a named boundary outside
+  rendering frames. Sampling frequency is explicit, can be disabled, and scans
+  all counter shards. Automatic transaction/pass-end sampling is opt-in through
+  `RuntimeBuilder::counter_samples_on`. Protocol 1.2 records checkpoint boundaries
+  and their expected batch sizes; older readers must be upgraded first.
 - `FramePointKind::BufferRequested` and `FramePointKind::BufferAcquired`
   record when a frame asked for a buffer to render into, such as by
   calling `nextDrawable`, `dequeueBuffer`, or `vkAcquireNextImageKHR`, and
@@ -41,6 +46,11 @@ crates share one version.
 
 ### Consuming
 
+- Named counter checkpoints expose their retained values, batch completeness,
+  and originating scope. `Trace::counter_changes` and `analyze checkpoints`
+  compare explicit boundaries, retaining unknown deltas and gauge endpoints.
+  Differences describe global interval activity, not exclusive transaction
+  attribution.
 - Summary, slow-work analysis, comparison, and capture checks can select
   transaction or pass markers, or named scope instances with context labels
   and argument filters. Summary and comparison commands expose structured
