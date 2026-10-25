@@ -90,6 +90,17 @@ corresponding file writers. Existing calls to the JSON API still write JSON.
 
 ## Check structured pacing results for partial reads
 
+`analyze summary`, `analyze slow`, and `analyze compare` also support `--json`.
+Use `--kind transaction` or `--kind pass` for marked work, or `--scope NAME`
+with `--arg KEY=VALUE` for argument-bearing scope instances. The same selectors
+apply to `check`, with `work`, `spans`, and `losses` checks for non-frame work.
+Non-frame slow analysis needs an explicit `--budget-ms` rather than a frame
+deadline. See the [CLI guide](../tools/footfall_cli/README.md#transactions-and-scoped-work).
+
+`check --require losses` now distinguishes cumulative runtime eviction from
+missing capture events. A complete streamed capture passes after runtime
+eviction; scripts should not use eviction counts as evidence of capture loss.
+
 `footfall analyze pacing --json` now includes:
 
 ```json

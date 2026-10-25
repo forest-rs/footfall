@@ -26,6 +26,41 @@ configuration. Set `FOOTFALL_STATE_DIR` to the same directory for both to
 keep experiments apart from anything else running. Add `--help` to any
 command to see its options.
 
+## Transactions and scoped work
+
+Summary, slow-work analysis, comparison, and checks accept the same selectors:
+
+```sh
+footfall analyze summary edits.ffcap --kind transaction --json
+footfall analyze summary edits.ffcap --scope procedural.edit --arg kind=amplitude --json
+footfall analyze slow edits.ffcap --scope procedural.edit --budget-ms 0.05 --json
+footfall analyze compare before.ffcap after.ffcap --kind transaction --json
+footfall check edits.ffcap --kind transaction --require work --require losses --json
+```
+
+`--kind` selects frame, transaction, or pass markers. Alternatively, `--scope`
+uses each completed instance of the named scope as one unit, with `--arg`
+filtering its arguments. Markers do not carry scope arguments. `--context ID`
+selects a runtime-local context; `--label KEY=VALUE` selects stable context
+labels across runs. Repeated label and argument predicates are combined with AND.
+Values parse as unsigned integers, negative signed integers, booleans, or
+strings; `s:`, `u:`, `i:`, and `b:` force a type, such as `--arg kind=s:true`.
+
+Non-frame slow analysis requires `--budget-ms`; edits have no display deadline.
+Comparisons normalize work per selected unit. Contributions are elapsed
+activity inside those intervals, including concurrent work; they do not prove
+exclusive ownership or causation. Overlapping intervals can share activity.
+Use the same workload and selection on both sides before interpreting a change
+as a speedup. JSON includes selected unit identities and ranges, coverage,
+read completeness, runtime retention counts, and comparison caveats. An empty
+comparison population is an error. Empty summaries retain a zero count.
+
+Runtime eviction is reported separately from capture loss. A long streamed
+capture can retain every event even after the runtime has evicted them all.
+`check --require losses` fails for missing events, reported observation loss,
+truncation, or skipped runtime instances, rather than cumulative eviction.
+Scopes measure elapsed wall time, including waits; they do not measure CPU use.
+
 ## Checking an integration
 
 `footfall check` says what a capture gives the analyses. That makes it the

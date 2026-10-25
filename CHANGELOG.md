@@ -7,6 +7,9 @@ crates share one version.
 
 ### Fixed
 
+- Complete streamed captures no longer report runtime eviction as capture
+  loss or fail `check --require losses` for it. Scope reports describe elapsed
+  wall time, including waits, rather than CPU consumption.
 - Closing scopes admitted before the runtime level is lowered to `Off` or
   `Counters` still emits their end events. New scopes remain filtered and
   invalid scope tokens remain ignored.
@@ -38,6 +41,11 @@ crates share one version.
 
 ### Consuming
 
+- Summary, slow-work analysis, comparison, and capture checks can select
+  transaction or pass markers, or named scope instances with context labels
+  and argument filters. Summary and comparison commands expose structured
+  JSON with selected units, coverage, and read status. Non-frame slow-work
+  analysis uses an explicit elapsed-time budget.
 - `FramePacing::plan` returns what the scheduler decided for a frame, as a
   `Plan`, and analysis acts on it. A frame presented outside pacing is
   `Outcome::Synchronous`: it is not judged against a deadline or target,

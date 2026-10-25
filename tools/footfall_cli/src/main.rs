@@ -27,6 +27,8 @@ mod pacing_json;
 mod report;
 mod style;
 mod top;
+mod work;
+mod work_json;
 
 use anstream::{eprintln, println};
 use budget::Budget;
@@ -82,6 +84,8 @@ enum Command {
     Check {
         /// The capture file to read.
         file: PathBuf,
+        #[command(flatten)]
+        work: work::Args,
         /// Print the result as one JSON document, for other programs to
         /// read.
         #[arg(long)]
@@ -90,7 +94,7 @@ enum Command {
         #[arg(
             long,
             value_name = "CHECK",
-            value_parser = clap::builder::PossibleValuesParser::new(check::IDS)
+            value_parser = clap::builder::PossibleValuesParser::new(check::IDS.into_iter().chain(["work", "spans"]))
         )]
         require: Vec<String>,
     },
@@ -139,6 +143,11 @@ enum Analysis {
         /// records deadlines, and against 16.7 ms when it does not.
         #[arg(long)]
         budget_ms: Option<f64>,
+        #[command(flatten)]
+        work: work::Args,
+        /// Print all selected units, scope statistics, and coverage as JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// Compare a capture's slow frames with the rest: which scopes account
     /// for the difference, and whether they ran more often or each ran
@@ -158,6 +167,11 @@ enum Analysis {
         /// `nodes`, to see whether slow spans did more of something.
         #[arg(long, value_name = "KEY")]
         by_arg: Option<String>,
+        #[command(flatten)]
+        work: work::Args,
+        /// Print the selected populations, comparison, and coverage as JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// Show frame pacing: which frames were shown on time, late, or not at
     /// all, from what the frame scheduler and display reported, and what
@@ -187,6 +201,11 @@ enum Analysis {
         /// How many scopes to show.
         #[arg(long, default_value_t = 10)]
         top: usize,
+        #[command(flatten)]
+        work: work::Args,
+        /// Print the comparison and both selected populations as JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// Show one span and the work around it: where its scope is declared,
     /// arguments, context, what it ran inside, what ran inside it, its
@@ -223,7 +242,14 @@ async fn main() {
             file,
             json,
             require,
-        } => check(&file, json, &require),
+            work,
+        } => {
+            if work.is_default() && !require.iter().any(|id| id == "work" || id == "spans") {
+                check(&file, json, &require)
+            } else {
+                work::checks(&file, &work, json, &require)
+            }
+        }
         Command::Export {
             file,
             output,
@@ -242,18 +268,45 @@ async fn main() {
 /// Answers one `footfall analyze` question.
 fn analyze(analysis: Analysis) -> Result<()> {
     match analysis {
-        Analysis::Summary { file, budget_ms } => summary(&file, budget_ms),
+        Analysis::Summary {
+            file,
+            budget_ms,
+            work,
+            json,
+        } => {
+            if work.is_default() && !json {
+                summary(&file, budget_ms)
+            } else {
+                work::summary(&file, &work, budget_ms, json)
+            }
+        }
         Analysis::Slow {
             file,
             budget_ms,
             top,
             by_arg,
-        } => slow(&file, budget_ms, top, by_arg.as_deref()),
+            work,
+            json,
+        } => {
+            if work.is_default() && !json {
+                slow(&file, budget_ms, top, by_arg.as_deref())
+            } else {
+                work::slow(&file, &work, budget_ms, top, by_arg.as_deref(), json)
+            }
+        }
         Analysis::Compare {
             baseline,
             candidate,
             top,
-        } => compare(&baseline, &candidate, top),
+            work,
+            json,
+        } => {
+            if work.is_default() && !json {
+                compare(&baseline, &candidate, top)
+            } else {
+                work::compare(&baseline, &candidate, &work, json, top)
+            }
+        }
         Analysis::Pacing {
             file,
             tolerance_ms,
