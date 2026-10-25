@@ -336,11 +336,19 @@ fn open_capture(path: &Path) -> Result<CaptureReader<File>> {
 }
 
 fn read_joined(path: &Path) -> Result<OwnedSnapshot> {
+    Ok(read_joined_saying(path)?.0)
+}
+
+fn read_joined_saying(path: &Path) -> Result<(OwnedSnapshot, check::Read)> {
     let joined = open_capture(path)?
         .join()
         .map_err(|error| format!("{}: {error}", path.display()))?;
-    warn_incomplete(path, joined.truncated().is_some(), joined.skipped());
-    Ok(joined.into_snapshot())
+    let read = check::Read {
+        truncated: joined.truncated().is_some(),
+        skipped: joined.skipped(),
+    };
+    warn_incomplete(path, read.truncated, read.skipped);
+    Ok((joined.into_snapshot(), read))
 }
 
 /// Says what of a capture was left out: a cut-short end, or windows from
@@ -359,7 +367,7 @@ fn warn_incomplete(path: &Path, truncated: bool, skipped: u64) {
 }
 
 fn summary(path: &Path, budget_ms: Option<f64>) -> Result<()> {
-    let snapshot = read_joined(path)?;
+    let (snapshot, read) = read_joined_saying(path)?;
     let metadata = snapshot.metadata();
     let capture = metadata.capture();
     println!(
@@ -383,7 +391,7 @@ fn summary(path: &Path, budget_ms: Option<f64>) -> Result<()> {
     report::frames(trace.frames(), &Budget::for_trace(&trace, budget_ms));
     println!();
     report::spans(
-        "Where the time went on the CPU",
+        "Elapsed wall time on threads",
         &trace.spans().on_threads().group_by(GroupBy::Name).table(),
         12,
     );
@@ -407,7 +415,7 @@ fn summary(path: &Path, budget_ms: Option<f64>) -> Result<()> {
     println!();
     report::histograms(&snapshot, 16);
     println!();
-    report::losses(&snapshot);
+    report::losses(&trace, read);
     Ok(())
 }
 

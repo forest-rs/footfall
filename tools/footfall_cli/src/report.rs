@@ -238,22 +238,21 @@ pub(crate) fn histograms(snapshot: &OwnedSnapshot, limit: usize) {
     }
 }
 
-/// Prints what the snapshot could not hold, or that nothing was lost.
-pub(crate) fn losses(snapshot: &OwnedSnapshot) {
-    let drops = snapshot.drops();
-    let missed = snapshot.window().missed();
-    if drops.is_empty() && missed == 0 {
-        println!("{GOOD}Nothing was lost.{GOOD:#}");
-        return;
+/// Separates capture completeness from the runtime's cumulative retention activity.
+pub(crate) fn losses(trace: &footfall::analysis::Trace, read: crate::check::Read) {
+    let loss = crate::check::losses(trace, read);
+    if loss.satisfied() {
+        println!("{GOOD}Capture: no missing events or reported observation loss.{GOOD:#}");
+    } else {
+        println!("{WARN}Capture: {}{WARN:#}", loss.found);
     }
-    println!(
-        "{WARN}Lost:{WARN:#} {} events evicted before this read, {} evicted in total, \
-         {} counter updates and {} contexts refused",
-        format::count(missed),
-        format::count(drops.evicted_events()),
-        format::count(drops.counter_updates()),
-        format::count(drops.refused_contexts()),
-    );
+    let evicted = trace.drops().evicted_events();
+    if evicted > 0 {
+        println!(
+            "{DIM}Runtime retention: {} events evicted by the runtime; already captured events remain in this file.{DIM:#}",
+            format::count(evicted)
+        );
+    }
 }
 
 /// Frame-time statistics over a set of frames.
