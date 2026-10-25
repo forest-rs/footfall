@@ -13,12 +13,12 @@ description = "A tracing layer that forwards spans and events into Footfall."
 [dependencies]
 footfall_core = { features = ["std"], workspace = true }
 hashbrown.workspace = true
-tracing-core = "0.1.36"
-tracing-subscriber = { default-features = false, features = ["registry", "std"], version = "0.3.23" }
+tracing-core.workspace = true
+tracing-subscriber = { features = ["registry", "std"], workspace = true }
 
 [dev-dependencies]
 footfall_runtime = { features = ["std"], workspace = true }
-tracing = "0.1.44"
+tracing.workspace = true
 
 [lib]
 path = "src/lib.rs"
