@@ -94,3 +94,58 @@ fn streamed_eviction_is_not_capture_loss_but_missing_events_and_truncation_are()
         }
     }
 }
+
+#[test]
+fn a_missing_creation_does_not_prove_liveness_before_the_first_observation() {
+    let metadata = SnapshotMetadata::new("streamed")
+        .with_instance_id(42)
+        .with_capture(footfall::runtime::CaptureSettings::new(
+            footfall::InstrumentationLevel::Trace,
+            16,
+            2,
+            16,
+        ));
+    let later = Snapshot::builder(metadata)
+        .window(EventWindow::new(2, 5, 2))
+        .captured_at_nanos(5_000)
+        .drops(Drops::new().with_evicted_events(4))
+        .event(TimedObservation::new(
+            4_000,
+            4,
+            1,
+            Observation::ResourceUpdate {
+                kind_id: footfall::ResourceKindId::new(1),
+                kind_name: "buffer",
+                resource_id: footfall::ResourceId::new(1),
+                context_id: ContextId::new(0),
+                size: 64,
+            },
+        ))
+        .build();
+    let mut writer = CaptureWriter::new(Vec::new()).expect("capture");
+    writer
+        .write_snapshot(&snapshot(0, 0, 0))
+        .expect("first window");
+    writer.write_snapshot(&later).expect("later window");
+    let capture = Capture(std::env::temp_dir().join(format!(
+        "footfall-unknown-resource-{}.ffcap",
+        std::process::id()
+    )));
+    std::fs::write(&capture.0, writer.finish().expect("bytes")).expect("file");
+    let output = Command::new(env!("CARGO_BIN_EXE_footfall"))
+        .args(["analyze", "resources"])
+        .arg(&capture.0)
+        .args(["--json", "--alive-at-ns", "3000"])
+        .output()
+        .expect("CLI");
+    assert!(
+        output.status.success(),
+        "a partial capture remains inspectable"
+    );
+    let json = String::from_utf8(output.stdout).expect("JSON");
+    assert!(
+        json.contains(r#""count":0,"without_creation_scope":1,"unknown_at_query":1"#),
+        "{json}"
+    );
+    assert!(json.contains(r#""missed_events":2"#), "{json}");
+}

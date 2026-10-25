@@ -125,6 +125,23 @@ def main():
         if pacing["frames"][0]["buffer_wait_ns"] != 5_000_000:
             raise SystemExit("The packaged CLI lost the buffer wait")
         results["checks"].append("packaged CLI version and structured pacing")
+        points = json.loads(subprocess.check_output([
+            str(cli), "analyze", "checkpoints", str(capture), "--json",
+        ], text=True))["checkpoints"]
+        if len(points) != 2 or not all(point["complete"] for point in points):
+            raise SystemExit("The packaged CLI lost the checkpoint boundaries")
+        interval = json.loads(subprocess.check_output([
+            str(cli), "analyze", "checkpoints", str(capture), "--from", str(points[0]["sequence"]),
+            "--to", str(points[1]["sequence"]), "--json",
+        ], text=True))["interval"]
+        if interval["counters"][0]["change"] != 128:
+            raise SystemExit("The packaged CLI lost the counter baseline")
+        resources = json.loads(subprocess.check_output([
+            str(cli), "analyze", "resources", str(capture), "--json",
+        ], text=True))["resources"]
+        if resources[0]["creation"]["scope_chain"][0]["name"] != "release consumer work":
+            raise SystemExit("The packaged CLI lost the creating scope")
+        results["checks"].append("packaged named checkpoints, interval changes, and resource provenance")
 
     report = target / "release-rehearsal.json"
     report.write_text(json.dumps(results, indent=2) + "\n")

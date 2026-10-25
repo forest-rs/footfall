@@ -830,10 +830,20 @@ impl Trace {
                 context_id,
                 size,
             } => {
+                let provenance = crate::ResourceObservation {
+                    sequence: event.sequence(),
+                    at,
+                    thread: thread_id,
+                    context: *context_id,
+                    span: self.innermost(thread_id),
+                    action: crate::ResourceAction::Create,
+                    size: Some(*size),
+                };
                 let kind_name = self.intern(kind_name);
                 self.live_resources
                     .insert((*kind_id, *resource_id), self.resources.len());
                 self.resources.push(Resource {
+                    observations: vec![provenance],
                     kind_id: *kind_id,
                     kind_name,
                     resource_id: *resource_id,
@@ -850,7 +860,17 @@ impl Trace {
                 context_id,
                 size,
             } => {
+                let provenance = crate::ResourceObservation {
+                    sequence: event.sequence(),
+                    at,
+                    thread: thread_id,
+                    context: *context_id,
+                    span: self.innermost(thread_id),
+                    action: crate::ResourceAction::Update,
+                    size: Some(*size),
+                };
                 let resource = self.live_resource(*kind_id, kind_name, *resource_id, *context_id);
+                resource.observations.push(provenance);
                 resource.context_id = *context_id;
                 resource.sizes.push((at, *size));
             }
@@ -860,7 +880,17 @@ impl Trace {
                 resource_id,
                 context_id,
             } => {
+                let provenance = crate::ResourceObservation {
+                    sequence: event.sequence(),
+                    at,
+                    thread: thread_id,
+                    context: *context_id,
+                    span: self.innermost(thread_id),
+                    action: crate::ResourceAction::Drop,
+                    size: None,
+                };
                 let resource = self.live_resource(*kind_id, kind_name, *resource_id, *context_id);
+                resource.observations.push(provenance);
                 resource.context_id = *context_id;
                 resource.dropped = Some(at);
                 self.live_resources.remove(&(*kind_id, *resource_id));
@@ -1224,6 +1254,7 @@ impl Trace {
                 self.live_resources
                     .insert((kind_id, resource_id), self.resources.len());
                 self.resources.push(Resource {
+                    observations: Vec::new(),
                     kind_id,
                     kind_name,
                     resource_id,

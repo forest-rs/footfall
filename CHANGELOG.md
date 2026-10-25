@@ -46,6 +46,10 @@ crates share one version.
 
 ### Consuming
 
+- Resource lifetimes retain create/update/drop provenance: event identities,
+  contexts, threads, and enclosing scopes. `analyze resources` can select
+  resources created by an edit scope and observed alive at a later time.
+  Missing origins stay unknown; creating work does not imply current ownership.
 - Named counter checkpoints expose their retained values, batch completeness,
   and originating scope. `Trace::counter_changes` and `analyze checkpoints`
   compare explicit boundaries, retaining unknown deltas and gauge endpoints.

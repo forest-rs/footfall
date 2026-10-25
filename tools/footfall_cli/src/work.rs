@@ -155,6 +155,7 @@ impl Args {
                                 context: span.context_id(),
                                 thread: span.thread_id(),
                                 frame: None,
+                                span: Some(span),
                             })
                     })
                     .collect();
@@ -171,6 +172,7 @@ impl Args {
                         context: frame.context_id(),
                         thread: frame.thread_id(),
                         frame: Some(frame),
+                        span: None,
                     })
                     .collect(),
             },
@@ -203,11 +205,34 @@ pub(crate) struct Unit<'t> {
     pub(crate) context: ContextId,
     pub(crate) thread: u64,
     pub(crate) frame: Option<&'t Frame>,
+    pub(crate) span: Option<&'t footfall::analysis::Span>,
 }
 
 impl Unit<'_> {
     pub(crate) fn duration(self) -> Duration {
         self.range.end().saturating_sub(self.range.start())
+    }
+}
+
+fn instances(units: &Units<'_>, limit: usize) {
+    let mut sorted: Vec<_> = units.units.iter().collect();
+    sorted.sort_by_key(|unit| core::cmp::Reverse(unit.duration()));
+    for unit in sorted.into_iter().take(limit) {
+        let id = unit.span.map_or_else(
+            || format!("marker begin sequence {}", unit.id),
+            |span| span.id().to_string(),
+        );
+        let args = unit.span.map_or_else(String::new, |span| {
+            span.args()
+                .iter()
+                .map(|arg| format!("{}={}", arg.key(), arg.value()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        });
+        anstream::println!(
+            "  {id} · {} · {args}",
+            crate::format::duration(unit.duration())
+        );
     }
 }
 
@@ -301,6 +326,8 @@ pub(crate) fn summary(
             crate::format::duration(stats.max())
         );
         crate::report::spans("Activity during selected intervals", &table, 12);
+        anstream::println!("Longest completed units:");
+        instances(&units, 12);
         crate::report::losses(&trace, read);
     }
     Ok(())
@@ -402,6 +429,8 @@ pub(crate) fn slow(
             unknown
         );
         crate::report::comparison(&comparison, "normal", "slow", top);
+        anstream::println!("Slow unit instances:");
+        instances(&slow, top);
         crate::report::losses(&trace, read);
     }
     Ok(())
@@ -472,7 +501,7 @@ pub(crate) fn checks(
             else if samples == 0 && trace.counter_checkpoints().is_empty() { Status::Missing } else { Status::Present },
         found: format!("{samples} counter series · {} named checkpoints", trace.counter_checkpoints().len()),
         have: Some(samples), of: None,
-        needed_for: "counter and gauge values at explicit work boundaries; interval activity is not exclusive attribution",
+        needed_for: "inspecting sampled values; presence alone does not establish per-unit baselines or attribution",
         fix: "record counter_checkpoint before and after work; enable RuntimeBuilder::counter_samples",
         section: "counter-checkpoints",
     });

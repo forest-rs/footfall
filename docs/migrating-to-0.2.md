@@ -88,6 +88,14 @@ than exclusive activity owned by a work unit. See
 [counter checkpoints](instrumenting-an-app.md#counter-checkpoints) for cost,
 configuration, and interval semantics.
 
+`Resource::creation` and `Resource::observations` expose per-event sequence,
+context, thread, size, and enclosing scope through `ResourceObservation`.
+`analyze resources --json` exposes the same provenance and scope arguments.
+These associations use existing scope/resource events, including old captures;
+they need no extra producer instrumentation or protocol change. Missing scope
+begins or creation events remain unknown. Application ownership roots are
+separate from the work that created a resource.
+
 ## Choose the export format explicitly in scripts
 
 `footfall export run.ffcap` now writes `run.pftrace`, Perfetto's protobuf

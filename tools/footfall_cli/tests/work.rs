@@ -15,6 +15,7 @@ static EDIT: ScopeDesc = ScopeDesc::new("edit");
 static BODY: ScopeDesc = ScopeDesc::new("body");
 static COPIED: footfall::CounterDesc = footfall::CounterDesc::bytes("copied");
 static STORAGE: footfall::EventDesc = footfall::EventDesc::new("storage");
+static BUFFER: footfall::ResourceKindDesc = footfall::ResourceKindDesc::new("buffer");
 
 struct Capture(PathBuf);
 impl Drop for Capture {
@@ -45,7 +46,20 @@ fn text(output: Output) -> String {
 #[test]
 fn transaction_and_scope_units_have_shared_structured_analysis() {
     let runtime = Runtime::default();
+    for invalid in ["NaN", "inf", "1e300"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_footfall"))
+            .args(["analyze", "slow", "unused.ffcap", "--budget-ms", invalid])
+            .output()
+            .expect("invalid request runs");
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "invalid budget is rejected by the CLI"
+        );
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("panicked"));
+    }
     runtime.counter_checkpoint(&STORAGE, ContextHandle::ROOT);
+    let mut buffer = 0;
     for kind in ["amplitude", "quality", "amplitude"] {
         runtime.frame_marker(
             MarkerKind::Transaction,
@@ -55,6 +69,13 @@ fn transaction_and_scope_units_have_shared_structured_analysis() {
         let edit =
             runtime.scope_begin(&EDIT, ContextHandle::ROOT, &Args::none().with("kind", kind));
         let body = runtime.scope_begin(&BODY, ContextHandle::ROOT, &Args::none());
+        buffer += 1;
+        runtime.resource_create(
+            &BUFFER,
+            footfall::ResourceId::new(buffer),
+            ContextHandle::ROOT,
+            64,
+        );
         runtime.counter_add(&COPIED, ContextHandle::ROOT, 3);
         runtime.scope_end(body);
         runtime.scope_end(edit);
@@ -71,6 +92,9 @@ fn transaction_and_scope_units_have_shared_structured_analysis() {
     let points = trace.counter_checkpoints();
     let from = points[0].sequence().to_string();
     let to = points[1].sequence().to_string();
+    let edits = trace.spans().named("edit").iter();
+    let origin = edits[0].span().id().sequence().to_string();
+    let alive = edits[0].span().end().as_nanos().to_string();
     let capture =
         Capture(std::env::temp_dir().join(format!("footfall-work-{}.ffcap", std::process::id())));
     let mut writer = CaptureWriter::new(Vec::new()).expect("writer");
@@ -78,6 +102,29 @@ fn transaction_and_scope_units_have_shared_structured_analysis() {
         .write_snapshot(&runtime.snapshot())
         .expect("snapshot");
     std::fs::write(&capture.0, writer.finish().expect("bytes")).expect("capture");
+    let json = text(capture.command(&["analyze", "resources", "--json"]));
+    assert!(
+        json.contains(r#""count":3,"without_creation_scope":0"#),
+        "{json}"
+    );
+    let json = text(capture.command(&[
+        "analyze",
+        "resources",
+        "--created-in",
+        &origin,
+        "--alive-at-ns",
+        &alive,
+        "--json",
+    ]));
+    assert!(
+        json.contains(r#""count":1,"without_creation_scope":0"#),
+        "{json}"
+    );
+    assert!(json.contains(r#""resource_id":1"#), "{json}");
+    assert!(
+        json.contains(r#""key":"kind","value":"amplitude""#),
+        "{json}"
+    );
     let json = text(capture.command(&[
         "analyze",
         "checkpoints",
@@ -109,6 +156,10 @@ fn transaction_and_scope_units_have_shared_structured_analysis() {
     args.extend(selected);
     let json = text(capture.command(&args));
     assert!(json.contains(r#""count":2,"units":["#), "{json}");
+    assert!(
+        json.contains(r#""scope_arguments":[{"key":"kind","value":"amplitude"}]"#),
+        "{json}"
+    );
     assert!(json.contains(r#""scope":"body","count":2"#), "{json}");
 
     let mut args = vec![
@@ -124,12 +175,24 @@ fn transaction_and_scope_units_have_shared_structured_analysis() {
     args.extend(selected);
     let json = text(capture.command(&args));
     assert!(json.contains(r#""id":"work","status":"present""#), "{json}");
+    let output = capture.command(&["check", "--kind", "transaction", "--require", "frames"]);
+    assert!(
+        !output.status.success(),
+        "frame checks do not apply to a transaction selection"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("checks are work, spans, counter_samples, losses")
+    );
 
     let mut args = vec!["analyze", "slow", "--json", "--budget-ms", "0"];
     args.extend(selected);
     let json = text(capture.command(&args));
     assert!(json.contains(r#""candidate_units":2"#), "{json}");
-    assert!(json.contains(r#""caveats":["FewUnits"#), "{json}");
+    assert!(
+        json.contains(r#""caveats":[{"kind":"few_units"}"#),
+        "{json}"
+    );
     let mut command = Command::new(env!("CARGO_BIN_EXE_footfall"));
     let json = text(
         command

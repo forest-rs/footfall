@@ -197,6 +197,7 @@ impl Message {
 /// when it was dropped, as far as the trace saw.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Resource {
+    pub(crate) observations: Vec<ResourceObservation>,
     pub(crate) kind_id: ResourceKindId,
     pub(crate) kind_name: Arc<str>,
     pub(crate) resource_id: ResourceId,
@@ -207,6 +208,24 @@ pub struct Resource {
 }
 
 impl Resource {
+    /// Returns the retained create, update, and drop observations in order,
+    /// including their originating scopes. Absence of a creation means the
+    /// trace did not observe the origin; later work must not be substituted.
+    #[must_use]
+    pub fn observations(&self) -> &[ResourceObservation] {
+        &self.observations
+    }
+
+    /// Returns the observed creation, or `None` when the resource first
+    /// appeared as an update or drop. Its enclosing scope identifies the
+    /// creating work, not the resource's subsequent ownership roots.
+    #[must_use]
+    pub fn creation(&self) -> Option<&ResourceObservation> {
+        self.observations
+            .first()
+            .filter(|event| event.action == ResourceAction::Create)
+    }
+
     /// Returns the resource kind's id, local to the runtime instance.
     #[must_use]
     pub const fn kind_id(&self) -> ResourceKindId {
@@ -231,8 +250,8 @@ impl Resource {
         self.context_id
     }
 
-    /// Returns when it was created, or `None` when its creation came before
-    /// the trace's first events.
+    /// Returns when creation was observed, or `None` when it was not
+    /// retained, whether before the trace or in missing events.
     #[must_use]
     pub const fn created(&self) -> Option<Duration> {
         self.created
@@ -270,10 +289,83 @@ impl Resource {
 
     /// Returns `true` when it was alive at `at`: created at or before it,
     /// or before the trace began, and not yet dropped.
+    ///
+    /// This follows the retained lifetime model. For an unobserved creation
+    /// it assumes an earlier origin; missing events can hide lifecycle
+    /// changes. Inspect [`Self::observations`] and [`Trace::gaps`](crate::Trace::gaps)
+    /// before treating this as proof of retention at a particular time.
     #[must_use]
     pub fn alive_at(&self, at: Duration) -> bool {
         self.created.is_none_or(|created| created <= at)
             && self.dropped.is_none_or(|dropped| at < dropped)
+    }
+}
+
+/// The resource lifecycle action observed at one event.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ResourceAction {
+    /// A resource was created with a size.
+    Create,
+    /// Its recorded size changed.
+    Update,
+    /// It was released.
+    Drop,
+}
+
+/// Provenance of one retained resource lifecycle event.
+///
+/// Scope association uses the recorded nesting on this event's thread. It
+/// does not infer causal origin from timestamps on another thread or assign
+/// ownership to undo stacks, graph caches, or other application roots.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceObservation {
+    pub(crate) sequence: u64,
+    pub(crate) at: Duration,
+    pub(crate) thread: u64,
+    pub(crate) context: ContextId,
+    pub(crate) span: Option<SpanId>,
+    pub(crate) action: ResourceAction,
+    pub(crate) size: Option<u64>,
+}
+
+impl ResourceObservation {
+    /// Returns the event's stable sequence within its runtime instance.
+    #[must_use]
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+    /// Returns when it was observed.
+    #[must_use]
+    pub const fn at(&self) -> Duration {
+        self.at
+    }
+    /// Returns the recording thread.
+    #[must_use]
+    pub const fn thread_id(&self) -> u64 {
+        self.thread
+    }
+    /// Returns this event's context (which can differ across a lifetime).
+    #[must_use]
+    pub const fn context_id(&self) -> ContextId {
+        self.context
+    }
+    /// Returns the innermost enclosing scope whose begin was retained.
+    /// `None` can mean unscoped work or missing nesting evidence; it does
+    /// not establish that no creating work existed.
+    #[must_use]
+    pub const fn span(&self) -> Option<SpanId> {
+        self.span
+    }
+    /// Returns the lifecycle action.
+    #[must_use]
+    pub const fn action(&self) -> ResourceAction {
+        self.action
+    }
+    /// Returns the size at creation/update, and `None` for a drop.
+    #[must_use]
+    pub const fn size(&self) -> Option<u64> {
+        self.size
     }
 }
 

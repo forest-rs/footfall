@@ -5,6 +5,8 @@
 
 #[cfg(not(feature = "full"))]
 fn main() {
+    static CHECKPOINT: footfall::EventDesc = footfall::EventDesc::new("bare checkpoint");
+    footfall::counter_checkpoint(&CHECKPOINT, footfall::ContextHandle::ROOT);
     let plan = footfall::FramePlan::new(1, footfall::TickPeriod::NANOSECOND).with_depth(2);
     assert_eq!(plan.depth(), Some(2), "the bare facade exposes frame plans");
     footfall::frame_plan(&plan);
@@ -24,12 +26,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     static HOST: ClockDesc = ClockDesc::new("release consumer host");
     static WORK: ScopeDesc = ScopeDesc::new("release consumer work");
+    static CHECKPOINT: footfall::EventDesc = footfall::EventDesc::new("release consumer storage");
+    static COPIED: footfall::CounterDesc = footfall::CounterDesc::bytes("copied");
+    static BUFFER: footfall::ResourceKindDesc = footfall::ResourceKindDesc::new("buffer");
     let runtime = Runtime::builder()
         .process_name("release consumer")
         .install_global()?;
     runtime.clock_sync(ClockReading::new(&HOST, 0, TickPeriod::NANOSECOND));
     footfall::frame_begin_numbered(1, ContextHandle::ROOT);
     let work = footfall::scope(&WORK, ContextHandle::ROOT);
+    footfall::counter_checkpoint(&CHECKPOINT, ContextHandle::ROOT);
+    footfall::counter_add(&COPIED, ContextHandle::ROOT, 128);
+    footfall::resource_create(
+        &BUFFER,
+        footfall::ResourceId::new(1),
+        ContextHandle::ROOT,
+        64,
+    );
+    footfall::counter_checkpoint(&CHECKPOINT, ContextHandle::ROOT);
     footfall::frame_plan(
         &FramePlan::new(1, TickPeriod::NANOSECOND)
             .with_interval(10_000_000)
@@ -49,6 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     work.end();
+    footfall::resource_drop(&BUFFER, footfall::ResourceId::new(1), ContextHandle::ROOT);
     footfall::frame_end_numbered(1, ContextHandle::ROOT);
     let snapshot = runtime.snapshot();
     assert_eq!(
@@ -62,6 +77,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let captured = Trace::from_capture(CaptureReader::new(bytes.as_slice())?)?;
     assert!(captured.complete(), "the round-trip is complete");
     let trace = captured.into_trace();
+    let points = trace.counter_checkpoints();
+    assert_eq!(
+        points.len(),
+        2,
+        "named checkpoints survived the package boundary"
+    );
+    let changes = trace
+        .counter_changes(points[0].sequence(), points[1].sequence())
+        .expect("counter interval");
+    assert_eq!(
+        changes.counters()[0].change(),
+        Some(128),
+        "explicit counter baseline survived"
+    );
+    let resource = &trace.resources()[0];
+    let origin = resource
+        .creation()
+        .and_then(|event| event.span())
+        .and_then(|span| trace.span(span))
+        .expect("creating work is retained");
+    assert_eq!(
+        origin.name(),
+        "release consumer work",
+        "resource provenance survived"
+    );
+    assert!(resource.dropped().is_some(), "release survived");
     let pacing = trace.pacing(Duration::ZERO);
     let frame = pacing.frame(1).expect("recorded frame");
     assert_eq!(

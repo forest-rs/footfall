@@ -4,13 +4,50 @@
 //! Structured work analysis, with its population, metric, and evidence limits.
 
 use crate::{check, json::Json, work};
-use footfall::analysis::{Basis, Comparison, OwnedLabelValue, SpanTable, Trace};
+use footfall::analysis::{Basis, Caveat, Comparison, OwnedLabelValue, Recorded, SpanTable, Trace};
 use std::path::Path;
+
+pub(crate) fn recorded(recorded: &Recorded) -> Json {
+    let status = match recorded {
+        Recorded::Yes => "recorded",
+        Recorded::BelowLevel { .. } => "below_level",
+        Recorded::CompiledOut => "compiled_out",
+        Recorded::SamplesOff => "sampling_disabled",
+        _ => "unknown",
+    };
+    let mut fields = vec![("status", Json::from(status))];
+    if let Recorded::BelowLevel { level, needs } = recorded {
+        fields.push(("level", Json::from(level.as_str())));
+        fields.push(("needs", Json::from(needs.as_str())));
+    }
+    Json::object(fields)
+}
+
+fn caveat(caveat: &Caveat) -> Json {
+    let kind = match caveat {
+        Caveat::FewUnits => "few_units",
+        Caveat::DifferentInstances => "different_instances",
+        Caveat::DifferentProducers { .. } => "different_producers",
+        Caveat::DifferentCapture => "different_capture",
+        Caveat::Incomplete => "incomplete",
+        _ => "unknown",
+    };
+    let mut fields = vec![("kind", Json::from(kind))];
+    if let Caveat::DifferentProducers {
+        baseline,
+        candidate,
+    } = caveat
+    {
+        fields.push(("baseline", Json::from(baseline.as_str())));
+        fields.push(("candidate", Json::from(candidate.as_str())));
+    }
+    Json::object(fields)
+}
 
 pub(crate) fn basis(basis: &Basis) -> Json {
     Json::object([
         ("complete", Json::from(basis.is_complete())),
-        ("recorded", Json::from(basis.recorded().to_string())),
+        ("recorded", recorded(&basis.recorded())),
         ("spans", Json::from(basis.spans())),
         ("interrupted_spans", Json::from(basis.interrupted())),
         ("open_spans", Json::from(basis.open())),
@@ -24,6 +61,26 @@ pub(crate) fn basis(basis: &Basis) -> Json {
 pub(crate) fn capture(path: &Path, trace: &Trace, read: check::Read) -> Json {
     let loss = check::losses(trace, read);
     Json::object([
+        (
+            "missed_events",
+            Json::from(trace.gaps().iter().map(|gap| gap.missed()).sum::<u64>()),
+        ),
+        (
+            "dropped_counter_updates",
+            Json::from(trace.drops().counter_updates()),
+        ),
+        (
+            "refused_contexts",
+            Json::from(trace.drops().refused_contexts()),
+        ),
+        (
+            "unattributed_observations",
+            Json::from(trace.drops().unattributed()),
+        ),
+        (
+            "updates_after_release",
+            Json::from(trace.drops().updated_after_release()),
+        ),
         ("path", Json::from(path.display().to_string())),
         (
             "instance",
@@ -96,6 +153,39 @@ pub(crate) fn selection(args: &work::Args, units: &work::Units<'_>) -> Json {
                             ("begin_ns", Json::nanos(unit.range.start())),
                             ("end_ns", Json::nanos(unit.range.end())),
                             ("duration_ns", Json::nanos(unit.duration())),
+                            (
+                                "scope_arguments",
+                                unit.span.map_or(Json::Null, |span| {
+                                    Json::Array(
+                                        span.args()
+                                            .iter()
+                                            .map(|arg| {
+                                                Json::object([
+                                                    ("key", Json::from(arg.key())),
+                                                    (
+                                                        "value",
+                                                        match arg.value() {
+                                                            OwnedLabelValue::Unsigned(v) => {
+                                                                Json::from(*v)
+                                                            }
+                                                            OwnedLabelValue::Signed(v) => {
+                                                                Json::Signed(*v)
+                                                            }
+                                                            OwnedLabelValue::Bool(v) => {
+                                                                Json::from(*v)
+                                                            }
+                                                            OwnedLabelValue::String(v) => {
+                                                                Json::from(v.as_str())
+                                                            }
+                                                            _ => Json::Null,
+                                                        },
+                                                    ),
+                                                ])
+                                            })
+                                            .collect(),
+                                    )
+                                }),
+                            ),
                         ])
                     })
                     .collect(),
@@ -143,13 +233,7 @@ pub(crate) fn comparison(comparison: &Comparison) -> Json {
         ("candidate_basis", basis(comparison.candidate().basis())),
         (
             "caveats",
-            Json::Array(
-                comparison
-                    .caveats()
-                    .iter()
-                    .map(|c| Json::from(format!("{c:?}")))
-                    .collect(),
-            ),
+            Json::Array(comparison.caveats().iter().map(caveat).collect()),
         ),
         (
             "rows",

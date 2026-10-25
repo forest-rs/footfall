@@ -34,7 +34,7 @@ pub(crate) struct Args {
     #[arg(long, default_value_t = 250)]
     interval_ms: u64,
     /// Frame budget in milliseconds; longer frames show in red.
-    #[arg(long, default_value_t = 16.7)]
+    #[arg(long, default_value_t = 16.7, value_parser = crate::milliseconds)]
     budget_ms: f64,
 }
 
