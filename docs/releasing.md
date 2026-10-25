@@ -29,27 +29,25 @@ documentation configurations in `.github/workflows/ci.yml` before landing.
 
 ## Package rehearsal
 
-Use a Cargo version that supports workspace packaging. Inspect the files
-and build the packaged sources, with every optional feature enabled:
+Use a Cargo version that supports workspace packaging, Python 3.11+, and
+the `x86_64-unknown-none` Rust target. Inspect the files, then verify and
+exercise fresh packages with every optional feature enabled:
 
 ```sh
 cargo package --workspace --exclude footfall_benchmarks --exclude footfall_examples --list
-cargo package --workspace --exclude footfall_benchmarks --exclude footfall_examples --all-features
+python3 tools/release/rehearse.py --package
 ```
 
 Every public crate must include its README and both license files.
 Workspace packaging stages the unpublished sibling packages for dependency
 resolution.
 
-Run the independent consumer with Python 3.11+ and the
-`x86_64-unknown-none` Rust target installed:
+Each run uses a fresh temporary target directory: Cargo can otherwise reuse
+an older local-registry copy of the same unpublished version. Verified
+archives are copied to `target/package`; temporary build files are removed.
 
-```sh
-python3 tools/release/rehearse.py
-```
-
-The script inspects each archive's version, README, licenses, and source
-content, then extracts the archives into a temporary directory outside the
+The script checks each archive's source commit, version, README, licenses,
+and source content, then extracts the archives outside the
 workspace. It patches Footfall names to those extracted packages while
 0.2.0 is unpublished and checks the dependency graph for old versions or
 workspace source paths. It builds and runs bare and fully featured
@@ -58,6 +56,9 @@ analysis, both export formats, and the packaged CLI's structured output.
 It also checks the packaged facade without std. The temporary sources are
 removed on exit; the report and command log remain in
 `target/release-rehearsal.json` and `target/release-consumer.log`.
+
+To inspect existing archives without repackaging, omit `--package`. Their
+recorded source commit must match the checkout.
 
 After publication, repeat the consumer build without patches against
 crates.io, including `cargo install footfall_cli --version 0.2.0 --locked`.
