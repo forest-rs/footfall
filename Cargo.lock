@@ -765,6 +765,7 @@ dependencies = [
  "footfall_export",
  "footfall_fanout",
  "footfall_runtime",
+ "footfall_session",
  "footfall_tracing",
  "tracing",
  "tracing-subscriber",
