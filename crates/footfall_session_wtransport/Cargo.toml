@@ -14,14 +14,14 @@ description = "Serve Footfall sessions over local WebTransport, and discover, fe
 footfall_core.workspace = true
 footfall_runtime = { features = ["std"], workspace = true }
 footfall_session = { features = ["std"], workspace = true }
-tokio = { features = ["fs", "macros", "rt", "sync", "time"], version = "1.54.1" }
-tracing = "0.1.44"
+tokio = { features = ["fs", "macros", "rt", "sync", "time"], workspace = true }
+tracing.workspace = true
 wtransport = { features = ["quinn"], version = "0.7.2" }
 x509-parser = "0.18.1"
 
 [dev-dependencies]
-tokio = { features = ["macros", "rt-multi-thread"], version = "1.54.1" }
-tracing-subscriber = { default-features = false, features = ["fmt", "std"], version = "0.3.23" }
+tokio = { features = ["macros", "rt-multi-thread"], workspace = true }
+tracing-subscriber = { features = ["fmt", "std"], workspace = true }
 
 [lib]
 path = "src/lib.rs"
