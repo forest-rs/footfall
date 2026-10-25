@@ -68,6 +68,16 @@ fn checkpoints_capture_global_interval_activity_without_exclusive_attribution() 
             .change()
     };
     assert_eq!(bytes(&a), Some(12));
+    let new_gauge = a
+        .counters()
+        .iter()
+        .find(|c| c.counter().name() == "live")
+        .expect("new gauge");
+    assert_eq!(
+        new_gauge.before(),
+        None,
+        "a missing gauge baseline is not zero"
+    );
     assert_eq!(bytes(&b), Some(10)); // the shared 7 bytes occur in both intervals
     assert_eq!(bytes(&change(3, 4)), Some(0));
     let gauge = b
@@ -149,10 +159,38 @@ fn transaction_sampling_is_explicitly_configurable() {
         MarkerPhase::End,
         ContextHandle::ROOT,
     );
+    runtime.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, ContextHandle::ROOT);
+    runtime.counter_add(&BYTES, ContextHandle::ROOT, 4);
+    runtime.frame_marker(MarkerKind::Frame, MarkerPhase::End, ContextHandle::ROOT);
     let trace = Trace::from_snapshot(&OwnedSnapshot::from(runtime.snapshot()));
     assert_eq!(
         trace.marks(MarkerKind::Transaction)[0].total_change("copied"),
         Some(3)
+    );
+    assert!(
+        trace.frames()[0].counters().is_empty(),
+        "the frame trigger was disabled"
+    );
+}
+
+#[test]
+fn complete_batches_do_not_hide_dropped_counter_updates() {
+    let runtime = Runtime::builder().counter_capacity(0).build();
+    runtime.counter_checkpoint(&POINT, ContextHandle::ROOT);
+    runtime.counter_add(&BYTES, ContextHandle::ROOT, 1);
+    runtime.counter_checkpoint(&POINT, ContextHandle::ROOT);
+    let trace = Trace::from_snapshot(&OwnedSnapshot::from(runtime.snapshot()));
+    let points = trace.counter_checkpoints();
+    assert!(
+        points.iter().all(|point| point.complete()),
+        "empty batches were retained"
+    );
+    let interval = trace
+        .counter_changes(points[0].sequence(), points[1].sequence())
+        .expect("interval");
+    assert!(
+        !interval.complete(),
+        "the runtime could not retain the counter update"
     );
 }
 
