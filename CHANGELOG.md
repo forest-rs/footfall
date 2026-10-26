@@ -5,6 +5,8 @@ crates share one version.
 
 ## Unreleased
 
+## 0.2.0 (2026-10-26)
+
 ### Fixed
 
 - Complete streamed captures no longer report runtime eviction as capture
