@@ -48,6 +48,74 @@ pub struct OwnedSnapshot {
 }
 
 impl OwnedSnapshot {
+    /// Appends externally timed observations to a full capture.
+    ///
+    /// Original events, metadata and losses remain unchanged. New observations
+    /// receive consecutive sequence numbers, thread zero, and the capture's
+    /// final runtime timestamp. Their actual times must be carried in calibrated
+    /// clock readings, as frame points and timeline spans do. Do not use this
+    /// to invent runtime timestamps for CPU scopes or synchronization samples.
+    ///
+    /// Fails without mutation for a changes-only snapshot or sequence overflow.
+    pub fn append_observations(
+        &mut self,
+        observations: Vec<crate::OwnedObservation>,
+    ) -> Result<(), AppendError> {
+        if self.kind() != SnapshotKind::Full {
+            return Err(AppendError::NotFull);
+        }
+        let window = self.window();
+        let count = u64::try_from(observations.len()).map_err(|_| AppendError::SequenceOverflow)?;
+        let next = window
+            .next()
+            .checked_add(count)
+            .ok_or(AppendError::SequenceOverflow)?;
+        let at = self.captured_at_nanos();
+        self.events
+            .extend(observations.into_iter().zip(window.next()..next).map(
+                |(observation, sequence)| OwnedTimedObservation::new(at, sequence, 0, observation),
+            ));
+        self.finish_merge(EventWindow::new(window.since(), next, window.missed()));
+        Ok(())
+    }
+
+    /// Returns an unused descriptor ID above all descriptors in the capture.
+    /// Scope, clock, counter, resource and timeline IDs share the wire namespace.
+    /// The result is a starting point for one appended batch, not a reservation.
+    /// Returns `None` if the namespace is exhausted.
+    #[must_use]
+    pub fn next_descriptor_id(&self) -> Option<u64> {
+        use crate::OwnedObservation as O;
+        self.events
+            .iter()
+            .filter_map(|event| match event.observation() {
+                O::ScopeBegin { desc_id, .. } => Some(desc_id.get()),
+                O::Message { desc_id, .. } => Some(desc_id.get()),
+                O::CounterSample { desc_id, .. } => Some(desc_id.get()),
+                O::ResourceCreate { kind_id, .. }
+                | O::ResourceUpdate { kind_id, .. }
+                | O::ResourceDrop { kind_id, .. } => Some(kind_id.get()),
+                O::ClockSync { clock } => Some(clock.clock_id().get()),
+                O::ClockPair { first, second } => {
+                    Some(first.clock_id().get().max(second.clock_id().get()))
+                }
+                O::TimelineSpan { span } => Some(
+                    span.timeline_id()
+                        .get()
+                        .max(span.desc_id().get())
+                        .max(span.begin().clock_id().get()),
+                ),
+                O::FramePoint { time, .. } => time.as_ref().map(|at| at.clock_id().get()),
+                O::FrameOpportunity { time, .. } => Some(time.clock_id().get()),
+                _ => None,
+            })
+            .chain(self.counters.iter().map(|row| row.desc_id().get()))
+            .chain(self.histograms.iter().map(|row| row.desc_id().get()))
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+    }
+
     /// Reassembles one snapshot publication.
     ///
     /// The envelopes must be exactly one publication: a `SnapshotStart`, the
@@ -586,6 +654,8 @@ impl core::error::Error for AssembleError {}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum AppendError {
+    /// Supplementary observations would exhaust event sequence numbers.
+    SequenceOverflow,
     /// The later snapshot is from another runtime instance, whose ids and
     /// sequence numbers mean something else.
     OtherInstance {
@@ -609,6 +679,9 @@ pub enum AppendError {
 impl fmt::Display for AppendError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::SequenceOverflow => {
+                formatter.write_str("supplementary events exceed the sequence range")
+            }
             Self::OtherInstance { expected, found } => write!(
                 formatter,
                 "snapshot is from runtime instance {found:016x}, not {expected:016x}"
@@ -864,6 +937,81 @@ mod append_tests {
 
     fn mark(runtime: &Runtime) {
         runtime.frame_marker(MarkerKind::Frame, MarkerPhase::Begin, ContextHandle::ROOT);
+    }
+
+    #[test]
+    fn supplemental_observations_preserve_source_and_round_trip() {
+        use crate::{OwnedClockTicks, OwnedObservation, OwnedTimelineWork};
+        use footfall_core::{
+            ClockId, FramePointKind, ScopeDescId, TickPeriod, TimelineId, TimelineKind, TimingBasis,
+        };
+        let runtime = Runtime::default();
+        mark(&runtime);
+        let original = OwnedSnapshot::from(runtime.snapshot());
+        let mut enriched = original.clone();
+        let clock = OwnedClockTicks::new(
+            ClockId::new(900),
+            "external".into(),
+            10,
+            TickPeriod::NANOSECOND,
+        );
+        enriched
+            .append_observations(alloc::vec![OwnedObservation::FramePoint {
+                number: 0_u64.into(),
+                kind: FramePointKind::GpuReady,
+                time: Some(clock.clone()),
+                basis: TimingBasis::Observed,
+                args: Vec::new(),
+            }])
+            .unwrap();
+        assert_eq!(enriched.next_descriptor_id(), Some(901));
+        let span = OwnedTimelineWork::new(
+            TimelineId::new(901),
+            "GPU".into(),
+            TimelineKind::Gpu,
+            ScopeDescId::new(902),
+            "draw".into(),
+            ContextHandle::ROOT.id(),
+            clock,
+            20,
+        );
+        enriched
+            .append_observations(alloc::vec![OwnedObservation::TimelineSpan {
+                span: alloc::boxed::Box::new(span)
+            }])
+            .unwrap();
+        assert_eq!(enriched.next_descriptor_id(), Some(903));
+        assert_eq!(
+            &enriched.events()[..original.events().len()],
+            original.events()
+        );
+        assert_eq!(enriched.drops(), original.drops());
+        assert_eq!(enriched.metadata(), original.metadata());
+        assert_eq!(enriched.window().next(), original.window().next() + 2);
+        let mut writer = crate::capture::CaptureWriter::new(Vec::new()).unwrap();
+        writer.write_owned(&enriched).unwrap();
+        let bytes = writer.finish().unwrap();
+        let decoded = crate::capture::CaptureReader::new(bytes.as_slice())
+            .unwrap()
+            .join()
+            .unwrap()
+            .into_snapshot();
+        assert_eq!(enriched, decoded);
+    }
+
+    #[test]
+    fn supplemental_sequence_overflow_does_not_mutate_the_capture() {
+        let runtime = Runtime::default();
+        let mut snapshot = OwnedSnapshot::from(runtime.snapshot());
+        snapshot.finish_merge(footfall_runtime::EventWindow::new(u64::MAX, u64::MAX, 0));
+        let original = snapshot.clone();
+        assert_eq!(
+            snapshot.append_observations(alloc::vec![crate::OwnedObservation::ScopeEnd {
+                token: footfall_core::ScopeToken::new(1)
+            }]),
+            Err(AppendError::SequenceOverflow)
+        );
+        assert_eq!(snapshot, original);
     }
 
     #[test]
