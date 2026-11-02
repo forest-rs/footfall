@@ -1996,7 +1996,9 @@ fn severity(
     let off = match frame.outcome {
         Outcome::Dropped { reason } if reason.is_miss() => return Some(Severity::Full),
         // Late as steadily as the frame before: latency, not a hitch.
-        Outcome::Late { .. } if frame.cadence == Some(Cadence::Steady) => return None,
+        Outcome::Late { .. } | Outcome::Early { .. } if frame.cadence == Some(Cadence::Steady) => {
+            return None;
+        }
         Outcome::Late { by, .. } | Outcome::Early { by } => match frame.cadence {
             Some(Cadence::Stalled { by: off } | Cadence::Hurried { by: off }) => off,
             // Off by what the scheduler held it back: its choice.

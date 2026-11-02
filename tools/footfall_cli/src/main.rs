@@ -732,7 +732,7 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> 
     let severity = pacing.severity();
     if severity.partial + severity.full > 0 {
         println!(
-            "  misses and hitches: {BAD}{} full{BAD:#} {DIM}(a refresh or more){DIM:#} · {WARN}{} partial{WARN:#} {DIM}(less){DIM:#}",
+            "  target-relative deviations: {BAD}{} full{BAD:#} {DIM}(a refresh or more){DIM:#} · {WARN}{} partial{WARN:#} {DIM}(less){DIM:#}",
             format::count(severity.full),
             format::count(severity.partial),
         );

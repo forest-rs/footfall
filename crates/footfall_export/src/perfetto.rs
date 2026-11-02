@@ -111,9 +111,7 @@ const SEVERITY_PARTIAL: u64 = 2;
 const SEVERITY_FULL: u64 = 3;
 const JANK_UNSPECIFIED: u64 = 0;
 const JANK_NONE: u64 = 1;
-const JANK_SF_SCHEDULING: u64 = 2;
 const JANK_PREDICTION_ERROR: u64 = 4;
-const JANK_DISPLAY_HAL: u64 = 8;
 const JANK_APP_DEADLINE_MISSED: u64 = 64;
 const JANK_BUFFER_STUFFING: u64 = 128;
 const JANK_DROPPED: u64 = 1024;
@@ -1087,22 +1085,12 @@ struct TimelineVerdict {
     delay_millis: f32,
 }
 
-/// Puts a frame's pacing in Android's frame timeline terms, which Perfetto
-/// colors by: a late frame whose cadence held steady is `Buffer Stuffing`,
-/// latency and not jank, as is one queued behind a late frame or late for want
-/// of a buffer; a frame late through its own work is `App Deadline Missed`, the
-/// program's jank; one the platform made late is `SurfaceFlinger Scheduling` (a
-/// skipped opportunity), `Prediction Error` (a mispredicted target, or shown
-/// early), or `Display HAL` (held after it was submitted in time), the
-/// platform's; a dropped frame is `Dropped Frame`; and a frame whose cause is
-/// not known is `Unspecified` rather than anyone's jank. A frame the scheduler
-/// held back on purpose and showed late by its hold is late with no jank, and
-/// a synchronous frame, presented outside pacing, has no present type and no
-/// jank.
-///
-/// Severity is `footfall_analysis`'s: partial for a miss or hitch of less than
-/// a refresh, full for a refresh or more. A frame shown on time has none there
-/// either, so the two count the same frames.
+/// Maps pacing conditions to Perfetto's frame timeline categories. A steady
+/// forecast offset is latency, not delivery jank. Missing opportunity or
+/// presentation-stage evidence stays unspecified rather than assigning blame
+/// to `SurfaceFlinger` or a display HAL that the trace never observed. Early
+/// forecasts remain visible as prediction error; native requests are separate
+/// milestones on the frame tracks.
 fn timeline_verdict(frame: &FramePacing) -> TimelineVerdict {
     let severity = match frame.severity() {
         Some(Severity::Partial) => SEVERITY_PARTIAL,
@@ -1120,22 +1108,22 @@ fn timeline_verdict(frame: &FramePacing) -> TimelineVerdict {
         Outcome::Held { by, .. } => (PRESENT_LATE, JANK_NONE, SEVERITY_NONE, millis(by)),
         // Presented outside pacing, with no target to be on time for.
         Outcome::Synchronous => (PRESENT_UNKNOWN, JANK_NONE, SEVERITY_NONE, 0.0),
+        Outcome::Early { by } if frame.cadence() == Some(Cadence::Steady) => {
+            (PRESENT_EARLY, JANK_NONE, SEVERITY_NONE, -millis(by))
+        }
         Outcome::Early { by } => (PRESENT_EARLY, JANK_PREDICTION_ERROR, severity, -millis(by)),
-        Outcome::Late { by, .. } if frame.cadence() == Some(Cadence::Steady) => (
-            PRESENT_LATE,
-            JANK_BUFFER_STUFFING,
-            SEVERITY_NONE,
-            millis(by),
-        ),
+        Outcome::Late { by, .. } if frame.cadence() == Some(Cadence::Steady) => {
+            (PRESENT_LATE, JANK_NONE, SEVERITY_NONE, millis(by))
+        }
         Outcome::Late { by, cause } => {
             let jank = match cause {
                 LateCause::MissedDeadline | LateCause::BeganLate | LateCause::Gpu => {
                     JANK_APP_DEADLINE_MISSED
                 }
-                LateCause::SkippedOpportunity => JANK_SF_SCHEDULING,
+                LateCause::SkippedOpportunity => JANK_UNSPECIFIED,
                 LateCause::Backlog | LateCause::WaitedForBuffer => JANK_BUFFER_STUFFING,
                 LateCause::Mispredicted => JANK_PREDICTION_ERROR,
-                LateCause::Display | LateCause::AfterSubmit => JANK_DISPLAY_HAL,
+                LateCause::Display | LateCause::AfterSubmit => JANK_UNSPECIFIED,
                 _ => JANK_UNSPECIFIED,
             };
             (PRESENT_LATE, jank, severity, millis(by))
@@ -1947,11 +1935,10 @@ mod tests {
             [
                 // On time.
                 (1, 1, 1, 1, 1),
-                // Late, held after it was submitted in time: Display HAL,
-                // full, as it was late by its targets' spacing.
-                (2, 2, 8, 3, 1),
-                // Late as steadily as frame 2: buffer stuffing, not jank.
-                (3, 2, 128, 1, 1),
+                // Late after submission: no evidence identifies a display component.
+                (2, 2, 0, 3, 1),
+                // Late as steadily as frame 2: a forecast offset, not jank.
+                (3, 2, 1, 1, 1),
                 // Its deadline missed: App Deadline Missed.
                 (4, 2, 64, 3, 0),
                 // Superseded: dropped.

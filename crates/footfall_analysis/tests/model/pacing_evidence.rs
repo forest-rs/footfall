@@ -8,6 +8,25 @@ use footfall_analysis::{LateCause, Outcome, Support};
 use footfall_core::{FramePointKind::*, TimingBasis};
 
 #[test]
+fn a_steady_forecast_offset_is_not_a_delivery_hitch() {
+    let mut recording = Recording::new(99);
+    recording.clock_sync(0, &HOST, 0);
+    for number in 0..8_u64 {
+        let shown = (number + 1) * 16_667;
+        recording.numbered_frame(number, shown - 10_000, shown - 5_000);
+        recording.frame_point(shown, number, Target, &HOST, Some(shown + 33_334));
+        recording.frame_point(shown, number, Presented, &HOST, Some(shown));
+    }
+    let trace = Trace::from_snapshot(&recording.snapshot(200_000));
+    let pacing = trace.pacing(us(500));
+    assert_eq!(pacing.counts().early, 8);
+    for frame in pacing.frames().iter().skip(1) {
+        assert_eq!(frame.cadence(), Some(footfall_analysis::Cadence::Steady));
+        assert_eq!(frame.severity(), None);
+    }
+}
+
+#[test]
 fn completion_without_execution_spans_explains_post_submit_lateness() {
     for (ready, basis, cause, support) in [
         (
