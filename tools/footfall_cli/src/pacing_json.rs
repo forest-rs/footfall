@@ -21,7 +21,7 @@ use crate::json::Json;
 
 /// The kinds of frame point a frame can have a time for, in the order a
 /// frame meets them.
-const TIMED: [FramePointKind; 10] = [
+const TIMED: [FramePointKind; 12] = [
     FramePointKind::Scheduled(BeginsAt::Opportunity),
     FramePointKind::Predicted,
     FramePointKind::BufferRequested,
@@ -30,6 +30,8 @@ const TIMED: [FramePointKind; 10] = [
     FramePointKind::Target,
     FramePointKind::Sampled,
     FramePointKind::Submitted,
+    FramePointKind::PresentRequested,
+    FramePointKind::GpuReady,
     FramePointKind::Expected,
     FramePointKind::Presented,
 ];
@@ -288,6 +290,10 @@ fn frame(frame: &FramePacing) -> Json {
             range(frame.gpu().map(|gpu| (gpu.start(), gpu.end()))),
         ),
         ("gpu_busy_ns", Json::nanos_or_null(frame.gpu_busy())),
+        (
+            "before_request_ns",
+            Json::nanos_or_null(frame.presented_before_request()),
+        ),
         ("latency_ns", Json::nanos_or_null(frame.latency())),
         ("unplaced_points", Json::from(frame.unplaced_points())),
         ("points", Json::Object(points)),

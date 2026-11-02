@@ -198,6 +198,13 @@ pub enum FramePointKind {
     /// frame's end marker is when its CPU work ended, which may come before
     /// or after.
     Submitted,
+    /// The not-before time actually passed to a native timed-present API.
+    /// This is a request, not a prediction. Omit it for untimed presentation;
+    /// a scheduler's intended request alone does not establish this fact.
+    PresentRequested,
+    /// When all GPU work needed to present the image completed. This can be
+    /// recorded without execution spans and does not state GPU busy duration.
+    GpuReady,
     /// The time the frame's content was made for, such as the time its
     /// animations were sampled at. Compared with when the frame was shown,
     /// it says whether the frame showed the right moment.
@@ -214,9 +221,8 @@ pub enum FramePointKind {
     BufferRequested,
     /// When the frame got the buffer it asked for. The time since
     /// [`BufferRequested`](Self::BufferRequested) is how long it waited
-    /// for one: every buffer was held by frames queued ahead of it, which is
-    /// backpressure from the presentation pipeline, not the frame's own
-    /// work.
+    /// for one. The wait can include native pacing or unavailable resources;
+    /// the markers alone do not establish queue occupancy.
     BufferAcquired,
 }
 

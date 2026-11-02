@@ -2944,3 +2944,6 @@ fn a_latency_step_says_when_the_plans_depth_changed_with_it() {
         "latency rose from 25.00 ms to 33.33 ms at frame 11, while pipeline depth went from 1 to 2"
     );
 }
+
+#[path = "model/pacing_evidence.rs"]
+mod pacing_evidence;

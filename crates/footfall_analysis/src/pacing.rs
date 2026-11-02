@@ -29,6 +29,8 @@ pub struct FramePacing {
     work: Option<TimeRange>,
     gpu: Option<TimeRange>,
     gpu_busy: Option<Duration>,
+    gpu_ready: Option<Duration>,
+    present_requested: Option<Duration>,
     deadline: Option<Duration>,
     predicted: Option<Duration>,
     target: Option<Duration>,
@@ -218,9 +220,9 @@ struct Began {
 #[non_exhaustive]
 pub enum LateCause {
     /// It was submitted after its deadline, but by less than it waited for a
-    /// buffer to render into: without the wait it would have made it. Every
-    /// buffer was held by frames queued ahead, so the presentation pipeline
-    /// held it back, not its work. See [`FramePacing::buffer_wait`].
+    /// buffer to render into: without the wait it would have made it. The
+    /// wait does not prove how many images were queued; it may include native
+    /// pacing. See [`FramePacing::buffer_wait`].
     WaitedForBuffer,
     /// Its CPU work was submitted after its deadline.
     MissedDeadline,
@@ -239,7 +241,8 @@ pub enum LateCause {
     /// The queue itself is not observed, so this is
     /// [`Support::Inferred`].
     Backlog,
-    /// It was submitted in time, but its GPU work finished after its target.
+    /// It was submitted in time, but the image became GPU-ready after its
+    /// target. This establishes completion timing, not expensive execution.
     Gpu,
     /// It was shown a fraction of a refresh after its target, not a whole
     /// number of refreshes: no refresh came at its target, so the target
@@ -452,6 +455,30 @@ impl FramePacing {
         self.gpu_busy
     }
 
+    /// Returns explicit GPU completion, or the end of the recorded GPU spans
+    /// for older captures. Completion says nothing about execution duration.
+    #[must_use]
+    pub fn gpu_ready(&self) -> Option<Duration> {
+        self.gpu_ready.or_else(|| self.gpu.map(|gpu| gpu.end()))
+    }
+
+    /// Returns the not-before time actually sent to native presentation.
+    /// A target prediction by itself does not establish a native request.
+    #[must_use]
+    pub const fn present_requested(&self) -> Option<Duration> {
+        self.present_requested
+    }
+
+    /// Returns how much earlier the image was shown than its native request.
+    /// This is independent of prediction error and actual display cadence.
+    #[must_use]
+    pub fn presented_before_request(&self) -> Option<Duration> {
+        self.present_requested
+            .zip(self.presented)
+            .and_then(|(requested, presented)| requested.checked_sub(presented))
+            .filter(|by| !by.is_zero())
+    }
+
     /// Returns the earliest time the frame's work was meant to begin, from
     /// its [`Scheduled`](FramePointKind::Scheduled) point.
     #[must_use]
@@ -569,6 +596,8 @@ impl FramePacing {
             FramePointKind::Target => self.target,
             FramePointKind::Expected => self.expected,
             FramePointKind::Presented => self.presented,
+            FramePointKind::PresentRequested => self.present_requested,
+            FramePointKind::GpuReady => self.gpu_ready,
             FramePointKind::Submitted => self.submitted,
             FramePointKind::Sampled => self.sampled,
             FramePointKind::BufferRequested => self.buffer_requested,
@@ -1820,6 +1849,8 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
                 work: frame.map(crate::Frame::range),
                 gpu: None,
                 gpu_busy: None,
+                gpu_ready: None,
+                present_requested: None,
                 deadline: None,
                 predicted: None,
                 target: None,
@@ -1865,6 +1896,8 @@ pub(crate) fn pacing(trace: &Trace, tolerance: Duration) -> Pacing {
                     FramePointKind::Target => &mut raw.target,
                     FramePointKind::Expected => &mut raw.expected,
                     FramePointKind::Presented => &mut raw.presented,
+                    FramePointKind::PresentRequested => &mut raw.present_requested,
+                    FramePointKind::GpuReady => &mut raw.gpu_ready,
                     FramePointKind::Submitted => &mut raw.submitted,
                     FramePointKind::Sampled => &mut raw.sampled,
                     FramePointKind::BufferRequested => &mut raw.buffer_requested,
@@ -2273,8 +2306,8 @@ fn outcome(
         .and_then(|before| before.presented)
         .is_some_and(|shown| shown.saturating_add(tolerance) >= target);
     let gpu_late = raw
-        .gpu
-        .and_then(|gpu| gpu.end().checked_sub(target))
+        .gpu_ready()
+        .and_then(|ready| ready.checked_sub(target))
         .filter(|by| !by.is_zero());
     // Whole refreshes late, or between them: the refresh interval the
     // platform stated when the frame was to be shown.
@@ -2304,7 +2337,7 @@ fn outcome(
         (LateCause::Mispredicted, Support::Inferred)
     } else if !submitted_in_time {
         (LateCause::Unknown, Support::Unresolved)
-    } else if raw.gpu.is_some() {
+    } else if raw.gpu_ready().is_some() {
         (LateCause::Display, Support::Unresolved)
     } else {
         (LateCause::AfterSubmit, Support::Unresolved)
@@ -2328,7 +2361,9 @@ fn outcome(
             cause,
             LateCause::MissedDeadline | LateCause::WaitedForBuffer
         ) && submitted_basis == TimingBasis::Estimated)
-        || (cause == LateCause::WaitedForBuffer && buffer_estimated);
+        || (cause == LateCause::WaitedForBuffer && buffer_estimated)
+        || (cause == LateCause::Gpu
+            && raw.basis(FramePointKind::GpuReady) == TimingBasis::Estimated);
     let support = if support == Support::Observed && estimated {
         Support::Inferred
     } else {
@@ -2344,7 +2379,7 @@ fn outcome(
         submit_reported: raw.submitted.is_some(),
         submitted: submitted_basis,
         gpu_late,
-        gpu_recorded: raw.gpu.is_some(),
+        gpu_recorded: raw.gpu_ready().is_some(),
         behind_previous,
         whole_refreshes,
         buffer_wait,
