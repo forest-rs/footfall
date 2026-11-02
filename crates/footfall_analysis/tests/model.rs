@@ -2169,11 +2169,11 @@ fn late_frames_say_whether_the_platform_or_the_program_began_them_late() {
     assert_eq!(why.submitted_late, None);
     assert_eq!(
         skipped.outcome().to_string(),
-        "late by 10.00 ms: the platform skipped its opportunity"
+        "late by 10.00 ms: no opportunity was recorded at its scheduled slot"
     );
     assert_eq!(
         why.to_string(),
-        "the platform skipped its opportunity, observed; its opportunity came 10.00 ms late"
+        "no opportunity was recorded at its scheduled slot, observed; its opportunity came 10.00 ms late"
     );
 
     let busy = pacing.frame(3).expect("frame 3");
@@ -2305,7 +2305,7 @@ fn opportunities_are_counted_per_stream_and_judged_only_where_recorded() {
     assert!(!frame.begin_judged());
     assert_eq!(
         frame.why().map(ToString::to_string).as_deref(),
-        Some("late after submit, no GPU work to tell, unresolved; when it began was not judged")
+        Some("late after submit, GPU readiness unknown, unresolved; when it began was not judged")
     );
     assert_eq!(
         footfall_analysis::Outcome::Dropped {

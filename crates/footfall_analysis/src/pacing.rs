@@ -226,8 +226,8 @@ pub enum LateCause {
     WaitedForBuffer,
     /// Its CPU work was submitted after its deadline.
     MissedDeadline,
-    /// It was to begin at a frame opportunity, and the platform skipped
-    /// the one it was meant for, so it began at a later one: the
+    /// It was to begin at a frame opportunity, but none was recorded at
+    /// the slot it was meant for, so it began at a later one: the
     /// opportunity it began at came at least half an interval after it was
     /// due. See [`FramePacing::opportunity_late`].
     SkippedOpportunity,
@@ -403,13 +403,13 @@ impl fmt::Display for LateCause {
         f.write_str(match self {
             Self::WaitedForBuffer => "waited for a buffer",
             Self::MissedDeadline => "submitted after its deadline",
-            Self::SkippedOpportunity => "the platform skipped its opportunity",
+            Self::SkippedOpportunity => "no opportunity was recorded at its scheduled slot",
             Self::BeganLate => "began late",
             Self::Backlog => "queued behind a late frame",
-            Self::Gpu => "GPU finished after the target",
+            Self::Gpu => "image became GPU-ready after the target",
             Self::Mispredicted => "its target was mispredicted",
-            Self::Display => "held by the display",
-            Self::AfterSubmit => "late after submit, no GPU work to tell",
+            Self::Display => "GPU-ready in time, shown late",
+            Self::AfterSubmit => "late after submit, GPU readiness unknown",
             Self::Unknown => "cause not known",
         })
     }
@@ -506,7 +506,7 @@ impl FramePacing {
     }
 
     /// Returns how much later than it was due the frame opportunity the
-    /// frame was to begin at came, when the platform skipped at least one:
+    /// frame was to begin at came, when at least one expected slot was not recorded:
     /// when it came at least half an interval after the first time from
     /// the frame's scheduled time on that the opportunity before it said
     /// the next would come, its interval, or the stream's median spacing
@@ -623,9 +623,9 @@ impl FramePacing {
     /// [`BufferAcquired`](FramePointKind::BufferAcquired) point, when it has
     /// both.
     ///
-    /// A long wait means every buffer was held by frames queued ahead:
-    /// backpressure from the presentation pipeline. The frame's work looks
-    /// that much longer for it, but the time was not its own.
+    /// A wait may be backpressure or native pacing. It does not establish
+    /// queue occupancy. The frame's elapsed time includes the wait, but it
+    /// does not measure the frame's own execution cost.
     #[must_use]
     pub fn buffer_wait(&self) -> Option<Duration> {
         Some(self.buffer_acquired?.saturating_sub(self.buffer_requested?))
@@ -1016,7 +1016,7 @@ impl Pacing {
     }
 
     /// Returns how many frame opportunities the trace recorded, how many
-    /// the platform skipped between them, and how many could not be
+    /// the recording omitted between them, and how many could not be
     /// placed.
     ///
     /// An opportunity skipped is one that did not come when the one
@@ -1419,7 +1419,7 @@ pub struct Why {
     /// How long after its deadline the frame was submitted, when it was.
     pub submitted_late: Option<Duration>,
     /// How much later than it was due the frame opportunity it was to
-    /// begin at came, when the platform skipped at least one; see
+    /// begin at came, when at least one expected slot was not recorded; see
     /// [`FramePacing::opportunity_late`].
     pub opportunity_late: Option<Duration>,
     /// How long after it could have it began, when more than the
@@ -1489,7 +1489,7 @@ impl fmt::Display for Support {
 
 impl fmt::Display for Why {
     /// Says the cause and how strongly the trace supports it, then every
-    /// condition that held, such as `the platform skipped its opportunity,
+    /// condition that held, such as `no opportunity was recorded at its scheduled slot,
     /// observed; its opportunity came 8.33 ms late`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}, {}", self.cause, self.support)?;
@@ -1785,7 +1785,7 @@ impl CadenceCounts {
 pub struct OpportunityCounts {
     /// Opportunities the trace recorded and placed.
     pub recorded: u64,
-    /// Opportunities the platform skipped between them.
+    /// Opportunities the recording omitted between them.
     pub skipped: u64,
     /// Opportunities left out because their clock has no path to the
     /// runtime's.

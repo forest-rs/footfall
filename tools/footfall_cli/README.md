@@ -105,6 +105,19 @@ trace has deadlines. `footfall top` always uses a budget.
 
 ## Pacing as JSON
 
+Pacing separates actual delivery intervals, submission deadlines, forecast
+errors and native not-before requests. Early forecasts get their own comparison
+even when no frame was late. Their rows show cadence, lookahead, submission,
+GPU readiness, native request, target and presentation times together.
+
+Record `FramePointKind::PresentRequested` only for a timestamp actually passed
+to native timed presentation. A scheduler's target does not prove such a
+request was sent. `GpuReady` records completion independently of execution
+spans; it never supplies a GPU busy duration. Both milestones carry the same
+clock and timing-basis evidence as other points. Missing request/presentation
+pairs leave request compliance unknown. The JSON includes both points and
+`before_request_ns` independently of forecast outcome.
+
 `footfall analyze pacing --json` prints the judgment as one JSON document,
 for scripts and other tools to check rather than read:
 

@@ -660,15 +660,15 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> 
             ),
             (causes.began_late, "began later than they could have"),
             (causes.backlog, "queued behind a late frame"),
-            (causes.gpu, "GPU finished after the target"),
+            (causes.gpu, "image became GPU-ready after the target"),
             (
                 causes.mispredicted,
                 "shown between refreshes: their targets were mispredicted",
             ),
-            (causes.display, "held by the display"),
+            (causes.display, "GPU-ready in time, shown late"),
             (
                 causes.after_submit,
-                "late after submit, no GPU work to tell",
+                "late after submit, GPU readiness unknown",
             ),
             (causes.unknown, "cause not known"),
         ]
@@ -741,7 +741,7 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> 
     let waits = pacing.buffer_waits();
     if waits.count() > 0 {
         println!(
-            "  {WARN}{} waited for a buffer{WARN:#}: median {}, max {} {DIM}(every buffer held by frames queued ahead){DIM:#}",
+            "  {WARN}{} waited for a buffer{WARN:#}: median {}, max {} {DIM}(resource availability or native pacing; queue occupancy is not established){DIM:#}",
             format::frames(waits.count()),
             format::duration(waits.median()),
             format::duration(waits.max()),
@@ -764,7 +764,7 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> 
             format!("{GOOD}none skipped{GOOD:#}")
         } else {
             format!(
-                "{BAD}{} skipped by the platform{BAD:#}",
+                "{BAD}{} refresh slots without a recorded host opportunity{BAD:#}",
                 format::count(opportunities.skipped)
             )
         };
@@ -860,6 +860,55 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> 
 
     predictions(&pacing);
 
+    let mut early: Vec<_> = pacing
+        .frames()
+        .iter()
+        .filter(|frame| matches!(frame.outcome(), Outcome::Early { .. }))
+        .collect();
+    let before_request: Vec<_> = pacing
+        .frames()
+        .iter()
+        .filter(|frame| {
+            frame
+                .presented_before_request()
+                .is_some_and(|by| by > pacing.tolerance())
+        })
+        .collect();
+    let requests = pacing
+        .frames()
+        .iter()
+        .filter(|frame| frame.present_requested().is_some() && frame.presented().is_some())
+        .count();
+    if requests == 0 {
+        println!("  native request compliance unknown: no request/presentation pairs recorded");
+    } else {
+        println!(
+            "  {} of {requests} frames shown before their recorded native not-before request",
+            before_request.len()
+        );
+        for frame in before_request.iter().take(top) {
+            println!("  frame {}: shown before native request", frame.number());
+            pacing_times(frame);
+        }
+    }
+    if !early.is_empty() {
+        early.sort_by_key(|frame| core::cmp::Reverse(late_by(frame.outcome())));
+        println!(
+            "\n{HEADING}Early forecasts{HEADING:#} (prediction error; inspect cadence separately)"
+        );
+        for frame in early.iter().take(top) {
+            println!("  frame {}: {}", frame.number(), frame.outcome());
+            pacing_times(frame);
+        }
+        pacing_comparison(
+            &trace,
+            &pacing,
+            |outcome| matches!(outcome, Outcome::Early { .. }),
+            "early",
+            top,
+        );
+    }
+
     let mut late: Vec<_> = pacing
         .frames()
         .iter()
@@ -915,30 +964,59 @@ fn pacing(path: &Path, tolerance_ms: f64, top: usize, json: bool) -> Result<()> 
                 .map_or_else(|| String::from("-"), format::duration),
             past_deadline,
         );
+        pacing_times(frame);
     }
 
     // What the missed frames did differently, CPU and GPU together. GPU
     // spans count toward their frame by number, wherever they ran.
-    let missed_ids = pacing.frame_ids(Outcome::missed);
+    pacing_comparison(&trace, &pacing, Outcome::missed, "missed", top);
+    Ok(())
+}
+
+/// The policy and facts behind a forecast, with times on the trace clock.
+fn pacing_times(frame: &footfall::analysis::FramePacing) {
+    let time = |at: Option<Duration>| at.map_or_else(|| String::from("-"), format::duration);
+    let depth = frame
+        .plan()
+        .and_then(|plan| plan.depth())
+        .map_or_else(|| String::from("-"), |d| d.to_string());
+    println!(
+        "    depth {depth}, interval {}; submitted {}, GPU ready {}, native request {}, target {}, shown {}",
+        time(frame.plan().and_then(|plan| plan.interval())),
+        time(frame.submitted()),
+        time(frame.gpu_ready()),
+        time(frame.present_requested()),
+        time(frame.target()),
+        time(frame.presented())
+    );
+}
+
+fn pacing_comparison(
+    trace: &Trace,
+    pacing: &footfall::analysis::Pacing,
+    keep: fn(Outcome) -> bool,
+    label: &str,
+    top: usize,
+) {
+    let missed_ids = pacing.frame_ids(keep);
     let on_time_ids = pacing.frame_ids(|outcome| outcome == Outcome::OnTime);
     let frames = |ids: &[footfall::analysis::FrameId]| {
-        Population::frames(&trace, ids.iter().filter_map(|id| trace.frame(*id)))
+        Population::frames(trace, ids.iter().filter_map(|id| trace.frame(*id)))
     };
     let (on_time, missed) = (frames(&on_time_ids), frames(&missed_ids));
     let comparison = Comparison::between(&on_time, &missed)
         .selecting(Selection::Inside)
         .group_by(GroupBy::Name)
         .run();
-    println!("\n{HEADING}What the missed frames did differently{HEADING:#}");
-    report::comparison(&comparison, "on time", "missed", top);
-    Ok(())
+    println!("\n{HEADING}What the {label} frames did differently{HEADING:#}");
+    report::comparison(&comparison, "on time", label, top);
 }
 
 /// Orders missed frames: dropped first, then by how late.
 fn late_by(outcome: Outcome) -> Duration {
     match outcome {
         Outcome::Dropped { .. } => Duration::MAX,
-        Outcome::Late { by, .. } | Outcome::SubmittedLate { by } => by,
+        Outcome::Late { by, .. } | Outcome::SubmittedLate { by } | Outcome::Early { by } => by,
         _ => Duration::ZERO,
     }
 }

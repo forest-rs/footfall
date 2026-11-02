@@ -454,7 +454,7 @@ impl FramePoint {
 /// first from its [scheduled](FramePointKind::Scheduled) time. Recording
 /// every opportunity, including those at which no frame began, lets
 /// analysis tell a frame the program began late from one whose opportunity
-/// never came, and count the opportunities the platform skipped.
+/// never came, and count the refresh slots without recorded opportunities.
 ///
 /// Its time is ticks of a clock other than the backend's, typically the
 /// host clock the frame scheduler uses; relate it with
@@ -500,7 +500,7 @@ impl FrameOpportunity {
 
     /// Says how many ticks of the clock the platform means to leave before
     /// the next opportunity, such as the display's refresh interval.
-    /// Analysis takes a longer wait as opportunities the platform skipped.
+    /// Analysis takes a longer wait as refresh slots without recorded opportunities.
     #[must_use]
     pub const fn with_interval(mut self, ticks: u64) -> Self {
         self.interval = Some(ticks);
