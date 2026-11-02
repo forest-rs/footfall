@@ -683,6 +683,8 @@ struct PacedFrame {
     end: Option<u64>,
     scheduled: Option<u64>,
     deadline: Option<u64>,
+    gpu_ready: Option<u64>,
+    present_requested: Option<u64>,
     target: Option<u64>,
     presented: Option<u64>,
     dropped: Option<DropReason>,
@@ -786,6 +788,10 @@ fn paced_frames(
         match kind {
             FramePointKind::Scheduled(_) => frame.scheduled = at.or(frame.scheduled),
             FramePointKind::Deadline => frame.deadline = at.or(frame.deadline),
+            FramePointKind::GpuReady => frame.gpu_ready = at.or(frame.gpu_ready),
+            FramePointKind::PresentRequested => {
+                frame.present_requested = at.or(frame.present_requested);
+            }
             FramePointKind::Target => frame.target = at.or(frame.target),
             FramePointKind::Presented => frame.presented = at.or(frame.presented),
             FramePointKind::Dropped(reason) => frame.dropped = Some(*reason),
@@ -889,6 +895,20 @@ fn build_frame_tracks(
                     deadline,
                     "",
                 )?);
+            }
+            for (at, tid, label) in [
+                (frame.gpu_ready, built, "GPU ready"),
+                (frame.present_requested, planned, "native request"),
+            ] {
+                if let Some(at) = at {
+                    events.push(instant(
+                        tid,
+                        &format!("frame {number} {label}"),
+                        number,
+                        at,
+                        "",
+                    )?);
+                }
             }
             let Some(target) = frame.target else {
                 continue;
@@ -1636,6 +1656,8 @@ mod tests {
             point(1, scheduled, Some(1_000)),
             point(1, FramePointKind::Target, Some(10_000)),
             point(1, FramePointKind::Presented, Some(10_000)),
+            point(1, FramePointKind::GpuReady, Some(9_000)),
+            point(1, FramePointKind::PresentRequested, Some(10_000)),
             // Frame 2, shown 4 µs after its target.
             point(2, scheduled, Some(11_000)),
             point(2, FramePointKind::Target, Some(20_000)),
@@ -1674,6 +1696,8 @@ mod tests {
         }
         let json = to_chrome_trace_json(&builder.build().into());
         // The tracks after the one thread's.
+        assert!(json.contains("frame 1 GPU ready"));
+        assert!(json.contains("frame 1 native request"));
         let (built, targets, on_screen) = (2, 3, 4);
         for expected in [
             format!("\"tid\":{built},\"args\":{{\"name\":\"frames built, stream 0\"}}"),

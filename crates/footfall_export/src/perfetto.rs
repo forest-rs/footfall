@@ -1255,6 +1255,8 @@ fn frame_tracks(
             frame.begin,
             frame.end,
             frame.deadline,
+            frame.gpu_ready,
+            frame.present_requested,
             frame.target,
             frame.presented,
         ];
@@ -1320,6 +1322,12 @@ fn frame_tracks(
             stages.push(("in flight", end, presented, 0));
         }
         let mut instants = Vec::new();
+        if let Some(ready) = frame.gpu_ready {
+            instants.push((String::from("GPU ready"), ready));
+        }
+        if let Some(requested) = frame.present_requested {
+            instants.push((String::from("native request"), requested));
+        }
         if let Some(deadline) = frame.deadline {
             instants.push((String::from("deadline"), deadline));
         }
